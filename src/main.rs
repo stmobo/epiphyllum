@@ -8,8 +8,7 @@
 #[macro_use]
 mod print;
 
-mod vga;
-mod serial;
+mod devices;
 
 #[cfg(test)]
 pub mod test_runner;

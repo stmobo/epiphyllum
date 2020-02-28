@@ -1,7 +1,7 @@
 use core::fmt;
 
-use crate::vga;
-use crate::serial;
+use crate::devices::vga;
+use crate::devices::serial;
 
 #[macro_export]
 macro_rules! print {
@@ -26,7 +26,7 @@ pub fn _do_blocking_print(args: fmt::Arguments) {
 
 pub unsafe fn break_print_locks() {
     serial::force_unlock();
-    
+
     #[cfg(not(test))]
     vga::force_unlock();
 }

@@ -1,39 +1,64 @@
 #![no_std]
 #![no_main]
 #![feature(panic_info_message)]
+#![feature(custom_test_frameworks)]
+#![test_runner(crate::test_runner::test_runner)]
+#![reexport_test_harness_main = "test_main"]
 
-use core::panic::PanicInfo;
+#[macro_use]
+mod print;
 
 mod vga;
+mod serial;
+
+#[cfg(test)]
+pub mod test_runner;
+
+use core::panic::PanicInfo;
 
 #[panic_handler]
 #[allow(unused_must_use)]
 fn panic(info: &PanicInfo) -> ! {
-    use core::fmt::Write;
+    unsafe {
+        print::break_print_locks();
+    };
 
-    let mut disp = unsafe { vga::force_take_lock() };
-    write!(disp, "kernel panic: ");
+    print!("kernel panic: ");
 
     if let Some(msg) = info.message() {
-        write!(disp, "{}", msg);
+        print!("{}", msg);
     } else if let Some(msg) = info.payload().downcast_ref::<&'static str>() {
-        write!(disp, "{}", msg);
+        print!("{}", msg);
     } else {
-        write!(disp, "(no message provided)");
+        print!("(no message provided)");
     }
 
     if let Some(loc) = info.location() {
-        write!(disp, " at {}\n", loc);
+        print!(" at {}\n", loc);
     } else {
-        write!(disp, " - no location information available\n");
+        print!(" - no location information available\n");
     }
 
+    #[cfg(test)]
+    test_runner::exit_qemu(test_runner::TestExitCode::Failure);
+
     loop {}
+}
+
+#[test_case]
+fn test_case() {
+    print!("Testing assertion...");
+    assert_eq!(1, 1);
+    println!("[ok]");
 }
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     println!("Hello world{}", "!");
+
+    #[cfg(test)]
+    test_main();
+
     panic!("test");
 
     loop {}

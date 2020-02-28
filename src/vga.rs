@@ -2,7 +2,7 @@ use core::ptr;
 use core::fmt;
 
 use lazy_static::lazy_static;
-use spin::{Mutex, MutexGuard};
+use spin::Mutex;
 
 const SCREEN_WIDTH: u64  = 80;
 const SCREEN_HEIGHT: u64 = 25;
@@ -168,27 +168,9 @@ impl fmt::Write for VGATextMode {
     }
 }
 
-#[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => ($crate::vga::_do_blocking_print(format_args!($($arg)*)));
-}
-
-#[macro_export]
-macro_rules! println {
-    () => ($crate::print!("\n"));
-    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
-}
-
-#[doc(hidden)]
-pub fn _do_blocking_print(args: fmt::Arguments) {
-    use fmt::Write;
-    DEFAULT_DISPLAY.lock().write_fmt(args).unwrap();
-}
-
 /// Forcibly take the lock for the default VGA display.
 /// 
 /// Note that this is horrifically unsafe.
-pub unsafe fn force_take_lock() -> MutexGuard<'static, VGATextMode> {
+pub unsafe fn force_unlock() {
     DEFAULT_DISPLAY.force_unlock();
-    DEFAULT_DISPLAY.lock()
 }

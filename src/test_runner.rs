@@ -20,7 +20,9 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
     println!("Running {} tests...", tests.len());
     for test in tests {
         test();
+        println!("[ok]");
     }
 
     exit_qemu(TestExitCode::Success);
+    panic!("test runner failed to exit");
 }

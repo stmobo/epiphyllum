@@ -77,17 +77,19 @@ impl VGATextMode {
         }
     }
 
-    /// Set the color of a particular cell on screen.
-    pub fn set_color (&mut self, x: u64, y: u64, color: Color) {
+    pub fn get_cell_mut(&mut self, x: u64, y: u64) -> Option<&mut VGACharacter> {
         if let Some(offset) = VGATextMode::offset(x, y) {
-            self.buf[offset].color = color;
-        }        
+            Some(&mut self.buf[offset])
+        } else {
+            None
+        }
     }
 
-    /// Set the displayed glyph for a particular cell on screen.
-    pub fn set_glyph (&mut self, x: u64, y: u64, glyph: u8) {
+    pub fn get_cell(&self, x: u64, y: u64) -> Option<&VGACharacter> {
         if let Some(offset) = VGATextMode::offset(x, y) {
-            self.buf[offset].glyph = glyph;
+            Some(&self.buf[offset])
+        } else {
+            None
         }
     }
 
@@ -159,6 +161,27 @@ impl VGATextMode {
             };
         }
     }
+
+    pub fn set_pos(&mut self, x: u64, y: u64) {
+        if x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT {
+            return;
+        }
+
+        self.cur_x = x;
+        self.cur_y = y;
+    }
+
+    pub fn clear(&mut self) {
+        for c in self.buf.iter_mut() {
+            *c = VGACharacter {
+                color: DEFAULT_COLOR,
+                glyph: 0x20, // ASCII space
+            }
+        }
+
+        self.cur_x = 0;
+        self.cur_y = 0;
+    }
 }
 
 impl fmt::Write for VGATextMode {
@@ -173,4 +196,49 @@ impl fmt::Write for VGATextMode {
 /// Note that this is horrifically unsafe.
 pub unsafe fn force_unlock() {
     DEFAULT_DISPLAY.force_unlock();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_display_char_eq(d: &mut spin::MutexGuard<'static, VGATextMode>, x: u64, y: u64, c: u8) {
+        let glyph = d.get_cell(
+            x,
+            y
+        ).unwrap().glyph;
+
+        assert_eq!(glyph, c);
+    }
+
+    #[test_case]
+    fn test_write_str_basic() {
+        print!("VGA - write_str_basic ... ");
+
+        let mut d = DEFAULT_DISPLAY.lock();
+        
+        d.clear();
+        d.write_str("foo");
+
+        assert_display_char_eq(&mut d, 0, 0, b'f');
+        assert_display_char_eq(&mut d, 1, 0, b'o');
+        assert_display_char_eq(&mut d, 2, 0, b'o');
+    }
+
+    #[test_case]
+    fn test_scroll() {
+        print!("VGA - test_scroll ... ");
+
+        let mut d = DEFAULT_DISPLAY.lock();
+
+        d.clear();
+        d.write_str("\n\n\nfoo");
+        d.scroll(1);
+
+        assert_display_char_eq(&mut d, 0, 2, b'f');
+        assert_display_char_eq(&mut d, 1, 2, b'o');
+        assert_display_char_eq(&mut d, 2, 2, b'o');
+
+        assert_display_char_eq(&mut d, 0, 3, b' ');
+    }
 }

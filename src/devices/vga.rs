@@ -46,7 +46,7 @@ impl Color {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[repr(C)]
-struct VGACharacter {
+pub struct VGACharacter {
     glyph: u8,
     color: Color,
 }

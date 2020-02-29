@@ -45,13 +45,15 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _rust_start() -> ! {
+    use core::mem;
     println!("Hello world{}", "!");
 
     #[cfg(test)]
     test_main();
 
-    panic!("test");
+    let f: usize = unsafe { mem::transmute(&_rust_start) };
+    println!("_rust_start is located at {:#016X}", f);
 
     loop {}
 }

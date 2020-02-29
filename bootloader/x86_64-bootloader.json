@@ -6,20 +6,20 @@
     "target-pointer-width": "64",
     "target-c-int-width": "32",
     "os": "none",
+    "env": "",
     "executables": true,
     "linker": "gcc",
     "linker-flavor": "gcc",
     "pre-link-args": {
         "gcc": [
-            "-Wl,-Tlinker.ld",
-            "-Wl,--nmagic",
-            "-Wl,-zmax-page-size=4096",
-            "-nostartfiles"
+            "-Wl,-Tbootloader/linker.ld"
         ]
     },
     "panic-strategy": "abort",
     "disable-redzone": true,
     "features": "-mmx,-sse,+soft-float",
-    "relocation_model": "static"
+    "relocation-model": "pic",
+    "eliminate-frame-pointer": false,
+    "position-independent-executables": false
 }
 

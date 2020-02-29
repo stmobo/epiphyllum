@@ -1,9 +1,12 @@
 .global multiboot_start
 .global multiboot_header_start
 .global early_pmode_exception
-.global long_mode_entry
 .global multiboot_struct_addr
-.global cur_display_offset_y
+.global rust_start
+
+.global pml4
+.global pdpt
+
 .intel_syntax noprefix
 .code32
 
@@ -16,6 +19,13 @@
 .set MB1_MAGIC,    0x1BADB002
 .set MB1_FLAGS,    0x00000002
 .set MB1_CHECKSUM, -(MB1_MAGIC + MB1_FLAGS)
+
+.align 4
+multiboot1_header_start:
+.long MB1_MAGIC
+.long MB1_FLAGS
+.long MB1_CHECKSUM
+.long 0xFFFFFFFF
 
 .align 4
 multiboot2_header_start:
@@ -48,12 +58,6 @@ multiboot2_header_start:
 .word 0
 .long 0
 multiboot2_header_end:
-
-.align 4
-multiboot1_header_start:
-.long MB1_MAGIC
-.long MB1_FLAGS
-.long MB1_CHECKSUM
 
 .section .bootstrap_code
 
@@ -91,6 +95,14 @@ setup_paging:
     or edx, 3
     mov [pml4], edx
     mov DWORD PTR [pml4+4], 0
+
+    # Set up higher-half mapping.
+    mov eax, 0x188
+    lea ebx, pml4
+    lea ecx, pdpt
+    or ecx, 1
+    mov [ebx + (eax * 8)], ecx
+    mov DWORD PTR [ebx + (eax * 8) + 4], 0
 
     # Set up PDPT with address of PD
     lea edx, pd
@@ -265,10 +277,10 @@ pmode_idt_desc:
 
 pmode_idt:
 .rept 16
-    .word __early_pmode_exc_low
+    .word early_pmode_exception
     .word 0x08
     .byte 0
     .byte 0x8F
-    .word __early_pmode_exc_hi
+    .word 0
 .endr
 pmode_idt_end:

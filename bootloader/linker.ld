@@ -1,4 +1,5 @@
 ENTRY(multiboot_start)
+
 SECTIONS
 {
     __early_pmode_exc_low = early_pmode_exception & 0xFFFF;
@@ -22,53 +23,36 @@ SECTIONS
         *(.bootstrap_code)
     }
 
-    _kernel_start = 0xFFC0000000000000;
-    . += _kernel_start;
-
-    .text : AT(ADDR(.text) - _kernel_start)
+    .text : 
     {
         . = ALIGN(8);
 
         _code = .;
         KEEP(*(.text.start))
+        *(.text)
         *(.text.*)
         *(.rodata*)
-        . = ALIGN(4096);
     }
 
-   .data : AT(ADDR(.data) - _kernel_start)
+   .data :
    {
         _data = .;
         *(.data)
-        . = ALIGN(4096);
    }
 
-   .eh_frame : AT(ADDR(.eh_frame) - _kernel_start)
-   {
-       _ehframe = .;
-       *(.eh_frame)
-        . = ALIGN(4096);
-   }
-
-   .bss : AT(ADDR(.bss) - _kernel_start)
+   .bss :
    {
        _bss = .;
        *(.bss)
-
-       /*
-        * You usually need to include generated COMMON symbols
-        * under kernel BSS section or use gcc's -fno-common
-        */
-
        *(COMMON)
-       . = ALIGN(4096);
    }
-
-   _kernel_end = .;
 
    /DISCARD/ :
    {
-        *(.comment)
-        *(.dynamic)
+        *(.comment*)
+        *(.eh_frame*)
+        *(.gcc_except_table*)
+        *(.note*)
+        *(.rel.eh_frame*)
    }
 }

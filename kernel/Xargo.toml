@@ -1,0 +1,8 @@
+[target.x86_64-bootloader.dependencies]
+
+[dependencies.core]
+stage = 0
+
+[dependencies.compiler_builtins]
+stage = 1
+features = ['mem', 'core']

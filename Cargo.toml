@@ -1,32 +1,8 @@
-[package]
-name = "epiphyllum"
-version = "0.1.0"
-authors = ["Sebastian Mobo <stmobo@gmail.com>"]
-edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = ["bootloader", "kernel"]
 
 [profile.dev]
 panic = "abort"
 
 [profile.release]
 panic = "abort"
-
-#[package.metadata.bootimage]
-#test-args = [
-#    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-#    "-serial", "stdio",
-#    "-display", "none"
-#]
-#test-success-exit-code = 33
-
-[build-dependencies]
-cc = "1.0"
-
-[dependencies]
-spin = "*"
-x86_64 = "^0.9"
-
-[dependencies.lazy_static]
-version = "^1.0"
-features = ["spin_no_std"]

@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(abi_x86_interrupt)]
 #![feature(panic_info_message)]
 #![feature(rustc_private)]
 
@@ -10,11 +11,17 @@ mod print;
 
 mod devices;
 mod multiboot;
+mod exception_handler;
 
 use core::panic::PanicInfo;
 use core::mem;
+use x86_64::structures::idt::{InterruptDescriptorTable, HandlerFunc, HandlerFuncWithErrCode, InterruptStackFrame};
 
 use multiboot::{MultibootInfo, MemoryInfo, MemoryType};
+
+extern "C" {
+    static long_mode_idt: *mut InterruptDescriptorTable;
+}
 
 #[no_mangle]
 pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
@@ -28,7 +35,6 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
 
     let f: usize = unsafe { mem::transmute(multiboot_struct) };
     println!("Multiboot structure located at {:#016X}", f);
-
     println!("Kernel command line: {}", mb.get_command_line().unwrap_or(""));
 
     if let Some(mods) = mb.get_modules() {
@@ -62,6 +68,19 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
             }
         }
     }
+
+    /* Right now, our IDT is still set up to point at 32-bit code,
+     * so any CPU exceptions we cause are generally going to cause a 
+     * triple fault. Fix this now.
+     */
+    let idt: &'static mut InterruptDescriptorTable;
+    unsafe {
+        *long_mode_idt = InterruptDescriptorTable::new();
+        idt = mem::transmute(long_mode_idt);
+    }
+
+    exception_handler::initialize_idt(idt);
+    idt.load();
 
     loop {}
 }

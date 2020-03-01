@@ -1,6 +1,7 @@
 .global long_mode_entry
 .global rust_start
 .global multiboot_struct_addr
+.global long_mode_idt
 
 .intel_syntax noprefix
 .code64
@@ -43,3 +44,8 @@ die:
 spin64:
     hlt
     jmp spin64
+
+.section .boot_idt
+long_mode_idt:
+    # 256 16-byte entries = 4096 bytes
+    .skip 0x1000, 0

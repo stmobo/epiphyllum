@@ -11,7 +11,7 @@ cc = "1.0"
 
 [dependencies]
 spin = "*"
-x86_64 = "^0.9"
+x86_64 = "*"
 cstr_core = "^0.1"
 
 [dependencies.lazy_static]

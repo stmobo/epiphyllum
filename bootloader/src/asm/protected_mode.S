@@ -102,13 +102,7 @@ setup_paging:
     mov [pml4], edx
     mov DWORD PTR [pml4+4], 0
 
-    # Set up higher-half mapping.
-    mov eax, 0x188
-    lea ebx, pml4
-    lea ecx, pdpt
-    or ecx, 1
-    mov [ebx + (eax * 8)], ecx
-    mov DWORD PTR [ebx + (eax * 8) + 4], 0
+    # Higher-half mapping will be set up later.
 
     # Set up PDPT with address of PD
     lea edx, pd

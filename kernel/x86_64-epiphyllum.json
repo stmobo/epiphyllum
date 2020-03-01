@@ -21,7 +21,7 @@
     },
     "panic-strategy": "abort",
     "disable-redzone": true,
-    "features": "-mmx,-sse,+soft-float",
+    "features": "-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-3dnow,-3dnowa,-avx,-avx2",
     "relocation-model": "pic",
     "code-model": "kernel",
     "has-rpath": false,

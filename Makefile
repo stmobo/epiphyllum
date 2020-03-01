@@ -17,4 +17,4 @@ iso: bootloader kernel grub.cfg
 	grub-mkrescue -o target/boot.iso target/iso
 
 run: iso
-	qemu-system-x86_64 -cdrom target/boot.iso -device isa-debug-exit,iobase=0xf4,iosize=0x04 -s -no-reboot -d int,cpu_reset
+	qemu-system-x86_64 -cdrom target/boot.iso -device isa-debug-exit,iobase=0xf4,iosize=0x04 -serial stdio -s -no-reboot -no-shutdown -d int,cpu_reset

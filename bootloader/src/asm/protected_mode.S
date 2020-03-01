@@ -17,7 +17,7 @@
 .set CHECKSUM,   -(MAGIC + ARCH + HEADER_LEN)
 
 .set MB1_MAGIC,    0x1BADB002
-.set MB1_FLAGS,    0x00000002
+.set MB1_FLAGS,    0x00000003
 .set MB1_CHECKSUM, -(MB1_MAGIC + MB1_FLAGS)
 
 .align 4
@@ -51,6 +51,12 @@ multiboot2_header_start:
 .word 0
 .long 12
 .long multiboot_start
+
+# Module alignment
+.align 8
+.word 6
+.word 0
+.long 8
 
 # final tag
 .align 8

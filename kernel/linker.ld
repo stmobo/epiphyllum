@@ -7,7 +7,7 @@ SECTIONS
 
     .text : AT(ADDR(.text) - _kernel_base)
     {
-        . = ALIGN(8);
+        . = ALIGN(4096);
         _kernel_start = .;
         _kernel_map_start = _kernel_start - _kernel_base;
 

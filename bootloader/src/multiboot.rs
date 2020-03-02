@@ -129,7 +129,7 @@ pub struct MemoryInfo {
     pub mem_type: MemoryType,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 #[non_exhaustive]
 pub enum MemoryType {

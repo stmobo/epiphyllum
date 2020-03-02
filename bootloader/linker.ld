@@ -7,6 +7,8 @@ SECTIONS
 
     . = 0x500;
 
+    _loader_start = .;
+
     .boot :
     {
         . = ALIGN(8);
@@ -46,6 +48,8 @@ SECTIONS
        *(.bss)
        *(COMMON)
    }
+
+   _loader_end = .;
 
    /DISCARD/ :
    {

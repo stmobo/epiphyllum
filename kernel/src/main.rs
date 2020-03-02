@@ -2,19 +2,16 @@
 #![no_main]
 #![feature(panic_info_message)]
 #![feature(custom_test_frameworks)]
-#![feature(rustc_private)]
 #![test_runner(crate::test_runner::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-extern crate compiler_builtins;
-
 #[macro_use]
-mod print;
-
-mod devices;
+extern crate kernel;
 
 #[cfg(test)]
 pub mod test_runner;
+
+use kernel::*;
 
 use core::panic::PanicInfo;
 

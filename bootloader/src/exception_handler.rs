@@ -22,7 +22,7 @@ pub fn initialize_idt(idt: &mut InterruptDescriptorTable) {
     idt.virtualization.set_handler_fn(virtualization_error);
     idt.security_exception.set_handler_fn(security_exception);
 
-    for i in (32..256) {
+    for i in 32..256 {
         idt[i].set_handler_fn(unhandled_interrupt);
     }
 }

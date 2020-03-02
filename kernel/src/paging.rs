@@ -35,11 +35,11 @@ impl PageTableEntry {
     }
 
     pub fn physical_address(&self) -> usize {
-        (self.entry & !0xFFF) as usize
+        ((self.entry as usize) & PAGE_MASK) as usize
     }
 
     pub fn set_physical_address(&mut self, addr: usize) {
-        let aligned = (addr & !0xFFF) as u64;
+        let aligned = (addr & PAGE_MASK) as u64;
         self.entry = aligned | (self.entry & 0xFFF); 
     }
 

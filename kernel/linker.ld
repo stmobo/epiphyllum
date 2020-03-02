@@ -37,11 +37,6 @@ SECTIONS
        *(COMMON)
 
         . = ALIGN(0x1000);
-        _high_stack_end = .;
-        . += 0x8000;
-        _high_stack_start = .;
-
-       . = ALIGN(4096);
 
        _kernel_end = .;
    }

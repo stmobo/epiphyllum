@@ -21,7 +21,7 @@ fn loader_end_addr() -> usize {
     }
 }
 
-const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
+pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PageFrameRange {
@@ -50,22 +50,59 @@ impl PageFrameAllocator {
         }
     }
 
+    /// Prevents the allocator from allocating pages in a specific range.
+    pub fn restrict_range(&mut self, from_addr: usize, to_addr: usize) {
+        let from_page = from_addr & PAGE_MASK;
+        let to_page = (to_addr & PAGE_MASK) + 0x1000;
+
+        for i in 0..16 {
+            let mut pf_range = self.ranges[i];
+
+            if !pf_range.valid || (pf_range.end_addr - pf_range.start_addr) < 0x1000 {
+                continue;
+            }
+            
+            if (pf_range.end_addr > from_page) && (to_page > pf_range.start_addr) {
+                /* If we have a spare range, add it */
+                if self.n_ranges < 16 && pf_range.start_addr < from_page && pf_range.end_addr > to_page {
+                    let old_end_addr = pf_range.end_addr;
+                    pf_range.end_addr = from_page;
+
+                    if (old_end_addr - to_page) >= 0x1000 {
+                        self.ranges[self.n_ranges] = PageFrameRange {
+                            start_addr: to_page,
+                            end_addr: old_end_addr,
+                            cur_alloc_end: to_page,
+                            valid: true
+                        };
+                
+                        self.n_ranges += 1;
+                    }
+                } else if pf_range.end_addr > to_page {
+                    pf_range.start_addr = to_page;
+                    pf_range.cur_alloc_end = to_page;
+                } else if pf_range.start_addr < from_page {
+                    pf_range.end_addr = from_page;
+                }
+
+                if (pf_range.end_addr - pf_range.start_addr) < 0x1000 {
+                    pf_range.valid = false;
+                }
+
+                self.ranges[i] = pf_range;
+            }
+        }
+    }
+
+    /// Add a specific range of available memory that we can allocate from.
     pub fn add_range(&mut self, from_addr: usize, to_addr: usize) {
         if self.n_ranges >= 16 {
             return;
         }
 
-        if (from_addr & 0xFFF) > 0 {
-            panic!("from_addr={:#016x} is not page-aligned", from_addr);
-        }
-
-        if (to_addr & 0xFFF) > 0 {
-            panic!("to_addr={:#016x} is not page-aligned", to_addr);
-        }
-
         /* Make sure that we don't create a range that overlaps the loader. */
-        let mut from_addr = from_addr;
-        let mut to_addr = to_addr;
+        let mut from_addr = from_addr & PAGE_MASK;
+        let mut to_addr = to_addr & PAGE_MASK;
         let loader_start_page: usize = loader_start_addr() & PAGE_MASK;
         let loader_end_page: usize = (loader_end_addr() & PAGE_MASK) + 0x1000;
 
@@ -341,7 +378,7 @@ pub fn get_mapping (virt_addr: usize) -> Option<PageTableEntry> {
 
             if pd[pd_idx].present() {
                 let pt = PageTable::get_pt(pml4_idx, pdp_idx, pd_idx);
-                
+
                 return Some(pt[pt_idx]);
             }
         }

@@ -13,20 +13,24 @@ mod devices;
 mod multiboot;
 mod exception_handler;
 mod paging;
+mod elf;
 
 use core::panic::PanicInfo;
 use core::mem;
+use compiler_builtins::mem::{memset, memcpy};
 use x86_64::structures::idt::{InterruptDescriptorTable, HandlerFunc, HandlerFuncWithErrCode, InterruptStackFrame};
 
-use multiboot::{MultibootInfo, MemoryInfo, MemoryType};
+use multiboot::{MultibootInfo, ModuleInfo, MemoryInfo, MemoryType};
 use paging::PageFrameAllocator;
+use elf::Elf64Header;
 
 extern "C" {
     static long_mode_idt: *mut InterruptDescriptorTable;
     static _loader_start: *const u8;
     static _loader_end: *const u8;
-}
 
+    fn higher_half_trampoline(entry_point_addr: usize, stack_addr: usize, boot_info_addr: usize);
+}
 
 #[no_mangle]
 pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
@@ -61,18 +65,6 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
     println!("Multiboot structure located at {:#016X}", f);
     println!("Kernel command line: {}", mb.get_command_line().unwrap_or(""));
 
-    if let Some(mods) = mb.get_modules() {
-        println!("Found {} loaded modules:", mods.len());
-        for m in mods {
-            println!(
-                "    {}: {:#08x} - {:#08x}",
-                m.get_string().unwrap_or("<unknown>"),
-                m.mod_start,
-                m.mod_end
-            );
-        }
-    }
-
     let mut pf_allocator = PageFrameAllocator::new();
     if let Some(mmap) = mb.get_memory_info() {
         println!("Memory map:");
@@ -105,25 +97,115 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
         panic!("BIOS did not provide a memory map");
     }
 
+    if let Some(mods) = mb.get_modules() {
+        println!("Found {} loaded modules:", mods.len());
+        for m in mods {
+            println!(
+                "    {}: {:#08x} - {:#08x}",
+                m.get_string().unwrap_or("<unknown>"),
+                m.mod_start,
+                m.mod_end
+            );
+
+            pf_allocator.restrict_range(m.mod_start as usize, m.mod_end as usize);
+        }
+    } else {
+        panic!("Bootloader did not load modules");
+    }
+
     if pf_allocator.n_ranges() == 0 {
         panic!("Could not find any usable memory ranges");
     }
-    
-    /* Test paging. */
-    let test_vaddr: usize = 0x0000_0FFF_0000_0000;
-    let test_paddr: usize = pf_allocator.allocate(1);
 
-    paging::map_address(&mut pf_allocator, test_paddr, test_vaddr);
-    unsafe {
-        use core::ptr;
+    let mods = mb.get_modules().unwrap();
+    let kernel_mod: &ModuleInfo = mods.iter().find(|m| {
+        if let Some(s) = m.get_string() {
+            s == "kernel"
+        } else {
+            false
+        }
+    }).expect("Could not find kernel module");
 
-        let p: *mut u64 = mem::transmute(test_vaddr);
-        ptr::write_volatile(p, 0xdeadbeef);
-
-        println!("test read: {:#08x}", ptr::read_volatile(p));
+    let kernel_header: &'static Elf64Header = unsafe { mem::transmute(kernel_mod.mod_start as usize) };
+    if !kernel_header.is_valid() {
+        panic!("kernel ELF header not valid");
     }
 
-    loop {}
+    println!("Found valid kernel image at {:#x}", kernel_mod.mod_start);
+    println!("    Entry point: {:#016x}", kernel_header.entry_point());
+
+    for (i, ph) in kernel_header.program_header_table().iter().enumerate() {
+        /* We only need to deal with PT_LOAD segments for now... */
+        if ph.p_type != 1 {
+            continue;
+        }
+
+        /* Figure out how many pages need to be mapped in. */
+        let mut total_pages = (ph.p_memsz / 0x1000) as usize;
+        if ph.p_memsz % 0x1000 > 0 {
+            total_pages += 1;
+        }
+
+        println!(
+            "    Segment {}: {:#016x} => {:#016x}",
+            i, ph.p_offset, ph.p_vaddr
+        );
+
+        println!(
+            "    file size: {:#x}, mem size: {:#x} ({} pages)",
+            ph.p_filesz, ph.p_memsz, total_pages
+        );
+
+        /* Allocate a buffer to copy the segment into. */
+        let dest_buf_addr = pf_allocator.allocate(total_pages as u64);
+        let to_base: usize = (ph.p_vaddr as usize) & paging::PAGE_MASK;
+
+        /* Map the segment into memory at the specified virtual address. */
+        for i in 0..total_pages {
+            let paddr = dest_buf_addr + (i * 0x1000);
+            let vaddr = to_base + (i * 0x1000);
+
+            paging::map_address(&mut pf_allocator, paddr, vaddr);
+        }
+
+        unsafe {
+            /* Zero out the segment pages first. */
+            let p: *mut u8 = mem::transmute(to_base);
+            memset(p, 0, total_pages * 0x1000);
+
+            /* Now copy over the kernel bytes starting from the specified segment offset in memory. */
+            let from_addr = (kernel_mod.mod_start as u64) + ph.p_offset;
+            let from_ptr: *const u8 = mem::transmute(from_addr as usize);
+            let to_ptr: *mut u8 = mem::transmute(ph.p_vaddr as usize);
+
+            memcpy(to_ptr, from_ptr, ph.p_filesz as usize);
+        }
+    }
+
+    /* Map in a few pages for our higher-half stack. */
+    let higher_half_stack_addr = 0xFFFF_FF00_0000_0000;
+    let n_stack_pages = 64; // 64 * 4 KiB = 0.25 MiB
+    let stack_phys = pf_allocator.allocate(32);
+
+    for i in 0..n_stack_pages {
+        let paddr = stack_phys + (i * 0x1000);
+        let vaddr = higher_half_stack_addr - (i * 0x1000);
+
+        paging::map_address(&mut pf_allocator, paddr, vaddr);
+    }
+
+    println!("All segments mapped, calling kernel entry point...");
+
+    /* Let's cross our fingers and hope this works... */
+    unsafe {
+        higher_half_trampoline(
+            kernel_header.entry_point(),
+            higher_half_stack_addr,
+            0
+        );
+    }
+
+    panic!("kernel entry failed");
 }
 
 #[panic_handler]

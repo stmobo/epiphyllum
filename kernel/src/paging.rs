@@ -3,22 +3,22 @@ use core::ops;
 use x86_64::instructions::tlb;
 use x86_64::VirtAddr;
 
-pub const PAGE_MASK: usize         = 0xFFFF_FFFF_FFFF_F000;
+pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
 
-const PML4T_RECURSIVE_BASE: usize  = 0xFFFF_FFFF_FFFF_F000;
-const PDPT_RECURSIVE_BASE: usize   = 0xFFFF_FFFF_FFE0_0000;
-const PD_RECURSIVE_BASE: usize     = 0xFFFF_FFFF_C000_0000;
-const PT_RECURSIVE_BASE: usize     = 0xFFFF_FF80_0000_0000;
+const PML4T_RECURSIVE_BASE: usize = 0xFFFF_FFFF_FFFF_F000;
+const PDPT_RECURSIVE_BASE: usize = 0xFFFF_FFFF_FFE0_0000;
+const PD_RECURSIVE_BASE: usize = 0xFFFF_FFFF_C000_0000;
+const PT_RECURSIVE_BASE: usize = 0xFFFF_FF80_0000_0000;
 
 pub const KERNEL_STACK_BASE: usize = 0xFFFF_FF00_0000_0000;
-pub const KERNEL_BASE: usize       = 0xFFFF_C400_0000_0000;
+pub const KERNEL_BASE: usize = 0xFFFF_C400_0000_0000;
 pub const PHYSICAL_MAP_BASE: usize = 0xFFFF_8100_0000_0000;
 pub const HIGHER_HALF_START: usize = 0xFFFF_8000_0000_0000;
 
-const MAX_PHYSICAL_MEMORY: usize   = KERNEL_BASE - PHYSICAL_MAP_BASE;
+const MAX_PHYSICAL_MEMORY: usize = KERNEL_BASE - PHYSICAL_MAP_BASE;
 
 const KERNEL_STACK_PML4_IDX: usize = 0b111_111_110;
-const KERNEL_BASE_PML4_IDX: usize  = 0b110_001_000;
+const KERNEL_BASE_PML4_IDX: usize = 0b110_001_000;
 const PHYSICAL_MAP_PML4_IDX: usize = 0b100_000_010;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -29,9 +29,7 @@ pub struct PageTableEntry {
 
 impl PageTableEntry {
     pub fn new() -> PageTableEntry {
-        PageTableEntry {
-            entry: 0
-        }
+        PageTableEntry { entry: 0 }
     }
 
     pub fn physical_address(&self) -> usize {
@@ -40,7 +38,7 @@ impl PageTableEntry {
 
     pub fn set_physical_address(&mut self, addr: usize) {
         let aligned = (addr & PAGE_MASK) as u64;
-        self.entry = aligned | (self.entry & 0xFFF); 
+        self.entry = aligned | (self.entry & 0xFFF);
     }
 
     pub fn present(&self) -> bool {
@@ -58,7 +56,7 @@ impl PageTableEntry {
 
 #[repr(transparent)]
 pub struct PageTable {
-    entries: [PageTableEntry; 512]
+    entries: [PageTableEntry; 512],
 }
 
 impl PageTable {
@@ -79,37 +77,27 @@ impl PageTable {
 
     /// Get a reference to the recursively-mapped PML4T.
     pub fn get_pml4t() -> &'static mut PageTable {
-        unsafe {
-            mem::transmute(PML4T_RECURSIVE_BASE)
-        }
+        unsafe { mem::transmute(PML4T_RECURSIVE_BASE) }
     }
 
     /// Get a reference to a recursively-mapped PD Pointer Table.
     pub fn get_pdp(pdp_idx: usize) -> &'static mut PageTable {
-        unsafe {
-            mem::transmute(PDPT_RECURSIVE_BASE + (0x1000 * pdp_idx))
-        }
+        unsafe { mem::transmute(PDPT_RECURSIVE_BASE + (0x1000 * pdp_idx)) }
     }
 
     /// Get a reference to a recursively-mapped Page Directory.
     pub fn get_pd(pdp_idx: usize, pd_idx: usize) -> &'static mut PageTable {
-        unsafe {
-            mem::transmute(
-                PD_RECURSIVE_BASE +
-                (0x20_0000 * pdp_idx) +
-                (0x1000 * pd_idx)
-            )
-        }
+        unsafe { mem::transmute(PD_RECURSIVE_BASE + (0x20_0000 * pdp_idx) + (0x1000 * pd_idx)) }
     }
 
     /// Get a reference to a recursively-mapped Page Table
     pub fn get_pt(pdp_idx: usize, pd_idx: usize, pt_idx: usize) -> &'static mut PageTable {
         unsafe {
             mem::transmute(
-                PT_RECURSIVE_BASE + 
-                (0x4000_0000 * pdp_idx) + 
-                (0x20_0000 * pd_idx) + 
-                (0x1000 * pt_idx)
+                PT_RECURSIVE_BASE
+                    + (0x4000_0000 * pdp_idx)
+                    + (0x20_0000 * pd_idx)
+                    + (0x1000 * pt_idx),
             )
         }
     }
@@ -126,18 +114,18 @@ impl PageTable {
 impl ops::Index<usize> for PageTable {
     type Output = PageTableEntry;
 
-    fn index (&self, idx: usize) -> &Self::Output {
+    fn index(&self, idx: usize) -> &Self::Output {
         &self.entries[idx]
     }
 }
 
 impl ops::IndexMut<usize> for PageTable {
-    fn index_mut (&mut self, idx: usize) -> &mut Self::Output {
+    fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
         &mut self.entries[idx]
     }
 }
 
-pub fn get_mapping (virt_addr: usize) -> Option<PageTableEntry> {
+pub fn get_mapping(virt_addr: usize) -> Option<PageTableEntry> {
     if (virt_addr & 0xFFF) > 0 {
         return None;
     }
@@ -167,26 +155,24 @@ pub fn get_mapping (virt_addr: usize) -> Option<PageTableEntry> {
 
 pub fn remap_boot_identity_paging() {
     let n_remapped_pdpts = KERNEL_BASE_PML4_IDX - PHYSICAL_MAP_PML4_IDX;
-    let mut pml4t = PageTable::get_pml4t();
+    let pml4t = PageTable::get_pml4t();
 
     /* Remap as many PDPTs pointing to the lower half of the address
      * space into the higher half as we can.
      */
     for i in 0..n_remapped_pdpts {
-        let mut from_ent = pml4t[i];
-        let mut to_ent = pml4t[i + PHYSICAL_MAP_PML4_IDX];
+        let from_ent = pml4t[i];
 
         if from_ent.present() {
-            to_ent.set_physical_address(from_ent.physical_address());
-            to_ent.set_present(true);
-            from_ent.set_present(false);
+            pml4t[i + PHYSICAL_MAP_PML4_IDX] = from_ent;
+            pml4t[i].set_present(false);
         }
     }
 
     tlb::flush_all();
 }
 
-pub fn physical_memory_offset (phys_addr: usize) -> Option<usize> {
+pub fn physical_memory_offset(phys_addr: usize) -> Option<usize> {
     if phys_addr >= MAX_PHYSICAL_MEMORY {
         return None;
     }
@@ -194,10 +180,18 @@ pub fn physical_memory_offset (phys_addr: usize) -> Option<usize> {
     Some(PHYSICAL_MAP_BASE + phys_addr)
 }
 
-pub fn offset_physical_memory_ptr<T>(ptr: *const T) -> Option<*const T> {
+pub fn physical_memory<T>(ptr: *const T) -> Option<*const T> {
     physical_memory_offset(ptr as usize).map(|v| v as *const T)
 }
 
-pub fn offset_physical_memory_ptr_mut<T>(ptr: *mut T) -> Option<*mut T> {
+pub fn physical_address<T, U: Into<usize>>(addr: U) -> Option<*const T> {
+    physical_memory_offset(addr.into()).map(|v| v as *const T)
+}
+
+pub fn physical_memory_mut<T>(ptr: *mut T) -> Option<*mut T> {
     physical_memory_offset(ptr as usize).map(|v| v as *mut T)
+}
+
+pub fn physical_address_mut<T, U: Into<usize>>(addr: U) -> Option<*mut T> {
+    physical_memory_offset(addr.into()).map(|v| v as *mut T)
 }

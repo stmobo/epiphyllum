@@ -1,12 +1,12 @@
-use cstr_core::{CStr, c_char};
+use crate::paging;
 use core::mem;
 use core::slice;
+use cstr_core::{c_char, CStr};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MultibootInfo {
     flags: u32,
-    
     mem_lower: u32,
     mem_upper: u32,
 
@@ -27,7 +27,6 @@ pub struct MultibootInfo {
 
     drives_length: u32,
     drives_addr: u32,
-    
     config_table: u32,
     boot_loader_name: u32,
 
@@ -49,8 +48,8 @@ pub struct MultibootInfo {
     color_info: [u8; 5],
 }
 
-unsafe fn expand_to_ptr<T>(addr: u32) -> *const T {
-    mem::transmute(addr as u64)
+fn expand_to_ptr<T>(addr: u32) -> *const T {
+    paging::physical_address(addr as usize).unwrap()
 }
 
 impl MultibootInfo {
@@ -92,8 +91,8 @@ impl MultibootInfo {
 
         unsafe {
             Some(MemoryInfoIter {
-                buf_end: (self.mmap_addr + self.mmap_length) as usize,
-                ptr: expand_to_ptr(self.mmap_addr)
+                buf_end: expand_to_ptr(self.mmap_addr + self.mmap_length),
+                ptr: expand_to_ptr(self.mmap_addr),
             })
         }
     }
@@ -140,7 +139,7 @@ pub enum MemoryType {
 }
 
 pub struct MemoryInfoIter {
-    buf_end: usize,
+    buf_end: *const MemoryInfo,
     ptr: *const MemoryInfo,
 }
 
@@ -150,7 +149,7 @@ impl Iterator for MemoryInfoIter {
     fn next(&mut self) -> Option<Self::Item> {
         unsafe {
             let cur_ptr: usize = mem::transmute(self.ptr);
-            if cur_ptr >= self.buf_end {
+            if self.ptr >= self.buf_end {
                 return None;
             }
 
@@ -158,7 +157,7 @@ impl Iterator for MemoryInfoIter {
             let sz = (*sz_ptr) as usize;
 
             self.ptr = mem::transmute(cur_ptr + sz + 4);
-            let item_ptr: *const MemoryInfo = mem::transmute(cur_ptr+4);
+            let item_ptr: *const MemoryInfo = mem::transmute(cur_ptr + 4);
 
             Some(*item_ptr)
         }

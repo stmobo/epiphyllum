@@ -11,20 +11,18 @@ extern crate compiler_builtins;
 #[macro_use]
 pub mod print;
 pub mod devices;
+pub mod exception_handler;
 pub mod multiboot;
 pub mod paging;
-pub mod exception_handler;
 
 #[cfg(test)]
 pub mod test_runner;
 
-use core::panic::PanicInfo;
 use core::mem;
+use core::panic::PanicInfo;
 use x86_64::structures::idt::InterruptDescriptorTable;
-use x86_64::instructions::tlb;
 
-use multiboot::{MultibootInfo, MemoryType};
-use paging::PageTable;
+use multiboot::{MemoryType, MultibootInfo};
 
 #[repr(C)]
 pub struct KernelLoaderInfo {
@@ -62,32 +60,34 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
+    paging::remap_boot_identity_paging();
     let mut l = devices::DEFAULT_DISPLAY.lock();
+
+    l.change_base_addr(paging::physical_memory_offset(0xB8000).unwrap());
     l.clear();
     drop(l);
 
     println!("Epiphyllum kernel starting...");
     println!("Boot info structure address: {:#016x}", boot_info as usize);
 
-    paging::remap_boot_identity_paging();
-
-    let boot_info = paging::offset_physical_memory_ptr(boot_info).unwrap();
+    let boot_info = paging::physical_memory(boot_info).unwrap();
     let mb: MultibootInfo;
     let mut idt_phys: &'static mut InterruptDescriptorTable;
 
     unsafe {
-        mb = *(*boot_info).multiboot_info;
+        let mb_addr = (*boot_info).multiboot_info as *const MultibootInfo;
+        mb = *(paging::physical_memory(mb_addr).unwrap());
 
-        let offset_ptr = paging::offset_physical_memory_ptr_mut((*boot_info).idt_phys).unwrap();
+        let offset_ptr = paging::physical_memory_mut((*boot_info).idt_phys).unwrap();
         idt_phys = mem::transmute(offset_ptr);
     }
 
-    println!("IDT at physical address {:#016x}", unsafe { (*boot_info).idt_phys as usize });
+    println!("IDT at physical address {:#016x}", unsafe {
+        (*boot_info).idt_phys as usize
+    });
 
     exception_handler::initialize_idt(&mut idt_phys);
     idt_phys.load();
-
-    //drop(idt_phys);
 
     if let Some(mmap) = mb.get_memory_info() {
         println!("Memory map:");
@@ -110,16 +110,6 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     } else {
         panic!("Loader did not provide a memory map");
     }
-
-    // exception_handler::initialize_idt(&mut idt_phys);
-    unsafe {
-        use core::ptr;
-
-        let mut foo: *const u8 = 0x0000_0000_0000_5000 as *mut u8;
-        let bar = ptr::read_volatile(foo);
-    }
-
-    loop {}
 
     #[cfg(test)]
     test_main();

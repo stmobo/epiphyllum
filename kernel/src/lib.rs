@@ -14,6 +14,7 @@ pub mod devices;
 pub mod exception_handler;
 pub mod multiboot;
 pub mod paging;
+pub mod malloc;
 
 #[cfg(test)]
 pub mod test_runner;
@@ -23,6 +24,7 @@ use core::panic::PanicInfo;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
 use multiboot::{MemoryType, MultibootInfo};
+use malloc::SmallZone;
 
 #[repr(C)]
 pub struct KernelLoaderInfo {
@@ -61,9 +63,8 @@ fn panic(info: &PanicInfo) -> ! {
 
 pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     paging::remap_boot_identity_paging();
-    let mut l = devices::DEFAULT_DISPLAY.lock();
 
-    l.change_base_addr(paging::physical_memory_offset(0xB8000).unwrap());
+    let mut l = devices::DEFAULT_DISPLAY.lock();
     l.clear();
     drop(l);
 
@@ -109,6 +110,16 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         }
     } else {
         panic!("Loader did not provide a memory map");
+    }
+
+    unsafe {
+        let h: *mut SmallZone = malloc::KERNEL_HEAP_BASE as *mut SmallZone;
+        *h = SmallZone::new(0);
+
+        let a1 = (*h).allocate().unwrap();
+        let a2 = (*h).allocate().unwrap();
+
+        println!("a1 = {:#016x}\na2 = {:#016x}", a1, a2);
     }
 
     #[cfg(test)]

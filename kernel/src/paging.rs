@@ -1,7 +1,6 @@
 use core::mem;
 use core::ops;
 use x86_64::instructions::tlb;
-use x86_64::VirtAddr;
 
 pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
 
@@ -12,13 +11,15 @@ const PT_RECURSIVE_BASE: usize = 0xFFFF_FF80_0000_0000;
 
 pub const KERNEL_STACK_BASE: usize = 0xFFFF_FF00_0000_0000;
 pub const KERNEL_BASE: usize = 0xFFFF_C400_0000_0000;
+pub const KERNEL_HEAP_BASE: usize = 0xFFFF_C080_0000_0000;
 pub const PHYSICAL_MAP_BASE: usize = 0xFFFF_8100_0000_0000;
 pub const HIGHER_HALF_START: usize = 0xFFFF_8000_0000_0000;
 
-const MAX_PHYSICAL_MEMORY: usize = KERNEL_BASE - PHYSICAL_MAP_BASE;
+const MAX_PHYSICAL_MEMORY: usize = KERNEL_HEAP_BASE - PHYSICAL_MAP_BASE;
 
 const KERNEL_STACK_PML4_IDX: usize = 0b111_111_110;
 const KERNEL_BASE_PML4_IDX: usize = 0b110_001_000;
+const KERNEL_HEAP_PML4_IDX: usize = 0b110_000_001;
 const PHYSICAL_MAP_PML4_IDX: usize = 0b100_000_010;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -154,7 +155,7 @@ pub fn get_mapping(virt_addr: usize) -> Option<PageTableEntry> {
 }
 
 pub fn remap_boot_identity_paging() {
-    let n_remapped_pdpts = KERNEL_BASE_PML4_IDX - PHYSICAL_MAP_PML4_IDX;
+    let n_remapped_pdpts = KERNEL_HEAP_PML4_IDX - PHYSICAL_MAP_PML4_IDX;
     let pml4t = PageTable::get_pml4t();
 
     /* Remap as many PDPTs pointing to the lower half of the address

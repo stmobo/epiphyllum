@@ -188,10 +188,12 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
         }
     }
 
+    println!("All segments mapped, initializing kernel stack and heap...");
+
     /* Map in a few pages for our higher-half stack. */
     let higher_half_stack_addr = 0xFFFF_FF00_0000_0000;
-    let n_stack_pages = 64; // 64 * 4 KiB = 0.25 MiB
-    let stack_phys = pf_allocator.allocate(32);
+    let n_stack_pages: usize = 64; // 64 * 4 KiB = 0.25 MiB
+    let stack_phys = pf_allocator.allocate(n_stack_pages as u64);
 
     for i in 0..n_stack_pages {
         let paddr = stack_phys + (i * 0x1000);
@@ -200,7 +202,18 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
         paging::map_address(&mut pf_allocator, paddr, vaddr);
     }
 
-    println!("All segments mapped, calling kernel entry point...");
+    /* Map in an initial kernel heap. */
+    let higher_half_heap_base = 0xFFFF_C080_0000_0000;
+    let n_heap_pages = 64;
+    let heap_phys = pf_allocator.allocate(n_heap_pages);
+    for i in 0..n_stack_pages {
+        let paddr = heap_phys + (i * 0x1000);
+        let vaddr = higher_half_heap_base - (i * 0x1000);
+
+        paging::map_address(&mut pf_allocator, paddr, vaddr);
+    }
+
+    println!("Initialization complete, calling kernel entry point...");
 
     let idt_phys: usize = unsafe { mem::transmute(&long_mode_idt) };
     let loader_info = KernelLoaderInfo {

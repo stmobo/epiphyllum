@@ -4,6 +4,8 @@ use core::ptr;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
+use crate::paging;
+
 const SCREEN_WIDTH: u64 = 80;
 const SCREEN_HEIGHT: u64 = 25;
 const DEFAULT_COLOR: Color = Color(0x0F);
@@ -60,7 +62,7 @@ pub struct VGATextMode {
 impl VGATextMode {
     fn new(base_addr: usize) -> VGATextMode {
         let sz: usize = (SCREEN_WIDTH * SCREEN_HEIGHT) as usize;
-        let base = base_addr as *mut VGACharacter;
+        let base: *mut VGACharacter = paging::physical_address_mut(base_addr).unwrap();
 
         VGATextMode {
             buf: unsafe { &mut *ptr::slice_from_raw_parts_mut(base, sz) },
@@ -75,13 +77,6 @@ impl VGATextMode {
         } else {
             Some((x + (y * SCREEN_WIDTH)) as usize)
         }
-    }
-
-    pub fn change_base_addr(&mut self, base_addr: usize) {
-        let sz: usize = (SCREEN_WIDTH * SCREEN_HEIGHT) as usize;
-        let base = base_addr as *mut VGACharacter;
-
-        self.buf = unsafe { &mut *ptr::slice_from_raw_parts_mut(base, sz) };
     }
 
     pub fn get_cell_mut(&mut self, x: u64, y: u64) -> Option<&mut VGACharacter> {

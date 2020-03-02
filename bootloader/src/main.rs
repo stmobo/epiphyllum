@@ -18,7 +18,7 @@ mod elf;
 use core::panic::PanicInfo;
 use core::mem;
 use compiler_builtins::mem::{memset, memcpy};
-use x86_64::structures::idt::{InterruptDescriptorTable, HandlerFunc, HandlerFuncWithErrCode, InterruptStackFrame};
+use x86_64::structures::idt::InterruptDescriptorTable;
 
 use multiboot::{MultibootInfo, ModuleInfo, MemoryInfo, MemoryType};
 use paging::PageFrameAllocator;
@@ -30,6 +30,12 @@ extern "C" {
     static _loader_end: *const u8;
 
     fn higher_half_trampoline(entry_point_addr: usize, stack_addr: usize, boot_info_addr: usize);
+}
+
+#[repr(C)]
+pub struct KernelLoaderInfo {
+    multiboot_info: *const MultibootInfo,
+    idt_phys: *mut InterruptDescriptorTable,
 }
 
 #[no_mangle]
@@ -196,12 +202,20 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
 
     println!("All segments mapped, calling kernel entry point...");
 
+    let idt_phys: usize = unsafe { mem::transmute(&long_mode_idt) };
+    let loader_info = KernelLoaderInfo {
+        multiboot_info: &mb,
+        idt_phys: unsafe { mem::transmute(idt_phys) },
+    };
+
+    println!("IDT at physical address {:#016x}", idt_phys);
+
     /* Let's cross our fingers and hope this works... */
     unsafe {
         higher_half_trampoline(
             kernel_header.entry_point(),
             higher_half_stack_addr,
-            0
+            &loader_info as *const KernelLoaderInfo as usize
         );
     }
 

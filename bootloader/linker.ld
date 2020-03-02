@@ -16,6 +16,8 @@ SECTIONS
 
         *(.boot_gdt)
         *(.boot_idt)
+
+        . = ALIGN(0x1000);
         *(.boot_page_tables)
 
         _stack_end = .;

@@ -9,7 +9,6 @@ SECTIONS
     {
         . = ALIGN(4096);
         _kernel_start = .;
-        _kernel_map_start = _kernel_start - _kernel_base;
 
         _code = .;
         KEEP(*(.text.start))

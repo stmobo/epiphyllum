@@ -16,14 +16,16 @@
             "-nostdlib",
             "-Wl,--nmagic",
             "-Wl,-zmax-page-size=4096",
-            "-mcmodel=kernel"
+            "-mcmodel=large",
+            "-static",
+            "-m64"
         ]
     },
     "panic-strategy": "abort",
     "disable-redzone": true,
     "features": "-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-3dnow,-3dnowa,-avx,-avx2",
-    "relocation-model": "pic",
-    "code-model": "kernel",
+    "relocation-model": "static",
+    "code-model": "large",
     "has-rpath": false,
     "no-compiler-rt": true,
     "no-default-libraries": true,

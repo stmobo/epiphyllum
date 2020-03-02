@@ -105,11 +105,15 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
         panic!("BIOS did not provide a memory map");
     }
 
+    if pf_allocator.n_ranges() == 0 {
+        panic!("Could not find any usable memory ranges");
+    }
+    
     /* Test paging. */
     let test_vaddr: usize = 0x0000_0FFF_0000_0000;
     let test_paddr: usize = pf_allocator.allocate(1);
 
-    paging::map_addr(&mut pf_allocator, test_paddr, test_vaddr);
+    paging::map_address(&mut pf_allocator, test_paddr, test_vaddr);
     unsafe {
         use core::ptr;
 

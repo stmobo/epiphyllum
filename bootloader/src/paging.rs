@@ -6,6 +6,7 @@ use x86_64::VirtAddr;
 extern "C" {
     static _loader_start: *const u8;
     static _loader_end: *const u8;
+    static pml4: *mut PageTable;
 }
 
 fn loader_start_addr() -> usize {
@@ -112,6 +113,10 @@ impl PageFrameAllocator {
         self.n_ranges += 1;
     }
 
+    /// Allocate a contiguous block of physical memory pages.
+    /// 
+    /// Panics if the request cannot be satisfied from any available memory
+    /// ranges.
     pub fn allocate(&mut self, n_pages: u64) -> usize {
         if n_pages == 0 {
             panic!("attempted to allocate 0 pages");
@@ -135,17 +140,27 @@ impl PageFrameAllocator {
 
         panic!("no page frame ranges available to satisfy request for {} frames", n_pages);
     }
+
+    /// Get the number of memory ranges available to this allocator.
+    pub fn n_ranges(&self) -> usize {
+        self.ranges.iter()
+            .filter(|r| r.valid && (r.end_addr - r.cur_alloc_end) >= 0x1000)
+            .count()
+    }
 }
 
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct PageTableEntry {
     entry: u64,
 }
 
 impl PageTableEntry {
-    pub unsafe fn referenced_table(&self) -> &'static mut PageTable {
-        mem::transmute(self.physical_address())
+    pub fn new() -> PageTableEntry {
+        PageTableEntry {
+            entry: 0
+        }
     }
 
     pub fn physical_address(&self) -> usize {
@@ -170,48 +185,43 @@ impl PageTableEntry {
     }
 }
 
+const PML4T_RECURSIVE_BASE: usize = 0xFFFF_FFFF_FFFF_F000;
+const PDPT_RECURSIVE_BASE: usize  = 0xFFFF_FFFF_FFE0_0000;
+const PD_RECURSIVE_BASE: usize    = 0xFFFF_FFFF_C000_0000;
+const PT_RECURSIVE_BASE: usize    = 0xFFFF_FF80_0000_0000;
+
 #[repr(transparent)]
 pub struct PageTable {
     entries: [PageTableEntry; 512]
 }
 
 impl PageTable {
-    pub fn allocate_new(pf_allocator: &mut PageFrameAllocator) -> &'static mut PageTable {
-        let addr = pf_allocator.allocate(1);
-        let table: &'static mut PageTable = unsafe { mem::transmute(addr) };
-
-        for e in table.entries.iter_mut() {
-            e.entry = 0;
-        }
-
-        table
-    }
-
     pub fn map_addr(&mut self, index: usize, phys_addr: usize) {
         self.entries[index].set_physical_address(phys_addr);
         self.entries[index].set_present(true);
-    }
-
-    pub fn map_table(&mut self, index: usize, table: &PageTable) {
-        let addr: usize = unsafe { mem::transmute(table) };
-        self.map_addr(index, addr);
     }
 
     pub fn table_addr(&self) -> usize {
         unsafe { mem::transmute(self) }
     }
 
+    pub fn clear(&mut self) {
+        for e in self.entries.iter_mut() {
+            e.entry = 0;
+        }
+    }
+
     /// Get a reference to the recursively-mapped PML4T.
     pub fn get_pml4t() -> &'static mut PageTable {
         unsafe {
-            mem::transmute(0xFFFF_FFFF_FFFF_F000 as usize)
+            mem::transmute(PML4T_RECURSIVE_BASE)
         }
     }
 
     /// Get a reference to a recursively-mapped PD Pointer Table.
     pub fn get_pdp(pdp_idx: usize) -> &'static mut PageTable {
         unsafe {
-            mem::transmute(0xFFFF_FFFF_FFE0_0000 + (0x1000 * pdp_idx))
+            mem::transmute(PDPT_RECURSIVE_BASE + (0x1000 * pdp_idx))
         }
     }
 
@@ -219,8 +229,8 @@ impl PageTable {
     pub fn get_pd(pdp_idx: usize, pd_idx: usize) -> &'static mut PageTable {
         unsafe {
             mem::transmute(
-                0xFFFF_FFFF_C000_0000 +
-                (0x20_1000 * pdp_idx) +
+                PD_RECURSIVE_BASE +
+                (0x20_0000 * pdp_idx) +
                 (0x1000 * pd_idx)
             )
         }
@@ -230,8 +240,8 @@ impl PageTable {
     pub fn get_pt(pdp_idx: usize, pd_idx: usize, pt_idx: usize) -> &'static mut PageTable {
         unsafe {
             mem::transmute(
-                0xFFFF_FF80_C000_0000 + 
-                (0x4000_1000 * pdp_idx) + 
+                PT_RECURSIVE_BASE + 
+                (0x4000_0000 * pdp_idx) + 
                 (0x20_0000 * pd_idx) + 
                 (0x1000 * pt_idx)
             )
@@ -253,7 +263,10 @@ impl ops::IndexMut<usize> for PageTable {
     }
 }
 
-pub fn map_addr(pf_allocator: &mut PageFrameAllocator, phys_addr: usize, virt_addr: usize) {
+/// Change the mapping for the given virtual address.
+/// 
+/// Allocates memory as needed for page tables, etc.
+pub fn map_address (pf_allocator: &mut PageFrameAllocator, phys_addr: usize, virt_addr: usize) {
     if (phys_addr & 0xFFF) > 0 {
         panic!("attempt to map unaligned physical address {:#016x}", phys_addr);
     }
@@ -268,32 +281,71 @@ pub fn map_addr(pf_allocator: &mut PageFrameAllocator, phys_addr: usize, virt_ad
     let pt_idx: usize = (virt_addr >> 12) & 0x1FF;
 
     let pml4t = PageTable::get_pml4t();
-    
+
     let pdpt;
     if !pml4t[pml4_idx].present() {
         /* Allocate a new PDPT for this vaddr. */
-        pdpt = PageTable::allocate_new(pf_allocator);
-        pml4t.map_table(pml4_idx, &pdpt);
+        let pdpt_phys = pf_allocator.allocate(1);
+        pml4t.map_addr(pml4_idx, pdpt_phys);
+
+        pdpt = PageTable::get_pdp(pml4_idx);
+        pdpt.clear();
     } else {
-        pdpt = unsafe { pml4t[pml4_idx].referenced_table() };
+        pdpt = PageTable::get_pdp(pml4_idx);
     }
 
     let pd;
     if !pdpt[pdp_idx].present() {
-        pd = PageTable::allocate_new(pf_allocator);
-        pdpt.map_table(pdp_idx, &pd);
+        /* Make a new PD: */
+        let pd_phys = pf_allocator.allocate(1);
+        pdpt.map_addr(pdp_idx, pd_phys);
+
+        pd = PageTable::get_pd(pml4_idx, pdp_idx);
+        pd.clear();
     } else {
-        pd = unsafe { pdpt[pdp_idx].referenced_table() };
+        pd = PageTable::get_pd(pml4_idx, pdp_idx);
     }
 
     let pt;
     if !pd[pd_idx].present() {
-        pt = PageTable::allocate_new(pf_allocator);
-        pd.map_table(pd_idx, &pt);
+        /* Make a new PT: */
+        let pt_phys = pf_allocator.allocate(1);
+        pd.map_addr(pd_idx, pt_phys);
+
+        pt = PageTable::get_pt(pml4_idx, pdp_idx, pd_idx);
+        pt.clear();
     } else {
-        pt = unsafe { pd[pd_idx].referenced_table() };
+        pt = PageTable::get_pt(pml4_idx, pdp_idx, pd_idx);
     }
 
     pt.map_addr(pt_idx, phys_addr);
     tlb::flush(VirtAddr::new(virt_addr as u64));
+}
+
+pub fn get_mapping (virt_addr: usize) -> Option<PageTableEntry> {
+    if (virt_addr & 0xFFF) > 0 {
+        return None;
+    }
+
+    let pml4_idx: usize = (virt_addr >> 39) & 0x1FF;
+    let pdp_idx: usize = (virt_addr >> 30) & 0x1FF;
+    let pd_idx: usize = (virt_addr >> 21) & 0x1FF;
+    let pt_idx: usize = (virt_addr >> 12) & 0x1FF;
+
+    let pml4t = PageTable::get_pml4t();
+    if pml4t[pml4_idx].present() {
+        let pdpt = PageTable::get_pdp(pml4_idx);
+
+        if pdpt[pdp_idx].present() {
+            let pd = PageTable::get_pd(pml4_idx, pdp_idx);
+
+            if pd[pd_idx].present() {
+                let pt = PageTable::get_pt(pml4_idx, pdp_idx, pd_idx);
+                
+                return Some(pt[pt_idx]);
+            }
+        }
+    }
+
+    None
 }

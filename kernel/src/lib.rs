@@ -8,16 +8,16 @@
 #![test_runner(crate::test_runner::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-extern crate compiler_builtins;
 extern crate alloc;
+extern crate compiler_builtins;
 
 #[macro_use]
 pub mod print;
 pub mod devices;
 pub mod exception_handler;
+pub mod malloc;
 pub mod multiboot;
 pub mod paging;
-pub mod malloc;
 
 #[cfg(test)]
 pub mod test_runner;
@@ -25,6 +25,7 @@ pub mod test_runner;
 use core::panic::PanicInfo;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
+use malloc::BuddyAllocator;
 use multiboot::{MemoryType, MultibootInfo};
 
 #[repr(C)]
@@ -115,16 +116,16 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     }
 
     unsafe {
-        println!("Initializing kernel heap: {} pages at {:#016x}", (*boot_info).heap_pages, malloc::KERNEL_HEAP_BASE);
+        println!(
+            "Initializing kernel heap: {} pages at {:#016x}",
+            (*boot_info).heap_pages,
+            malloc::KERNEL_HEAP_BASE
+        );
 
         use ::alloc::alloc;
         use ::alloc::alloc::Layout;
-        
-        malloc::initialize_small_heap(
-            malloc::KERNEL_HEAP_BASE, 
-            (*boot_info).heap_pages as usize
-        );
 
+        malloc::initialize_small_heap(malloc::KERNEL_HEAP_BASE, (*boot_info).heap_pages as usize);
         println!("Testing allocations:");
 
         let layout_1 = Layout::from_size_align_unchecked(8, 8);
@@ -134,7 +135,13 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         let a1 = alloc::alloc(layout_1) as usize;
         let a2 = alloc::alloc(layout_2) as usize;
 
-        println!("a1 = {:#016x} (mod 8 = {})\na2 = {:#016x} (mod 64 = {})", a1, a1 % 8, a2, a2 % 64);
+        println!(
+            "a1 = {:#016x} (mod 8 = {})\na2 = {:#016x} (mod 64 = {})",
+            a1,
+            a1 % 8,
+            a2,
+            a2 % 64
+        );
 
         alloc::dealloc(a1 as *mut u8, layout_1);
         let a3 = alloc::alloc(layout_3) as usize;
@@ -143,6 +150,18 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         let a4 = alloc::alloc(layout_1) as usize;
         println!("a4 = {:#016x} (mod 8 = {})", a4, a4 % 8);
         alloc::dealloc(a4 as *mut u8, layout_1);
+
+        let mut buddy = BuddyAllocator::new(0, 0x1000usize << 8).unwrap();
+
+        let p1 = buddy.allocate(0x2000).unwrap();
+        let p2 = buddy.allocate(0x5000).unwrap();
+
+        println!("p1 = {:#08x}", p1);
+        println!("p2 = {:#08x}", p2);
+
+        buddy.deallocate(p1, 0x2000);
+        let p3 = buddy.allocate(0x1000).unwrap();
+        println!("p3 = {:#08x}", p3);
     }
 
     #[cfg(test)]

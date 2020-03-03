@@ -1,7 +1,7 @@
 use crate::paging;
 use core::mem;
 use core::slice;
-use cstr_core::{c_char, CStr};
+use cstr_core::CStr;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -77,9 +77,11 @@ impl MultibootInfo {
             return None;
         }
 
+
+        let ct = self.mods_count as usize;
+        let ptr: *const ModuleInfo = expand_to_ptr(self.mods_addr);
+        
         unsafe {
-            let ct = self.mods_count as usize;
-            let ptr: *const ModuleInfo = expand_to_ptr(self.mods_addr);
             Some(slice::from_raw_parts(ptr, ct))
         }
     }
@@ -89,12 +91,10 @@ impl MultibootInfo {
             return None;
         }
 
-        unsafe {
-            Some(MemoryInfoIter {
-                buf_end: expand_to_ptr(self.mmap_addr + self.mmap_length),
-                ptr: expand_to_ptr(self.mmap_addr),
-            })
-        }
+        Some(MemoryInfoIter {
+            buf_end: expand_to_ptr(self.mmap_addr + self.mmap_length),
+            ptr: expand_to_ptr(self.mmap_addr),
+        })
     }
 }
 
@@ -136,6 +136,7 @@ pub enum MemoryType {
     ACPI = 3,
     MustPreserve = 4,
     Defective = 5,
+    NonExhaustive = 99,
 }
 
 pub struct MemoryInfoIter {

@@ -59,7 +59,7 @@ extern "x86-interrupt" fn device_not_available_error (isf: &mut InterruptStackFr
     panic!("device not available (#NM) at {:#016x}", isf.instruction_pointer.as_u64());
 }
 
-extern "x86-interrupt" fn double_fault_error (isf: &mut InterruptStackFrame, _: u64) -> ! {
+extern "x86-interrupt" fn double_fault_error (_isf: &mut InterruptStackFrame, _: u64) -> ! {
     panic!("double fault (#DF) error");
 }
 
@@ -107,6 +107,6 @@ extern "x86-interrupt" fn security_exception (isf: &mut InterruptStackFrame, _co
     panic!("security exception (#SX) at {:#016x}", isf.instruction_pointer.as_u64());
 }
 
-extern "x86-interrupt" fn unhandled_interrupt (isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn unhandled_interrupt (_isf: &mut InterruptStackFrame) {
     panic!("unhandled interrupt");
 }

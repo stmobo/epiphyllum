@@ -6,7 +6,6 @@ use x86_64::VirtAddr;
 extern "C" {
     static _loader_start: *const u8;
     static _loader_end: *const u8;
-    static pml4: *mut PageTable;
 }
 
 fn loader_start_addr() -> usize {
@@ -194,16 +193,6 @@ pub struct PageTableEntry {
 }
 
 impl PageTableEntry {
-    pub fn new() -> PageTableEntry {
-        PageTableEntry {
-            entry: 0
-        }
-    }
-
-    pub fn physical_address(&self) -> usize {
-        (self.entry & !0xFFF) as usize
-    }
-
     pub fn set_physical_address(&mut self, addr: usize) {
         let aligned = (addr & !0xFFF) as u64;
         self.entry = aligned | (self.entry & 0xFFF); 
@@ -236,10 +225,6 @@ impl PageTable {
     pub fn map_addr(&mut self, index: usize, phys_addr: usize) {
         self.entries[index].set_physical_address(phys_addr);
         self.entries[index].set_present(true);
-    }
-
-    pub fn table_addr(&self) -> usize {
-        unsafe { mem::transmute(self) }
     }
 
     pub fn clear(&mut self) {
@@ -357,32 +342,4 @@ pub fn map_address (pf_allocator: &mut PageFrameAllocator, phys_addr: usize, vir
 
     pt.map_addr(pt_idx, phys_addr);
     tlb::flush(VirtAddr::new(virt_addr as u64));
-}
-
-pub fn get_mapping (virt_addr: usize) -> Option<PageTableEntry> {
-    if (virt_addr & 0xFFF) > 0 {
-        return None;
-    }
-
-    let pml4_idx: usize = (virt_addr >> 39) & 0x1FF;
-    let pdp_idx: usize = (virt_addr >> 30) & 0x1FF;
-    let pd_idx: usize = (virt_addr >> 21) & 0x1FF;
-    let pt_idx: usize = (virt_addr >> 12) & 0x1FF;
-
-    let pml4t = PageTable::get_pml4t();
-    if pml4t[pml4_idx].present() {
-        let pdpt = PageTable::get_pdp(pml4_idx);
-
-        if pdpt[pdp_idx].present() {
-            let pd = PageTable::get_pd(pml4_idx, pdp_idx);
-
-            if pd[pd_idx].present() {
-                let pt = PageTable::get_pt(pml4_idx, pdp_idx, pd_idx);
-
-                return Some(pt[pt_idx]);
-            }
-        }
-    }
-
-    None
 }

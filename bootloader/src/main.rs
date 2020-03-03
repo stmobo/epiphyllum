@@ -20,7 +20,7 @@ use core::mem;
 use compiler_builtins::mem::{memset, memcpy};
 use x86_64::structures::idt::InterruptDescriptorTable;
 
-use multiboot::{MultibootInfo, ModuleInfo, MemoryInfo, MemoryType};
+use multiboot::{MultibootInfo, ModuleInfo, MemoryType};
 use paging::PageFrameAllocator;
 use elf::Elf64Header;
 

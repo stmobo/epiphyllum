@@ -223,14 +223,12 @@ impl SmallZoneAllocator {
         for i in 0..n_pages {
             let p: *mut SmallZone = cur_addr as *mut SmallZone;
 
-            unsafe {
-                *p = SmallZone::new(0);
+            *p = SmallZone::new(0);
 
-                if i < n_pages - 1 {
-                    (*p).next = next_addr as *mut SmallZone;
-                } else {
-                    (*p).next = self.free_list;
-                }
+            if i < n_pages - 1 {
+                (*p).next = next_addr as *mut SmallZone;
+            } else {
+                (*p).next = self.free_list;
             }
 
             cur_addr += 0x1000;
@@ -326,13 +324,13 @@ lazy_static! {
 
 pub struct KernelHeapAllocator {
     sma_ready: bool,
-    vm_alloc_ready: bool,
+    // vm_alloc_ready: bool,
 }
 
 #[global_allocator]
 static mut KERNEL_ALLOCATOR: KernelHeapAllocator = KernelHeapAllocator {
     sma_ready: false,
-    vm_alloc_ready: false
+    // vm_alloc_ready: false
 };
 
 impl KernelHeapAllocator {

@@ -1,4 +1,4 @@
-use cstr_core::{CStr, c_char};
+use cstr_core::CStr;
 use core::mem;
 use core::slice;
 
@@ -137,6 +137,7 @@ pub enum MemoryType {
     ACPI = 3,
     MustPreserve = 4,
     Defective = 5,
+    NonExhaustive = 99,
 }
 
 pub struct MemoryInfoIter {

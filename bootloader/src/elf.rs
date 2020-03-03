@@ -38,7 +38,7 @@ pub struct Elf64Header {
 
 impl Elf64Header {
     pub fn is_valid(&self) -> bool {
-        (self.ident.magic0 == 0x7F && self.ident.magic1 == b'E' && self.ident.magic2 == b'L' && self.ident.magic3 == b'F')
+        self.ident.magic0 == 0x7F && self.ident.magic1 == b'E' && self.ident.magic2 == b'L' && self.ident.magic3 == b'F'
     }
 
     pub fn entry_point(&self) -> usize {

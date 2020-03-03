@@ -77,22 +77,6 @@ impl VGATextMode {
         }
     }
 
-    pub fn get_cell_mut(&mut self, x: u64, y: u64) -> Option<&mut VGACharacter> {
-        if let Some(offset) = VGATextMode::offset(x, y) {
-            Some(&mut self.buf[offset])
-        } else {
-            None
-        }
-    }
-
-    pub fn get_cell(&self, x: u64, y: u64) -> Option<&VGACharacter> {
-        if let Some(offset) = VGATextMode::offset(x, y) {
-            Some(&self.buf[offset])
-        } else {
-            None
-        }
-    }
-
     /// Put a character on-screen with a specified color.
     pub fn put_char_color (&mut self, x: u64, y: u64, glyph: u8, color: Color) {
         if let Some(offset) = VGATextMode::offset(x, y) {
@@ -160,15 +144,6 @@ impl VGATextMode {
                 _ => self.write_char(0xFE)
             };
         }
-    }
-
-    pub fn set_pos(&mut self, x: u64, y: u64) {
-        if x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT {
-            return;
-        }
-
-        self.cur_x = x;
-        self.cur_y = y;
     }
 
     pub fn clear(&mut self) {

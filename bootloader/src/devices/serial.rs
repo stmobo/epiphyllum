@@ -16,9 +16,7 @@ pub unsafe fn force_unlock() {
 pub struct SerialPort {
     off0: Port<u8>,
     off1: Port<u8>,
-    interrupt_id: Port<u8>,
     line_control: Port<u8>,
-    line_status: Port<u8>,
 }
 
 impl SerialPort {
@@ -26,9 +24,7 @@ impl SerialPort {
         let mut ser = SerialPort {
             off0: Port::new(io_base),
             off1: Port::new(io_base+1),
-            interrupt_id: Port::new(io_base + 2),
             line_control: Port::new(io_base + 3),
-            line_status: Port::new(io_base + 5)
         };
 
         unsafe {

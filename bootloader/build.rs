@@ -1,6 +1,3 @@
-use std::env;
-use std::path::Path;
-
 fn main() {
     println!("cargo:rerun-if-changed=src/asm/protected_mode.S");
     println!("cargo:rerun-if-changed=src/asm/long_mode.S");

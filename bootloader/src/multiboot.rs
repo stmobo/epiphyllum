@@ -1,5 +1,4 @@
 use cstr_core::CStr;
-use core::mem;
 use core::slice;
 
 #[derive(Debug, Clone, Copy)]
@@ -49,8 +48,8 @@ pub struct MultibootInfo {
     color_info: [u8; 5],
 }
 
-unsafe fn expand_to_ptr<T>(addr: u32) -> *const T {
-    mem::transmute(addr as u64)
+fn expand_to_ptr<T>(addr: u32) -> *const T {
+    (addr as usize) as *const T
 }
 
 impl MultibootInfo {
@@ -90,12 +89,10 @@ impl MultibootInfo {
             return None;
         }
 
-        unsafe {
-            Some(MemoryInfoIter {
-                buf_end: (self.mmap_addr + self.mmap_length) as usize,
-                ptr: expand_to_ptr(self.mmap_addr)
-            })
-        }
+        Some(MemoryInfoIter {
+            buf_end: (self.mmap_addr + self.mmap_length) as *const MemoryInfo,
+            ptr: expand_to_ptr(self.mmap_addr)
+        })
     }
 }
 
@@ -141,7 +138,7 @@ pub enum MemoryType {
 }
 
 pub struct MemoryInfoIter {
-    buf_end: usize,
+    buf_end: *const MemoryInfo,
     ptr: *const MemoryInfo,
 }
 
@@ -150,17 +147,17 @@ impl Iterator for MemoryInfoIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         unsafe {
-            let cur_ptr: usize = mem::transmute(self.ptr);
-            if cur_ptr >= self.buf_end {
+            if self.ptr >= self.buf_end {
                 return None;
             }
 
-            let sz_ptr: *const u32 = mem::transmute(self.ptr);
+            let sz_ptr: *const u32 = self.ptr as *const u32;
             let sz = (*sz_ptr) as usize;
 
-            self.ptr = mem::transmute(cur_ptr + sz + 4);
-            let item_ptr: *const MemoryInfo = mem::transmute(cur_ptr+4);
+            let cur_ptr = (self.ptr as usize) + 4;
 
+            self.ptr = (cur_ptr + sz) as *const MemoryInfo;
+            let item_ptr = cur_ptr as *const MemoryInfo;
             Some(*item_ptr)
         }
     }

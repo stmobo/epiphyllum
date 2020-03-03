@@ -16,7 +16,6 @@ mod paging;
 mod elf;
 
 use core::panic::PanicInfo;
-use core::mem;
 use compiler_builtins::mem::{memset, memcpy};
 use x86_64::structures::idt::InterruptDescriptorTable;
 
@@ -25,9 +24,9 @@ use paging::PageFrameAllocator;
 use elf::Elf64Header;
 
 extern "C" {
-    static long_mode_idt: *mut InterruptDescriptorTable;
-    static _loader_start: *const u8;
-    static _loader_end: *const u8;
+    static mut long_mode_idt: InterruptDescriptorTable;
+    static _loader_start: u8;
+    static _loader_end: u8;
 
     fn higher_half_trampoline(entry_point_addr: usize, stack_addr: usize, boot_info_addr: usize);
 }
@@ -55,20 +54,20 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
      */
     let idt: &'static mut InterruptDescriptorTable;
     unsafe {
-        *long_mode_idt = InterruptDescriptorTable::new();
-        idt = mem::transmute(long_mode_idt);
+        long_mode_idt = InterruptDescriptorTable::new();
+        idt = &mut long_mode_idt;
     }
 
     exception_handler::initialize_idt(idt);
     idt.load();
 
     unsafe {
-        let loader_start: usize = mem::transmute(&_loader_start);
-        let loader_end: usize = mem::transmute(&_loader_end);
+        let loader_start: usize = (&_loader_start as *const u8) as usize;
+        let loader_end: usize = (&_loader_end as *const u8) as usize;
         println!("Bootloader at memory range {:#x} - {:#x}", loader_start, loader_end);
     }
 
-    let f: usize = unsafe { mem::transmute(multiboot_struct) };
+    let f: usize = multiboot_struct as usize;
     println!("Multiboot structure located at {:#016X}", f);
     println!("Kernel command line: {}", mb.get_command_line().unwrap_or(""));
 
@@ -133,7 +132,8 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
         }
     }).expect("Could not find kernel module");
 
-    let kernel_header: &'static Elf64Header = unsafe { mem::transmute(kernel_mod.mod_start as usize) };
+    let kheader_ptr = (kernel_mod.mod_start as usize) as *const Elf64Header;
+    let kernel_header: &'static Elf64Header = unsafe { &*kheader_ptr };
     if !kernel_header.is_valid() {
         panic!("kernel ELF header not valid");
     }
@@ -177,13 +177,13 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
 
         unsafe {
             /* Zero out the segment pages first. */
-            let p: *mut u8 = mem::transmute(to_base);
+            let p = to_base as *mut u8;
             memset(p, 0, total_pages * 0x1000);
 
             /* Now copy over the kernel bytes starting from the specified segment offset in memory. */
             let from_addr = (kernel_mod.mod_start as u64) + ph.p_offset;
-            let from_ptr: *const u8 = mem::transmute(from_addr as usize);
-            let to_ptr: *mut u8 = mem::transmute(ph.p_vaddr as usize);
+            let from_ptr = (from_addr as usize) as *const u8;
+            let to_ptr = (ph.p_vaddr as usize) as *mut u8;
 
             memcpy(to_ptr, from_ptr, ph.p_filesz as usize);
         }
@@ -216,10 +216,10 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
 
     println!("Initialization complete, calling kernel entry point...");
 
-    let idt_phys: usize = unsafe { mem::transmute(&long_mode_idt) };
+    let idt_phys: usize = unsafe { (&long_mode_idt as *const InterruptDescriptorTable) as usize };
     let loader_info = KernelLoaderInfo {
         multiboot_info: &mb,
-        idt_phys: unsafe { mem::transmute(idt_phys) },
+        idt_phys: unsafe { &mut long_mode_idt as *mut InterruptDescriptorTable },
         heap_pages: n_heap_pages
     };
 

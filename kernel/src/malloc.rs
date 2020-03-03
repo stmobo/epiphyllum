@@ -56,7 +56,7 @@ impl SmallZone {
     }
 
     fn self_addr(&self) -> usize {
-        unsafe { mem::transmute(self) }
+        (self as *const SmallZone) as usize
     }
 
     /// Get the size of an allocation block for this zone, in bytes.

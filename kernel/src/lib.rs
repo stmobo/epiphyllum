@@ -22,7 +22,6 @@ pub mod malloc;
 #[cfg(test)]
 pub mod test_runner;
 
-use core::mem;
 use core::panic::PanicInfo;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
@@ -83,7 +82,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         mb = *(paging::physical_memory(mb_addr).unwrap());
 
         let offset_ptr = paging::physical_memory_mut((*boot_info).idt_phys).unwrap();
-        idt_phys = mem::transmute(offset_ptr);
+        idt_phys = &mut *offset_ptr;
     }
 
     println!("IDT at physical address {:#016x}", unsafe {

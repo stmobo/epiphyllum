@@ -1,22 +1,21 @@
-use core::mem;
 use core::ops;
 use x86_64::instructions::tlb;
 use x86_64::VirtAddr;
 
 extern "C" {
-    static _loader_start: *const u8;
-    static _loader_end: *const u8;
+    static _loader_start: u8;
+    static _loader_end: u8;
 }
 
 fn loader_start_addr() -> usize {
     unsafe {
-        mem::transmute(&_loader_start)
+        (&_loader_start as *const u8) as usize
     }
 }
 
 fn loader_end_addr() -> usize {
     unsafe {
-        mem::transmute(&_loader_end)
+        (&_loader_end as *const u8) as usize
     }
 }
 
@@ -236,37 +235,32 @@ impl PageTable {
     /// Get a reference to the recursively-mapped PML4T.
     pub fn get_pml4t() -> &'static mut PageTable {
         unsafe {
-            mem::transmute(PML4T_RECURSIVE_BASE)
+            let pml4t = PML4T_RECURSIVE_BASE as *mut PageTable;
+            &mut *pml4t
         }
     }
 
     /// Get a reference to a recursively-mapped PD Pointer Table.
     pub fn get_pdp(pdp_idx: usize) -> &'static mut PageTable {
         unsafe {
-            mem::transmute(PDPT_RECURSIVE_BASE + (0x1000 * pdp_idx))
+            let pdp_addr = PDPT_RECURSIVE_BASE + (0x1000 * pdp_idx);
+            &mut *(pdp_addr as *mut PageTable)
         }
     }
 
     /// Get a reference to a recursively-mapped Page Directory.
     pub fn get_pd(pdp_idx: usize, pd_idx: usize) -> &'static mut PageTable {
         unsafe {
-            mem::transmute(
-                PD_RECURSIVE_BASE +
-                (0x20_0000 * pdp_idx) +
-                (0x1000 * pd_idx)
-            )
+            let pd_addr = PD_RECURSIVE_BASE + (0x20_0000 * pdp_idx) + (0x1000 * pd_idx);
+            &mut *(pd_addr as *mut PageTable)
         }
     }
 
-    /// Get a reference to a recursively-mapped Page Table
+    /// Get a reference to a recursively-mapped Page Table.
     pub fn get_pt(pdp_idx: usize, pd_idx: usize, pt_idx: usize) -> &'static mut PageTable {
         unsafe {
-            mem::transmute(
-                PT_RECURSIVE_BASE + 
-                (0x4000_0000 * pdp_idx) + 
-                (0x20_0000 * pd_idx) + 
-                (0x1000 * pt_idx)
-            )
+            let pt_addr = PT_RECURSIVE_BASE + (0x4000_0000 * pdp_idx) + (0x20_0000 * pd_idx) + (0x1000 * pt_idx);
+            &mut *(pt_addr as *mut PageTable)
         }
     }
 }

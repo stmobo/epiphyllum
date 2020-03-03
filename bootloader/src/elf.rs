@@ -1,4 +1,3 @@
-use core::mem;
 use core::ptr;
 
 #[derive(Debug, Clone)]
@@ -46,11 +45,11 @@ impl Elf64Header {
     }
 
     pub fn program_header_table(&self) -> &[Elf64Phdr] {
-        let base_addr: usize = unsafe { mem::transmute(self) };
+        let base_addr: usize = (self as *const Elf64Header) as usize;
         let ph_addr = base_addr + (self.ph_off as usize);
 
         unsafe {
-            let ph_ptr: *const Elf64Phdr = mem::transmute(ph_addr);
+            let ph_ptr = ph_addr as *const Elf64Phdr;
             &*ptr::slice_from_raw_parts(ph_ptr, self.ph_num as usize)
         }
     }

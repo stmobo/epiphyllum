@@ -1,4 +1,5 @@
 use alloc::alloc::{GlobalAlloc, Layout};
+use alloc::boxed::Box;
 use core::mem;
 use core::ptr;
 
@@ -327,6 +328,7 @@ unsafe impl Send for SmallZoneAllocator {}
 #[derive(Debug, Clone)]
 pub struct BuddyAllocator {
     mem_addr: usize,
+    region_end: usize,
     ord_0_bitmap: [u64; 4],
     ord_1_bitmap: [u64; 2],
     ord_2_bitmap: u64,
@@ -341,7 +343,7 @@ pub enum BuddyAllocatorError {
 }
 
 impl BuddyAllocator {
-    pub fn new(addr: usize, region_len: usize) -> Result<BuddyAllocator, BuddyAllocatorError> {
+    fn new(addr: usize, region_len: usize) -> Result<BuddyAllocator, BuddyAllocatorError> {
         if region_len < 0x1000 {
             return Err(BuddyAllocatorError::RegionTooSmall);
         } else if region_len > (0x1000 * 1024) {
@@ -355,6 +357,7 @@ impl BuddyAllocator {
 
         let mut allocator = BuddyAllocator {
             mem_addr: addr,
+            region_end: addr + region_len,
             ord_0_bitmap: [0; 4],
             ord_1_bitmap: [0; 2],
             ord_2_bitmap: 0,
@@ -589,6 +592,43 @@ impl BuddyAllocator {
                 let block_idx = self.get_block_for_addr(addr, i);
                 self.free_block(i, block_idx);
                 return;
+            }
+        }
+    }
+}
+
+struct PhysicalMemoryTree {
+    allocator: BuddyAllocator,
+    left: Option<Box<PhysicalMemoryTree>>,
+    right: Option<Box<PhysicalMemoryTree>>,
+}
+
+impl PhysicalMemoryTree {
+    pub fn new(addr: usize, region_len: usize) -> Result<PhysicalMemoryTree, BuddyAllocatorError> {
+        BuddyAllocator::new(addr, region_len).map(|allocator| PhysicalMemoryTree {
+            allocator,
+            left: None,
+            right: None,
+        })
+    }
+
+    pub fn search(&self, addr: usize) -> Option<&PhysicalMemoryTree> {
+        let cur = self;
+        loop {
+            if cur.allocator.mem_addr >= addr && addr <= cur.allocator.region_end {
+                return Some(cur);
+            }
+
+            if addr < cur.allocator.mem_addr {
+                match cur.left {
+                    Some(b) => cur = &*b,
+                    None => return None,
+                };
+            } else {
+                match cur.right {
+                    Some(b) => cur = &*b,
+                    None => return None,
+                };
             }
         }
     }

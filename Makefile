@@ -2,6 +2,7 @@
 
 clean:
 	rm -rf target/
+	xargo clean
 
 bootloader: 
 	cd bootloader && RUST_TARGET_PATH=`pwd` xargo build --target x86_64-bootloader

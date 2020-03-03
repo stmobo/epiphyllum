@@ -19,6 +19,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95e28fa049fda1c330bcf9d723be7663a899c4679724b34c81e9f5a326aab8cd"
 
 [[package]]
+name = "compiler_builtins"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "036b035e9ebcd705affece16319223d19f229e2358be6e3b7b094e57193312e6"
+
+[[package]]
 name = "cstr_core"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -38,6 +44,7 @@ checksum = "c4e1d41c471573612df00397113557693b5bf5909666a8acb253930612b93312"
 name = "epiphyllum"
 version = "0.1.0"
 dependencies = [
+ "compiler_builtins",
  "cstr_core",
  "lazy_static",
  "spin",

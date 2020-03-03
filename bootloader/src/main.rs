@@ -36,6 +36,7 @@ extern "C" {
 pub struct KernelLoaderInfo {
     multiboot_info: *const MultibootInfo,
     idt_phys: *mut InterruptDescriptorTable,
+    heap_pages: u64,
 }
 
 #[no_mangle]
@@ -208,7 +209,7 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
     let heap_phys = pf_allocator.allocate(n_heap_pages);
     for i in 0..n_stack_pages {
         let paddr = heap_phys + (i * 0x1000);
-        let vaddr = higher_half_heap_base - (i * 0x1000);
+        let vaddr = higher_half_heap_base + (i * 0x1000);
 
         paging::map_address(&mut pf_allocator, paddr, vaddr);
     }
@@ -219,6 +220,7 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
     let loader_info = KernelLoaderInfo {
         multiboot_info: &mb,
         idt_phys: unsafe { mem::transmute(idt_phys) },
+        heap_pages: n_heap_pages
     };
 
     println!("IDT at physical address {:#016x}", idt_phys);

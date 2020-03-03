@@ -27,6 +27,10 @@ spin = "*"
 x86_64 = "^0.9"
 cstr_core = "^0.1"
 
+[dependencies.compiler_builtins]
+version = "*"
+features = ["mem"]
+
 [dependencies.lazy_static]
 version = "^1.0"
 features = ["spin_no_std"]

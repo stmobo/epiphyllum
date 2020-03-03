@@ -1,6 +1,12 @@
 use core::mem;
+use core::ptr;
+use alloc::alloc::{GlobalAlloc, Layout};
 
 pub use crate::paging::KERNEL_HEAP_BASE;
+use crate::paging::PAGE_MASK;
+
+use spin::Mutex;
+use lazy_static::lazy_static;
 
 /// Used for allocations of size 8 - 512.
 /// This is designed to fit specifically within 1 page, and should _always_
@@ -21,25 +27,32 @@ pub struct SmallZone {
 }
 
 impl SmallZone {
-    pub fn new(order: u32) -> SmallZone {
+    /// Creates a new SmallZone header.
+    fn new(order: u32) -> SmallZone {
         if order > 6 {
             panic!("invalid order {} for small zone", order);
         }
 
-        let count = 0x1000u32 >> (order + 3);
-        let mut zone = SmallZone {
-            next: 0 as *mut SmallZone,
+        let count = (0x1000u32 >> (order + 3)) - SmallZone::get_reserved_slots(order);
+        SmallZone {
+            next: ptr::null_mut(),
             count,
             order,
             bitmap: [0; 8]
-        };
+        }
+    }
 
-        let ct = zone.get_start_slot() as u32;
-        zone.count -= ct;
+    /// Set up this zone to have a new order.
+    /// 
+    /// Note that this completely wipes whatever prior allocation information
+    /// this zone was storing, so make sure all objects from this zone have
+    /// been freed prior to reinitialization!
+    unsafe fn reinitialize (&mut self, new_order: u32) {
+        let count = (0x1000u32 >> (new_order + 3)) - SmallZone::get_reserved_slots(new_order);
 
-        println!("Initialized SmallZone with order={}, count={}", order, zone.count);
-
-        zone
+        self.order = new_order;
+        self.count = count;
+        self.bitmap = [0; 8];
     }
 
     fn self_addr(&self) -> usize {
@@ -56,8 +69,8 @@ impl SmallZone {
         0x1000usize / self.get_alloc_size()
     }
 
-    fn get_start_slot (&self) -> usize {
-        match self.order {
+    fn get_reserved_slots (order: u32) -> u32 {
+        (match order {
             0 => mem::size_of::<SmallZone>() / 8,
             1 => mem::size_of::<SmallZone>() / 16,
             2 => (mem::size_of::<SmallZone>() / 32) + 1,
@@ -65,21 +78,31 @@ impl SmallZone {
             4 => 1,
             5 => 1,
             6 => 1,
-            _ => panic!("invalid order {} for small zone", self.order)
-        }
+            _ => panic!("invalid order {} for small zone", order)
+        }) as u32
     }
 
-    fn set_bitmap(&mut self, slot_no: usize, state: bool) {
+    fn get_start_slot (&self) -> usize {
+        SmallZone::get_reserved_slots(self.order) as usize
+    }
+
+    fn get_max_count (&self) -> u32 {
+        (0x1000u32 >> (self.order + 3)) - SmallZone::get_reserved_slots(self.order)
+    }
+
+    /// Set whether a given allocation slot is occupied or not.
+    fn set_bitmap(&mut self, slot_no: usize, occupied: bool) {
         let bitmap_idx = slot_no / 64;
         let bit_idx = slot_no % 64;
 
-        if state {
+        if occupied {
             self.bitmap[bitmap_idx] |= 1u64 << bit_idx
         } else {
             self.bitmap[bitmap_idx] &= !(1u64 << bit_idx)
         }
     }
 
+    /// Get whether a given allocation slot is occupied or not.
     fn get_bitmap(&mut self, slot_no: usize) -> bool {
         let bitmap_idx = slot_no / 64;
         let bit_idx = slot_no % 64;
@@ -91,7 +114,6 @@ impl SmallZone {
         let mut t = 1;
         for i in 0..limit {
             if (val & t) == 0 {
-                println!("found index: {}", i);
                 return Some(i);
             }
 
@@ -107,20 +129,16 @@ impl SmallZone {
         let bm0 = self.bitmap[0] >> start_slot;
 
         if n_slots <= 64 {
-            println!("Searching for open slot in first bitmap only, {} slots", n_slots - start_slot);
             if let Some(idx) = SmallZone::find_unset(bm0, n_slots - start_slot) {
                 return Some(idx + start_slot);
             }
         } else {
-            println!("Searching for open slot in first bitmap, {} slots", 64 - start_slot);
             if let Some(idx) = SmallZone::find_unset(bm0, 64 - start_slot) {
                 return Some(idx + start_slot);
             }
 
             let n_bitmaps = n_slots / 64;
             for i in 1..n_bitmaps {
-                println!("Searching for open slot in bitmap {}", i);
-
                 if let Some(idx) = SmallZone::find_unset(self.bitmap[i], 64) {
                     return Some(idx);
                 }
@@ -133,38 +151,256 @@ impl SmallZone {
     fn get_slot_address (&self, slot: usize) -> usize {
         self.self_addr() + (self.get_alloc_size() * slot)
     }
-
-    pub unsafe fn allocate(&mut self) -> Option<usize> {
-        if self.count == 0 {
-            return None;
-        }
-
-        if let Some(slot) = self.find_open_slot() {
-            self.count -= 1;
-            self.set_bitmap(slot, true);
-            Some(self.get_slot_address(slot))
-        } else {
-            self.count = 0;
-            None
-        }
+    
+    fn full (&self) -> bool {
+        self.count == 0
     }
 
-    pub unsafe fn deallocate(&mut self, address: usize) {
+    fn empty (&self) -> bool {
+        self.count == self.get_max_count()
+    }
+
+    unsafe fn allocate(&mut self) -> usize {
+        if cfg!(debug_assertions) && self.count == 0 {
+            panic!("requested allocation from empty zone at {:#016x}", self.self_addr());
+        }
+
+        let slot = self.find_open_slot().unwrap();
+        self.count -= 1;
+        self.set_bitmap(slot, true);
+        self.get_slot_address(slot)
+    }
+
+    unsafe fn deallocate(&mut self, address: usize) {
         let self_addr = self.self_addr();
-        if address <= self_addr || (address - self_addr) >= 0x1000 {
+
+        if cfg!(debug_assertions) && (address <= self_addr || (address - self_addr) >= 0x1000) {
             panic!("requested deallocation of invalid address {:#016x} by {:#016x}", address, self_addr);
         }
 
         let slot = (address - self_addr) / self.get_alloc_size();
-        if !self.get_bitmap(slot) {
+        if cfg!(debug_assertions) && !self.get_bitmap(slot) {
             panic!("possible free of unallocated memory at {:#016x}", address);
         }
 
         self.set_bitmap(slot, false);
         self.count += 1;
 
-        if self.count >= ((self.n_slots() - self.get_start_slot()) as u32) {
+        if cfg!(debug_assertions) && self.count > self.get_max_count() {
             panic!("possible double free in allocator {:#016x} after freeing address {:#016x}", self_addr, address);
         }
     }
+}
+
+/// Memory allocator designed for small objects (8 - 512 bytes).
+#[derive(Debug)]
+pub struct SmallZoneAllocator {
+    heads: [*mut SmallZone; 7],
+    free_list: *mut SmallZone,
+}
+
+impl SmallZoneAllocator {
+    /// Initialize a SmallZoneAllocator at the given virtual memory address range.
+    pub unsafe fn new (init_addr: usize, n_pages: usize) -> SmallZoneAllocator {
+        let mut zone = SmallZoneAllocator {
+            heads: [ptr::null_mut(); 7],
+            free_list: ptr::null_mut()
+        };
+
+        zone.add_free_pages(init_addr, n_pages);
+        zone
+    }
+
+    /// Add pages to the free list for this allocator.
+    /// 
+    //// The caller is responsible for ensuring the given pages are page-aligned
+    /// and valid for heap usage!
+    pub unsafe fn add_free_pages (&mut self, init_addr: usize, n_pages: usize) {
+        /* Initialize all given pages as allocation zones. */
+        let mut cur_addr = init_addr;
+        let mut next_addr = init_addr + 0x1000;
+
+        for i in 0..n_pages {
+            let p: *mut SmallZone = cur_addr as *mut SmallZone;
+
+            unsafe {
+                *p = SmallZone::new(0);
+
+                if i < n_pages - 1 {
+                    (*p).next = next_addr as *mut SmallZone;
+                } else {
+                    (*p).next = self.free_list;
+                }
+            }
+
+            cur_addr += 0x1000;
+            next_addr += 0x1000;
+        }
+
+        self.free_list = init_addr as *mut SmallZone;
+    }
+
+    /// Pop a page off the free list and make it available for allocations
+    /// of the specified order. 
+    unsafe fn init_new_zone_page(&mut self, order: usize) -> *mut SmallZone {
+        let p = self.free_list;
+
+        if p == ptr::null_mut() {
+            panic!("no free pages left for heap allocations");
+        }
+
+        let next = (*p).next;
+        self.free_list = next;
+
+        let prev_head = self.heads[order];
+        self.heads[order] = p;
+        (*p).next = prev_head;
+        (*p).reinitialize(order as u32);
+
+        p
+    }
+
+    unsafe fn release_zone_page (&mut self, zone: *mut SmallZone) {
+        let order = (*zone).order as usize;
+
+        if self.heads[order] == zone {
+            self.heads[order] = (*zone).next;
+        } else {
+            let mut prev_ptr: *mut SmallZone = self.heads[order];
+
+            while (prev_ptr != ptr::null_mut()) && ((*prev_ptr).next != zone) {
+                prev_ptr = (*prev_ptr).next;
+            }
+    
+            if prev_ptr == ptr::null_mut() {
+                panic!("attempted to release zone page not in allocator");
+            }
+
+            (*prev_ptr).next = (*zone).next;
+        }
+
+        (*zone).next = self.free_list;
+        self.free_list = zone;
+    }
+
+    /// Allocate a chunk of memory from this allocator.
+    pub unsafe fn allocate (&mut self, order: usize) -> usize {
+        let mut p = self.heads[order];
+
+        while p != ptr::null_mut() && (*p).full() {
+            p = (*p).next;
+        }
+
+        if p == ptr::null_mut() {
+            /* No free zones found, get a new one. */
+            p = self.init_new_zone_page(order);
+        }
+
+        (*p).allocate()
+    }
+
+    /// Deallocate a chunk of memory from this allocator.
+    /// 
+    /// The usual caveats regarding free() apply!
+    pub unsafe fn deallocate (&mut self, addr: usize) {
+        /* Get the page-aligned zone address. */
+        let zone_addr: usize = addr & PAGE_MASK;
+        let zone: *mut SmallZone = zone_addr as *mut SmallZone;
+
+        (*zone).deallocate(addr);
+        if (*zone).empty() {
+            /* Nothing left in this zone, release it. */
+            self.release_zone_page(zone);
+        }
+    }
+}
+
+unsafe impl Send for SmallZoneAllocator {}
+
+lazy_static! {
+    pub static ref KERNEL_SMA: Mutex<SmallZoneAllocator> = Mutex::new(SmallZoneAllocator {
+        heads: [ptr::null_mut(); 7],
+        free_list: ptr::null_mut()
+    });
+}
+
+pub struct KernelHeapAllocator {
+    sma_ready: bool,
+    vm_alloc_ready: bool,
+}
+
+#[global_allocator]
+static mut KERNEL_ALLOCATOR: KernelHeapAllocator = KernelHeapAllocator {
+    sma_ready: false,
+    vm_alloc_ready: false
+};
+
+impl KernelHeapAllocator {
+    fn get_layout_alloc_size (layout: Layout) -> usize {
+        let mut min_block_sz: usize = layout.align();
+        if layout.size() > layout.align() {
+            min_block_sz = layout.size();
+        }
+
+        if !min_block_sz.is_power_of_two() {
+            min_block_sz.next_power_of_two()
+        } else {
+            min_block_sz
+        }
+    }
+}
+
+unsafe impl GlobalAlloc for KernelHeapAllocator {
+    unsafe fn alloc (&self, layout: Layout) -> *mut u8 {
+        let min_block_sz: usize = KernelHeapAllocator::get_layout_alloc_size(layout);
+        if min_block_sz <= 512 {
+            /* Use small-zone allocator. */
+            if !self.sma_ready {
+                panic!("attempted to allocate memory prior to small-object heap init");
+            }
+
+            let mut order = 6;
+            for i in 0..7 {
+                if min_block_sz == (1usize << (i+3)) {
+                    order = i;
+                    break;
+                }
+            }
+
+            let mut l = KERNEL_SMA.lock();
+            let addr = l.allocate(order);
+            drop(l);
+
+            addr as *mut u8
+        } else {
+            panic!("large object allocation not implemented");
+        }
+    }
+
+    unsafe fn dealloc (&self, ptr: *mut u8, layout: Layout) {
+        let min_block_sz: usize = KernelHeapAllocator::get_layout_alloc_size(layout);
+        if min_block_sz <= 512 {
+            /* Block was from the small-zone allocator. */
+            if !self.sma_ready {
+                panic!("attempted to allocate memory prior to small-object heap init");
+            }
+
+            let mut l = KERNEL_SMA.lock();
+            l.deallocate(ptr as usize);
+        } else {
+            panic!("large object allocation not implemented");
+        }
+    }
+}
+
+pub unsafe fn initialize_small_heap (init_addr: usize, n_pages: usize) {
+    let mut l = KERNEL_SMA.lock();
+    *l = SmallZoneAllocator::new(init_addr, n_pages);
+
+    KERNEL_ALLOCATOR.sma_ready = true;
+}
+
+#[alloc_error_handler]
+pub fn kernel_alloc_failed (layout: core::alloc::Layout) -> ! {
+    panic!("could not satisfy kernel heap allocation request for {} bytes", layout.size());
 }

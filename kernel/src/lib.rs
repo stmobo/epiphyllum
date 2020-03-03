@@ -3,10 +3,13 @@
 #![feature(rustc_private)]
 #![feature(custom_test_frameworks)]
 #![feature(abi_x86_interrupt)]
+#![feature(maybe_uninit_ref)]
+#![feature(alloc_error_handler)]
 #![test_runner(crate::test_runner::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
 extern crate compiler_builtins;
+extern crate alloc;
 
 #[macro_use]
 pub mod print;
@@ -24,12 +27,12 @@ use core::panic::PanicInfo;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
 use multiboot::{MemoryType, MultibootInfo};
-use malloc::SmallZone;
 
 #[repr(C)]
 pub struct KernelLoaderInfo {
     multiboot_info: *const MultibootInfo,
     idt_phys: *mut InterruptDescriptorTable,
+    heap_pages: u64,
 }
 
 #[panic_handler]
@@ -113,13 +116,34 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     }
 
     unsafe {
-        let h: *mut SmallZone = malloc::KERNEL_HEAP_BASE as *mut SmallZone;
-        *h = SmallZone::new(0);
+        println!("Initializing kernel heap: {} pages at {:#016x}", (*boot_info).heap_pages, malloc::KERNEL_HEAP_BASE);
 
-        let a1 = (*h).allocate().unwrap();
-        let a2 = (*h).allocate().unwrap();
+        use ::alloc::alloc;
+        use ::alloc::alloc::Layout;
+        
+        malloc::initialize_small_heap(
+            malloc::KERNEL_HEAP_BASE, 
+            (*boot_info).heap_pages as usize
+        );
 
-        println!("a1 = {:#016x}\na2 = {:#016x}", a1, a2);
+        println!("Testing allocations:");
+
+        let layout_1 = Layout::from_size_align_unchecked(8, 8);
+        let layout_2 = Layout::from_size_align_unchecked(64, 64);
+        let layout_3 = Layout::from_size_align_unchecked(128, 128);
+
+        let a1 = alloc::alloc(layout_1) as usize;
+        let a2 = alloc::alloc(layout_2) as usize;
+
+        println!("a1 = {:#016x} (mod 8 = {})\na2 = {:#016x} (mod 64 = {})", a1, a1 % 8, a2, a2 % 64);
+
+        alloc::dealloc(a1 as *mut u8, layout_1);
+        let a3 = alloc::alloc(layout_3) as usize;
+        println!("a3 = {:#016x} (mod 128 = {})", a3, a3 % 128);
+
+        let a4 = alloc::alloc(layout_1) as usize;
+        println!("a4 = {:#016x} (mod 8 = {})", a4, a4 % 8);
+        alloc::dealloc(a4 as *mut u8, layout_1);
     }
 
     #[cfg(test)]

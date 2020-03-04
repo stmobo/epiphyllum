@@ -878,6 +878,39 @@ impl PhysicalMemoryRange {
         }
     }
 
+    unsafe fn range_mark_sweep_avl_nodes(
+        cur: *mut AVLTree<BuddyAllocator>,
+        range_start: usize,
+        range_end: usize,
+    ) {
+        if cur == ptr::null_mut() {
+            return;
+        }
+
+        let min_addr = (*cur).data.mem_addr;
+        let max_addr = (*cur).data.region_end;
+
+        if range_start <= max_addr && min_addr <= range_end {
+            (*cur).data.mark_range_used(range_start, range_end);
+        }
+
+        if range_start <= min_addr && (*cur).left != ptr::null_mut() {
+            PhysicalMemoryRange::range_mark_sweep_avl_nodes((*cur).left, range_start, range_end);
+        }
+
+        if range_end >= max_addr && (*cur).right != ptr::null_mut() {
+            PhysicalMemoryRange::range_mark_sweep_avl_nodes((*cur).right, range_start, range_end);
+        }
+    }
+
+    pub unsafe fn mark_range_used(&mut self, range_start: usize, range_end: usize) {
+        PhysicalMemoryRange::range_mark_sweep_avl_nodes(
+            self.allocator_tree,
+            range_start,
+            range_end,
+        );
+    }
+
     unsafe fn allocate_search(cur: *mut AVLTree<BuddyAllocator>, order: u64) -> Option<usize> {
         if cur == ptr::null_mut() {
             return None;

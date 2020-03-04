@@ -1,5 +1,5 @@
 use alloc::alloc::{GlobalAlloc, Layout};
-use alloc::boxed::Box;
+use core::cmp::Ordering;
 use core::mem;
 use core::ptr;
 
@@ -494,7 +494,7 @@ impl BuddyAllocator {
             );
         }
 
-        if order < 8 && self.get_block_state(order, index + 1) {
+        if order < 8 && index != 255 && self.get_block_state(order, index + 1) {
             self.set_block_state(order, index + 1, false);
             self.n_blocks[order as usize] -= 1;
             self.free_block(order + 1, index >> 1);
@@ -518,7 +518,7 @@ impl BuddyAllocator {
         match order {
             0 => (self.ord_0_bitmap[index / 64] & (1u64 << (index % 64))) != 0,
             1 => (self.ord_1_bitmap[index / 64] & (1u64 << (index % 64))) != 0,
-            2 => (self.ord_2_bitmap ^ (1u64 << index % 64)) != 0,
+            2 => (self.ord_2_bitmap & (1u64 << index % 64)) != 0,
             3..=8 => {
                 let t = 1u64 << (8 - order);
                 let bit = (t - 1) + ((index as u64) % t);
@@ -564,72 +564,366 @@ impl BuddyAllocator {
         }
     }
 
-    pub unsafe fn allocate(&mut self, size: usize) -> Option<usize> {
-        if size > (0x1000usize << 8) {
+    fn round_allocation_size(size: usize) -> u64 {
+        for i in 0..9 {
+            if (0x1000usize << i) >= size {
+                return i;
+            }
+        }
+
+        9
+    }
+
+    pub unsafe fn allocate(&mut self, order: u64) -> Option<usize> {
+        if order > 8 {
             return None;
         }
 
-        for i in 0..9 {
-            if (0x1000usize << i) >= size {
-                /* Allocate block of this order. */
-                return self
-                    .allocate_block(i)
-                    .map(|idx| self.get_addr_for_block(i, idx));
+        self.allocate_block(order)
+            .map(|idx| self.get_addr_for_block(order, idx))
+    }
+
+    pub unsafe fn deallocate(&mut self, addr: usize, order: u64) {
+        if order > 8 {
+            return;
+        }
+
+        let block_idx = self.get_block_for_addr(addr, order);
+        self.free_block(order, block_idx);
+    }
+
+    pub fn get_range(allocator: &BuddyAllocator) -> (usize, usize) {
+        (allocator.mem_addr, allocator.region_end)
+    }
+}
+
+impl PartialEq for BuddyAllocator {
+    fn eq(&self, other: &BuddyAllocator) -> bool {
+        self.mem_addr == other.mem_addr
+    }
+}
+
+impl PartialOrd for BuddyAllocator {
+    fn partial_cmp(&self, other: &BuddyAllocator) -> Option<Ordering> {
+        Some(self.mem_addr.cmp(&other.mem_addr))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AVLTree<T: PartialOrd> {
+    data: T,
+    parent: *mut AVLTree<T>,
+    left: *mut AVLTree<T>,
+    right: *mut AVLTree<T>,
+    balance: i8,
+}
+
+impl<T: PartialOrd> AVLTree<T> {
+    fn new(data: T, parent: *mut AVLTree<T>) -> AVLTree<T> {
+        AVLTree {
+            data,
+            parent,
+            left: ptr::null_mut(),
+            right: ptr::null_mut(),
+            balance: 0,
+        }
+    }
+
+    fn search<F>(&mut self, key: usize, key_func: F) -> Option<&mut AVLTree<T>>
+    where
+        F: Fn(&T) -> (usize, usize),
+    {
+        let mut cur: *mut AVLTree<T> = self as *mut AVLTree<T>;
+
+        loop {
+            unsafe {
+                let (key_ival_start, key_ival_end) = key_func(&(*cur).data);
+
+                if key >= key_ival_start && key < key_ival_end {
+                    return Some(&mut *cur);
+                }
+
+                if key < key_ival_start {
+                    if (*cur).left != ptr::null_mut() {
+                        cur = (*cur).left;
+                    } else {
+                        return None;
+                    }
+                } else {
+                    if (*cur).right != ptr::null_mut() {
+                        cur = (*cur).right;
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Insert a new node into this tree.
+    ///
+    /// Returns a tuple consisting of:
+    ///   - a pointer to the new root node, and
+    ///   - a reference to the inserted element.
+    fn insert(&mut self, data: T) -> (*mut AVLTree<T>, &mut AVLTree<T>) {
+        let mut cur: *mut AVLTree<T> = self as *mut AVLTree<T>;
+        let new_node: *mut AVLTree<T>;
+
+        unsafe {
+            use alloc::alloc::alloc;
+            let layout = Layout::new::<AVLTree<T>>();
+            new_node = alloc(layout) as *mut AVLTree<T>;
+            *new_node = AVLTree {
+                data,
+                parent: cur,
+                left: ptr::null_mut(),
+                right: ptr::null_mut(),
+                balance: 0,
+            };
+        }
+
+        loop {
+            unsafe {
+                if (*new_node).data < (*cur).data {
+                    if (*cur).left != ptr::null_mut() {
+                        cur = (*cur).left;
+                    } else {
+                        /* Insert as left subtree. */
+                        (*cur).left = new_node;
+                        break;
+                    }
+                } else {
+                    if (*cur).right != ptr::null_mut() {
+                        cur = (*cur).right;
+                    } else {
+                        (*cur).right = new_node;
+                        break;
+                    }
+                }
+            }
+        }
+
+        unsafe {
+            let new_parent = (*new_node).retrace_insert();
+            (new_parent, &mut *new_node)
+        }
+    }
+
+    unsafe fn right_rotate(&mut self) -> *mut AVLTree<T> {
+        let pivot = self.left;
+
+        if pivot != ptr::null_mut() {
+            self.left = (*pivot).right;
+            (*pivot).right = self as *mut AVLTree<T>;
+
+            let prev_parent = self.parent;
+            if prev_parent != ptr::null_mut() {
+                if (*prev_parent).left == (self as *mut AVLTree<T>) {
+                    (*prev_parent).left = pivot;
+                } else {
+                    (*prev_parent).right = pivot;
+                }
+            }
+
+            (*pivot).parent = prev_parent;
+            self.parent = pivot;
+        }
+
+        pivot
+    }
+
+    unsafe fn left_rotate(&mut self) -> *mut AVLTree<T> {
+        let pivot = self.right;
+
+        if pivot != ptr::null_mut() {
+            self.right = (*pivot).left;
+            (*pivot).left = self as *mut AVLTree<T>;
+
+            let prev_parent = self.parent;
+            if prev_parent != ptr::null_mut() {
+                if (*prev_parent).left == (self as *mut AVLTree<T>) {
+                    (*prev_parent).left = pivot;
+                } else {
+                    (*prev_parent).right = pivot;
+                }
+            }
+
+            (*pivot).parent = prev_parent;
+            self.parent = pivot;
+        }
+
+        pivot
+    }
+
+    fn recurse_to_root(&mut self) -> *mut AVLTree<T> {
+        if self.parent == ptr::null_mut() {
+            return self as *mut AVLTree<T>;
+        } else {
+            unsafe { (*self.parent).recurse_to_root() }
+        }
+    }
+
+    /// Retracing loop after subtree height increases.
+    ///
+    /// Returns the new overall root of the tree.
+    unsafe fn retrace_insert(&mut self) -> *mut AVLTree<T> {
+        if self.parent == ptr::null_mut() {
+            return self as *mut AVLTree<T>;
+        }
+
+        if (*self.parent).right == (self as *mut AVLTree<T>) {
+            /* We are right-hand child: */
+
+            if (*self.parent).balance > 0 {
+                /* Tree is unbalanced at parent. */
+                if self.balance >= 0 {
+                    /* Right-Right case. */
+                    (*self.parent).left_rotate();
+                } else {
+                    /* Right-Left case. */
+                    let prev_parent = self.parent;
+                    self.right_rotate();
+                    (*prev_parent).left_rotate();
+                }
+            } else {
+                /* Tree is still balanced. */
+                (*self.parent).balance += 1;
+                if (*self.parent).balance == 1 {
+                    /* Need to continue retracing. */
+                    return (*self.parent).retrace_insert();
+                }
+
+                /* Otherwise, tree is perfectly balanced-- don't need to do anything further! */
+            }
+        } else {
+            /* We are left-hand child: */
+            if (*self.parent).balance < 0 {
+                if self.balance <= 0 {
+                    /* Left-Left case. */
+                    (*self.parent).right_rotate();
+                } else {
+                    /* Left-Right case. */
+                    let prev_parent = self.parent;
+                    self.left_rotate();
+                    (*prev_parent).right_rotate();
+                }
+            } else {
+                (*self.parent).balance -= 1;
+                if (*self.parent).balance == -1 {
+                    return (*self.parent).retrace_insert();
+                }
+            }
+        }
+
+        self.recurse_to_root()
+    }
+}
+
+#[derive(Debug)]
+pub struct PhysicalMemoryRange {
+    range_start: usize,
+    range_end: usize,
+    cur_usage_end: usize,
+    allocator_tree: *mut AVLTree<BuddyAllocator>,
+}
+
+impl PhysicalMemoryRange {
+    pub fn new(addr: usize, len: usize) -> PhysicalMemoryRange {
+        if addr & 0x1000 != 0 {
+            panic!(
+                "attempted to create unaligned physical memory range at {:#016x}",
+                addr
+            );
+        }
+
+        let new_range = PhysicalMemoryRange {
+            range_start: addr,
+            range_end: addr + len,
+            cur_usage_end: addr,
+            allocator_tree: ptr::null_mut(),
+        };
+
+        new_range
+    }
+
+    fn add_new_allocator(&mut self) -> &mut BuddyAllocator {
+        let mut new_allocator_sz = self.range_end - self.cur_usage_end;
+        if new_allocator_sz > (0x1000usize << 8) {
+            new_allocator_sz = 0x1000usize << 8;
+        }
+
+        let new_allocator = BuddyAllocator::new(self.cur_usage_end, new_allocator_sz).unwrap();
+        self.cur_usage_end += new_allocator_sz;
+
+        unsafe {
+            if self.allocator_tree != ptr::null_mut() {
+                let (new_root, new_node) = (*self.allocator_tree).insert(new_allocator);
+                self.allocator_tree = new_root;
+                return &mut new_node.data;
+            } else {
+                use alloc::alloc::alloc;
+
+                let layout = Layout::new::<AVLTree<BuddyAllocator>>();
+                self.allocator_tree = alloc(layout) as *mut AVLTree<BuddyAllocator>;
+                *self.allocator_tree = AVLTree {
+                    data: new_allocator,
+                    parent: ptr::null_mut(),
+                    left: ptr::null_mut(),
+                    right: ptr::null_mut(),
+                    balance: 0,
+                };
+
+                return &mut (*self.allocator_tree).data;
+            }
+        }
+    }
+
+    unsafe fn allocate_search(cur: *mut AVLTree<BuddyAllocator>, order: u64) -> Option<usize> {
+        if cur == ptr::null_mut() {
+            return None;
+        }
+
+        if let Some(addr) = (*cur).data.allocate(order) {
+            return Some(addr);
+        }
+
+        if (*cur).left != ptr::null_mut() {
+            if let Some(addr) = PhysicalMemoryRange::allocate_search((*cur).left, order) {
+                return Some(addr);
+            }
+        }
+
+        PhysicalMemoryRange::allocate_search((*cur).right, order)
+    }
+
+    pub fn allocate(&mut self, size: usize) -> Option<usize> {
+        let order = BuddyAllocator::round_allocation_size(size);
+        unsafe {
+            if let Some(addr) = PhysicalMemoryRange::allocate_search(self.allocator_tree, order) {
+                return Some(addr);
+            }
+
+            if self.range_end - self.cur_usage_end > 0 {
+                let new_allocator = self.add_new_allocator();
+                return new_allocator.allocate(order);
             }
         }
 
         None
     }
 
-    pub unsafe fn deallocate(&mut self, addr: usize, size: usize) {
-        if size > (0x1000usize << 8) {
+    pub unsafe fn deallocate(&self, addr: usize, size: usize) {
+        if self.allocator_tree == ptr::null_mut() {
             return;
         }
 
-        for i in 0..9 {
-            if (0x1000usize << i) >= size {
-                /* Deallocate block of this order. */
-                let block_idx = self.get_block_for_addr(addr, i);
-                self.free_block(i, block_idx);
-                return;
-            }
-        }
-    }
-}
-
-struct PhysicalMemoryTree {
-    allocator: BuddyAllocator,
-    left: Option<Box<PhysicalMemoryTree>>,
-    right: Option<Box<PhysicalMemoryTree>>,
-}
-
-impl PhysicalMemoryTree {
-    pub fn new(addr: usize, region_len: usize) -> Result<PhysicalMemoryTree, BuddyAllocatorError> {
-        BuddyAllocator::new(addr, region_len).map(|allocator| PhysicalMemoryTree {
-            allocator,
-            left: None,
-            right: None,
-        })
-    }
-
-    pub fn search(&self, addr: usize) -> Option<&PhysicalMemoryTree> {
-        let cur = self;
-        loop {
-            if cur.allocator.mem_addr >= addr && addr <= cur.allocator.region_end {
-                return Some(cur);
-            }
-
-            if addr < cur.allocator.mem_addr {
-                match cur.left {
-                    Some(b) => cur = &*b,
-                    None => return None,
-                };
-            } else {
-                match cur.right {
-                    Some(b) => cur = &*b,
-                    None => return None,
-                };
-            }
+        let order = BuddyAllocator::round_allocation_size(size);
+        if let Some(node) = (*self.allocator_tree).search(addr, BuddyAllocator::get_range) {
+            println!(
+                "search: deallocating {:#08x} from zone at {:#08x}",
+                addr, node.data.mem_addr
+            );
+            node.data.deallocate(addr, order);
         }
     }
 }

@@ -223,8 +223,6 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
         heap_pages: n_heap_pages
     };
 
-    println!("IDT at physical address {:#016x}", idt_phys);
-
     /* Let's cross our fingers and hope this works... */
     unsafe {
         higher_half_trampoline(

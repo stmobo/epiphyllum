@@ -25,7 +25,7 @@ pub mod test_runner;
 use core::panic::PanicInfo;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
-use malloc::BuddyAllocator;
+use malloc::PhysicalMemoryRange;
 use multiboot::{MemoryType, MultibootInfo};
 
 #[repr(C)]
@@ -151,17 +151,47 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         println!("a4 = {:#016x} (mod 8 = {})", a4, a4 % 8);
         alloc::dealloc(a4 as *mut u8, layout_1);
 
-        let mut buddy = BuddyAllocator::new(0, 0x1000usize << 8).unwrap();
+        let mut pmem_alloc = PhysicalMemoryRange::new(0x100000, 0x7fe0000 - 0x100000);
 
-        let p1 = buddy.allocate(0x2000).unwrap();
-        let p2 = buddy.allocate(0x5000).unwrap();
+        let p1 = pmem_alloc.allocate(0x2000).unwrap();
+        let p2 = pmem_alloc.allocate(0x5000).unwrap();
 
-        println!("p1 = {:#08x}", p1);
+        println!(
+            "p1 = {:#08x} (allocation in {:#08x} blocks)",
+            p1,
+            0x1000usize << 8
+        );
         println!("p2 = {:#08x}", p2);
 
-        buddy.deallocate(p1, 0x2000);
-        let p3 = buddy.allocate(0x1000).unwrap();
+        pmem_alloc.deallocate(p1, 0x2000);
+        let p3 = pmem_alloc.allocate(0x1000).unwrap();
         println!("p3 = {:#08x}", p3);
+
+        let mut ptrs = [0usize; 256];
+        let mut ptrs_2 = [0usize; 256];
+
+        /* see what happens when we allocate a whole lot of stuff: */
+        for i in 0..256 {
+            ptrs[i] = pmem_alloc.allocate(0x1000).unwrap();
+            ptrs_2[i] = alloc::alloc(layout_2) as usize;
+            println!("ptrs[{}] = {:#08x}", i, ptrs[i]);
+            println!("ptrs_2[{}] = {:#08x}", i, ptrs_2[i]);
+        }
+
+        let p4 = pmem_alloc.allocate(0x10000).unwrap();
+        println!("p4 = {:#08x}", p4);
+
+        /* Then clean it up: */
+        for i in 0..256 {
+            pmem_alloc.deallocate(ptrs[i], 0x1000);
+            alloc::dealloc(ptrs_2[i] as *mut u8, layout_2);
+        }
+
+        let p5 = pmem_alloc.allocate(0x10000).unwrap();
+        println!("p5 = {:#08x}", p5);
+
+        let a5 = alloc::alloc(layout_1) as usize;
+        println!("a5 = {:#016x} (mod 8 = {})", a5, a5 % 8);
     }
 
     #[cfg(test)]

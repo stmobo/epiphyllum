@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::ptr;
 
+use crate::paging;
 use crate::paging::PAGE_MASK;
 
 use lazy_static::lazy_static;
@@ -769,22 +770,84 @@ impl PhysicalMemoryAllocator {
 
 unsafe impl Send for PhysicalMemoryAllocator {}
 
+/// Register a range of physical memory with the allocator.
 pub unsafe fn register_physical_memory(addr: usize, len: usize) {
     let mut l = KERNEL_PHYS_ALLOC.lock();
     l.register_range(addr, len);
 }
 
+/// Allocate a given amount of physical memory in bytes.
+///
+/// The given size must be a multiple of the page size!
 pub unsafe fn allocate_physical_memory(size: usize) -> Option<usize> {
     let mut l = KERNEL_PHYS_ALLOC.lock();
     l.allocate(size)
 }
 
+/// Deallocate a previously-allocated physical memory range.
+///
+/// The size passed to this function must be the same size as
+/// passed to the original allocation call!
 pub unsafe fn deallocate_physical_memory(addr: usize, size: usize) {
     let mut l = KERNEL_PHYS_ALLOC.lock();
     l.deallocate(addr, size);
 }
 
+/// Mark a given region of memory as being reserved for e.g. hardware usage.
 pub unsafe fn mark_physical_memory_used(range_start: usize, range_end: usize) {
     let mut l = KERNEL_PHYS_ALLOC.lock();
     l.mark_range_used(range_start, range_end);
+}
+
+/// Represents an owned, allocated block of physical memory.
+///
+/// This can be used as a safer interface to the physical memory allocator.
+#[derive(Debug)]
+pub struct PhysicalMemory {
+    address: usize,
+    size: usize,
+}
+
+impl PhysicalMemory {
+    pub fn new(size: usize) -> Option<PhysicalMemory> {
+        let alloc_sz;
+        if size & 0xFFF != 0 {
+            alloc_sz = (size & PAGE_MASK) + 0x1000;
+        } else {
+            alloc_sz = size;
+        }
+
+        unsafe {
+            allocate_physical_memory(alloc_sz).map(|address| PhysicalMemory {
+                address,
+                size: alloc_sz,
+            })
+        }
+    }
+
+    pub fn address(&self) -> usize {
+        self.address & PAGE_MASK
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.address() as u64
+    }
+
+    pub fn as_ptr<T>(&self) -> *const T {
+        paging::physical_address(self.address()).unwrap()
+    }
+
+    pub fn as_mut_ptr<T>(&self) -> *mut T {
+        paging::physical_address_mut(self.address()).unwrap()
+    }
+}
+
+impl Drop for PhysicalMemory {
+    fn drop(&mut self) {
+        unsafe { deallocate_physical_memory(self.address(), self.size()) }
+    }
 }

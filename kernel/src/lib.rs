@@ -5,6 +5,7 @@
 #![feature(abi_x86_interrupt)]
 #![feature(maybe_uninit_ref)]
 #![feature(alloc_error_handler)]
+#![feature(const_in_array_repeat_expressions)]
 #![test_runner(crate::test_runner::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -25,6 +26,7 @@ pub mod test_runner;
 use core::panic::PanicInfo;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
+use malloc::PhysicalMemory;
 use multiboot::{MemoryType, MultibootInfo};
 
 #[repr(C)]
@@ -158,55 +160,56 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         println!("a4 = {:#016x} (mod 8 = {})", a4, a4 % 8);
         alloc::dealloc(a4 as *mut u8, layout_1);
 
-        let p1 = malloc::allocate_physical_memory(0x2000).unwrap();
-        let p2 = malloc::allocate_physical_memory(0x5000).unwrap();
+        let p1 = PhysicalMemory::new(0x2000).unwrap();
+        let p2 = PhysicalMemory::new(0x5000).unwrap();
 
         println!(
             "p1 = {:#08x} (allocation in {:#08x} blocks)",
-            p1,
+            p1.address(),
             0x1000usize << 8
         );
-        println!("p2 = {:#08x}", p2);
+        println!("p2 = {:#08x}", p2.address());
 
-        malloc::deallocate_physical_memory(p1, 0x2000);
-        let p3 = malloc::allocate_physical_memory(0x1000).unwrap();
-        println!("p3 = {:#08x}", p3);
+        drop(p1);
 
-        let mut ptrs = [0usize; 512];
+        let p3 = PhysicalMemory::new(0x1000).unwrap();
+        println!("p3 = {:#08x}", p3.address());
+
+        let mut ptrs: [Option<PhysicalMemory>; 512] = [None; 512];
         let mut ptrs_2 = [0usize; 512];
 
         /* see what happens when we allocate a whole lot of stuff: */
         for i in 0..512 {
-            ptrs[i] = malloc::allocate_physical_memory(0x1000).unwrap();
+            ptrs[i] = Some(PhysicalMemory::new(0x1000).unwrap());
             ptrs_2[i] = alloc::alloc(layout_2) as usize;
 
             if i % 64 == 0 {
-                println!("ptrs[{}] = {:#08x}", i, ptrs[i]);
+                println!("ptrs[{}] = {:#08x}", i, ptrs[i].as_ref().unwrap().address());
                 println!("ptrs_2[{}] = {:#08x}", i, ptrs_2[i]);
             }
         }
 
-        let p4 = malloc::allocate_physical_memory(0x10000).unwrap();
-        println!("p4 = {:#08x}", p4);
+        let p4 = PhysicalMemory::new(0x10000).unwrap();
+        println!("p4 = {:#08x}", p4.address());
 
         /* Then clean it up: */
         for i in 0..512 {
-            malloc::deallocate_physical_memory(ptrs[i], 0x1000);
+            drop(ptrs[i].take());
             alloc::dealloc(ptrs_2[i] as *mut u8, layout_2);
         }
 
-        let p5 = malloc::allocate_physical_memory(0x10000).unwrap();
-        println!("p5 = {:#08x}", p5);
+        let p5 = PhysicalMemory::new(0x10000).unwrap();
+        println!("p5 = {:#08x}", p5.address());
 
         let a5 = alloc::alloc(layout_1) as usize;
         println!("a5 = {:#016x} (mod 8 = {})", a5, a5 % 8);
 
         for i in 0..512 {
-            ptrs[i] = malloc::allocate_physical_memory(0x1000).unwrap();
+            ptrs[i] = Some(PhysicalMemory::new(0x1000).unwrap());
             ptrs_2[i] = alloc::alloc(layout_2) as usize;
 
             if i % 64 == 0 {
-                println!("ptrs[{}] = {:#08x}", i, ptrs[i]);
+                println!("ptrs[{}] = {:#08x}", i, ptrs[i].as_ref().unwrap().address());
                 println!("ptrs_2[{}] = {:#08x}", i, ptrs_2[i]);
             }
         }

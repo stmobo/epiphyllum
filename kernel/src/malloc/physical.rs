@@ -394,6 +394,7 @@ impl<T: PartialOrd> AVLTree<T> {
         }
 
         unsafe {
+            (*new_node).parent = cur;
             let new_parent = (*new_node).retrace_insert();
             (new_parent, &mut *new_node)
         }
@@ -460,7 +461,6 @@ impl<T: PartialOrd> AVLTree<T> {
         if self.parent == ptr::null_mut() {
             return self as *mut AVLTree<T>;
         }
-
         if (*self.parent).right == (self as *mut AVLTree<T>) {
             /* We are right-hand child: */
 
@@ -719,13 +719,6 @@ impl PhysicalMemoryRange {
 
         let order = BuddyAllocator::round_allocation_size(size);
         if let Some(node) = (*self.allocator_tree).search(addr, BuddyAllocator::get_range) {
-            /*
-            println!(
-                "search: deallocating {:#08x} from zone at {:#08x}",
-                addr, node.data.mem_addr
-            );
-            */
-
             node.data.deallocate(addr, order);
         }
     }

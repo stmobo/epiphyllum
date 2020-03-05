@@ -175,6 +175,8 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         let p3 = PhysicalMemory::new(0x1000).unwrap();
         println!("p3 = {:#08x}", p3.address());
 
+        loop {}
+
         let mut ptrs: [Option<PhysicalMemory>; 512] = [None; 512];
         let mut ptrs_2 = [0usize; 512];
 

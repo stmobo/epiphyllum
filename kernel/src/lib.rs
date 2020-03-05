@@ -25,7 +25,6 @@ pub mod test_runner;
 use core::panic::PanicInfo;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
-use malloc::{allocate_physical_memory, deallocate_physical_memory, register_physical_memory};
 use multiboot::{MemoryType, MultibootInfo};
 
 #[repr(C)]

@@ -1,4 +1,6 @@
 use alloc::alloc::{GlobalAlloc, Layout};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::mem;
 use core::ptr;
@@ -820,15 +822,32 @@ impl<T: PartialOrd> AVLTree<T> {
 }
 
 #[derive(Debug)]
+pub struct FreeMemoryRange {
+    next: Option<Box<FreeMemoryRange>>,
+    range_start: usize,
+    range_end: usize,
+}
+
+impl FreeMemoryRange {
+    fn new(range_start: usize, range_end: usize) -> FreeMemoryRange {
+        FreeMemoryRange {
+            next: None,
+            range_start,
+            range_end,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct PhysicalMemoryRange {
     range_start: usize,
     range_end: usize,
-    cur_usage_end: usize,
+    free: Option<Box<FreeMemoryRange>>,
     allocator_tree: *mut AVLTree<BuddyAllocator>,
 }
 
 impl PhysicalMemoryRange {
-    pub fn new(addr: usize, len: usize) -> PhysicalMemoryRange {
+    fn new(addr: usize, len: usize) -> PhysicalMemoryRange {
         if addr & 0x1000 != 0 {
             panic!(
                 "attempted to create unaligned physical memory range at {:#016x}",
@@ -839,27 +858,38 @@ impl PhysicalMemoryRange {
         let new_range = PhysicalMemoryRange {
             range_start: addr,
             range_end: addr + len,
-            cur_usage_end: addr,
+            free: Some(Box::new(FreeMemoryRange::new(addr, addr + len))),
             allocator_tree: ptr::null_mut(),
         };
 
         new_range
     }
 
-    fn add_new_allocator(&mut self) -> &mut BuddyAllocator {
-        let mut new_allocator_sz = self.range_end - self.cur_usage_end;
+    fn add_new_allocator(&mut self) -> Option<&mut BuddyAllocator> {
+        if self.free.is_none() {
+            return None;
+        }
+
+        let cur_free_head: &mut FreeMemoryRange = self.free.as_deref_mut().unwrap();
+
+        let mut new_allocator_sz = cur_free_head.range_end - cur_free_head.range_start;
         if new_allocator_sz > (0x1000usize << 8) {
             new_allocator_sz = 0x1000usize << 8;
         }
 
-        let new_allocator = BuddyAllocator::new(self.cur_usage_end, new_allocator_sz).unwrap();
-        self.cur_usage_end += new_allocator_sz;
+        let new_allocator =
+            BuddyAllocator::new(cur_free_head.range_start, new_allocator_sz).unwrap();
+
+        cur_free_head.range_start += new_allocator_sz;
+        if cur_free_head.range_start >= cur_free_head.range_end {
+            self.free = cur_free_head.next.take();
+        }
 
         unsafe {
             if self.allocator_tree != ptr::null_mut() {
                 let (new_root, new_node) = (*self.allocator_tree).insert(new_allocator);
                 self.allocator_tree = new_root;
-                return &mut new_node.data;
+                return Some(&mut new_node.data);
             } else {
                 use alloc::alloc::alloc;
 
@@ -873,7 +903,7 @@ impl PhysicalMemoryRange {
                     balance: 0,
                 };
 
-                return &mut (*self.allocator_tree).data;
+                return Some(&mut (*self.allocator_tree).data);
             }
         }
     }
@@ -904,11 +934,63 @@ impl PhysicalMemoryRange {
     }
 
     pub unsafe fn mark_range_used(&mut self, range_start: usize, range_end: usize) {
+        /* Sweep all intersecting allocators: */
         PhysicalMemoryRange::range_mark_sweep_avl_nodes(
             self.allocator_tree,
             range_start,
             range_end,
         );
+
+        /* Make sure no free areas intersect the range: */
+        if self.free.is_some() {
+            let mut cur: &mut FreeMemoryRange = self.free.as_deref_mut().unwrap();
+            loop {
+                if cur.range_start == range_start && cur.range_end == range_end {
+                    /* Exactly intersecting ranges: delete this range. */
+                    cur.range_start = cur.range_end;
+                } else if range_end > cur.range_start && cur.range_end > range_start {
+                    /* Intersecting ranges: */
+                    if (cur.range_start < range_start) && (cur.range_end > range_end) {
+                        /* Current free area completely contains the forbidden region */
+                        let mut new_free_area: Box<FreeMemoryRange> =
+                            Box::new(FreeMemoryRange::new(range_end, cur.range_end));
+
+                        cur.range_end = range_start;
+                        new_free_area.next = cur.next.take();
+                        cur.next = Some(new_free_area);
+                    } else if cur.range_start < range_start {
+                        cur.range_end = range_start;
+                    } else if cur.range_end > range_end {
+                        cur.range_start = range_end;
+                    }
+                }
+
+                if cur.next.is_some() {
+                    cur = cur.next.as_deref_mut().unwrap();
+                } else {
+                    break;
+                }
+            }
+
+            /* Sweep through the free list _again_, double checking to ensure we didn't leave
+             * any invalid free regions.
+             */
+
+            let mut cur: &mut FreeMemoryRange = self.free.as_deref_mut().unwrap();
+            loop {
+                if cur.next.is_none() {
+                    return;
+                }
+
+                let mut next: Box<FreeMemoryRange> = cur.next.take().unwrap();
+                if next.range_start == next.range_end {
+                    cur.next = next.next.take();
+                } else {
+                    cur.next = Some(next);
+                    cur = cur.next.as_deref_mut().unwrap();
+                }
+            }
+        }
     }
 
     unsafe fn allocate_search(cur: *mut AVLTree<BuddyAllocator>, order: u64) -> Option<usize> {
@@ -934,10 +1016,7 @@ impl PhysicalMemoryRange {
         unsafe {
             if let Some(addr) = PhysicalMemoryRange::allocate_search(self.allocator_tree, order) {
                 return Some(addr);
-            }
-
-            if self.range_end - self.cur_usage_end > 0 {
-                let new_allocator = self.add_new_allocator();
+            } else if let Some(new_allocator) = self.add_new_allocator() {
                 return new_allocator.allocate(order);
             }
         }
@@ -952,13 +1031,70 @@ impl PhysicalMemoryRange {
 
         let order = BuddyAllocator::round_allocation_size(size);
         if let Some(node) = (*self.allocator_tree).search(addr, BuddyAllocator::get_range) {
+            /*
             println!(
                 "search: deallocating {:#08x} from zone at {:#08x}",
                 addr, node.data.mem_addr
             );
+            */
+
             node.data.deallocate(addr, order);
         }
     }
+}
+
+#[derive(Debug)]
+pub struct PhysicalMemoryAllocator {
+    ranges: Vec<PhysicalMemoryRange>,
+}
+
+impl PhysicalMemoryAllocator {
+    pub unsafe fn register_range(&mut self, addr: usize, len: usize) {
+        self.ranges.push(PhysicalMemoryRange::new(addr, len));
+    }
+
+    pub unsafe fn allocate(&mut self, size: usize) -> Option<usize> {
+        for r in self.ranges.iter_mut() {
+            if let Some(addr) = r.allocate(size) {
+                return Some(addr);
+            }
+        }
+
+        None
+    }
+
+    pub unsafe fn deallocate(&mut self, addr: usize, size: usize) {
+        for r in self.ranges.iter_mut() {
+            if addr >= r.range_start && addr <= r.range_end {
+                r.deallocate(addr, size);
+            }
+        }
+    }
+
+    pub unsafe fn mark_range_used(&mut self, range_start: usize, range_end: usize) {
+        for r in self.ranges.iter_mut() {
+            if range_end >= r.range_start && r.range_end >= range_start {
+                r.mark_range_used(range_start, range_end);
+            }
+        }
+    }
+}
+
+unsafe impl Send for PhysicalMemoryAllocator {}
+
+pub unsafe fn register_physical_memory(addr: usize, len: usize) {
+    let mut l = KERNEL_PHYS_ALLOC.lock();
+    l.register_range(addr, len);
+}
+
+pub unsafe fn allocate_physical_memory(size: usize) -> Option<usize> {
+    let mut l = KERNEL_PHYS_ALLOC.lock();
+    l.allocate(size)
+}
+
+pub unsafe fn deallocate_physical_memory(addr: usize, size: usize) {
+    let mut l = KERNEL_PHYS_ALLOC.lock();
+    l.deallocate(addr, size)
 }
 
 lazy_static! {
@@ -966,6 +1102,8 @@ lazy_static! {
         heads: [ptr::null_mut(); 7],
         free_list: ptr::null_mut()
     });
+    pub static ref KERNEL_PHYS_ALLOC: Mutex<PhysicalMemoryAllocator> =
+        Mutex::new(PhysicalMemoryAllocator { ranges: Vec::new() });
 }
 
 pub struct KernelHeapAllocator {

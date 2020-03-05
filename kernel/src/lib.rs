@@ -25,7 +25,7 @@ pub mod test_runner;
 use core::panic::PanicInfo;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
-use malloc::PhysicalMemoryRange;
+use malloc::{allocate_physical_memory, deallocate_physical_memory, register_physical_memory};
 use multiboot::{MemoryType, MultibootInfo};
 
 #[repr(C)]
@@ -93,6 +93,16 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     exception_handler::initialize_idt(&mut idt_phys);
     idt_phys.load();
 
+    unsafe {
+        println!(
+            "Initializing kernel heap: {} pages at {:#016x}",
+            (*boot_info).heap_pages,
+            malloc::KERNEL_HEAP_BASE
+        );
+
+        malloc::initialize_small_heap(malloc::KERNEL_HEAP_BASE, (*boot_info).heap_pages as usize);
+    }
+
     if let Some(mmap) = mb.get_memory_info() {
         println!("Memory map:");
         for m in mmap {
@@ -104,7 +114,13 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
             );
 
             match m.mem_type {
-                MemoryType::Available => println!("Available"),
+                MemoryType::Available => {
+                    println!("Available");
+
+                    unsafe {
+                        malloc::register_physical_memory(m.base_addr as usize, m.length as usize);
+                    }
+                }
                 MemoryType::ACPI => println!("ACPI information"),
                 MemoryType::Defective => println!("Defective"),
                 MemoryType::MustPreserve => println!("System Reserved"),
@@ -116,16 +132,8 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     }
 
     unsafe {
-        println!(
-            "Initializing kernel heap: {} pages at {:#016x}",
-            (*boot_info).heap_pages,
-            malloc::KERNEL_HEAP_BASE
-        );
-
         use ::alloc::alloc;
         use ::alloc::alloc::Layout;
-
-        malloc::initialize_small_heap(malloc::KERNEL_HEAP_BASE, (*boot_info).heap_pages as usize);
         println!("Testing allocations:");
 
         let layout_1 = Layout::from_size_align_unchecked(8, 8);
@@ -151,10 +159,8 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         println!("a4 = {:#016x} (mod 8 = {})", a4, a4 % 8);
         alloc::dealloc(a4 as *mut u8, layout_1);
 
-        let mut pmem_alloc = PhysicalMemoryRange::new(0x100000, 0x7fe0000 - 0x100000);
-
-        let p1 = pmem_alloc.allocate(0x2000).unwrap();
-        let p2 = pmem_alloc.allocate(0x5000).unwrap();
+        let p1 = malloc::allocate_physical_memory(0x2000).unwrap();
+        let p2 = malloc::allocate_physical_memory(0x5000).unwrap();
 
         println!(
             "p1 = {:#08x} (allocation in {:#08x} blocks)",
@@ -163,35 +169,48 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         );
         println!("p2 = {:#08x}", p2);
 
-        pmem_alloc.deallocate(p1, 0x2000);
-        let p3 = pmem_alloc.allocate(0x1000).unwrap();
+        malloc::deallocate_physical_memory(p1, 0x2000);
+        let p3 = malloc::allocate_physical_memory(0x1000).unwrap();
         println!("p3 = {:#08x}", p3);
 
-        let mut ptrs = [0usize; 256];
-        let mut ptrs_2 = [0usize; 256];
+        let mut ptrs = [0usize; 512];
+        let mut ptrs_2 = [0usize; 512];
 
         /* see what happens when we allocate a whole lot of stuff: */
-        for i in 0..256 {
-            ptrs[i] = pmem_alloc.allocate(0x1000).unwrap();
+        for i in 0..512 {
+            ptrs[i] = malloc::allocate_physical_memory(0x1000).unwrap();
             ptrs_2[i] = alloc::alloc(layout_2) as usize;
-            println!("ptrs[{}] = {:#08x}", i, ptrs[i]);
-            println!("ptrs_2[{}] = {:#08x}", i, ptrs_2[i]);
+
+            if i % 64 == 0 {
+                println!("ptrs[{}] = {:#08x}", i, ptrs[i]);
+                println!("ptrs_2[{}] = {:#08x}", i, ptrs_2[i]);
+            }
         }
 
-        let p4 = pmem_alloc.allocate(0x10000).unwrap();
+        let p4 = malloc::allocate_physical_memory(0x10000).unwrap();
         println!("p4 = {:#08x}", p4);
 
         /* Then clean it up: */
-        for i in 0..256 {
-            pmem_alloc.deallocate(ptrs[i], 0x1000);
+        for i in 0..512 {
+            malloc::deallocate_physical_memory(ptrs[i], 0x1000);
             alloc::dealloc(ptrs_2[i] as *mut u8, layout_2);
         }
 
-        let p5 = pmem_alloc.allocate(0x10000).unwrap();
+        let p5 = malloc::allocate_physical_memory(0x10000).unwrap();
         println!("p5 = {:#08x}", p5);
 
         let a5 = alloc::alloc(layout_1) as usize;
         println!("a5 = {:#016x} (mod 8 = {})", a5, a5 % 8);
+
+        for i in 0..512 {
+            ptrs[i] = malloc::allocate_physical_memory(0x1000).unwrap();
+            ptrs_2[i] = alloc::alloc(layout_2) as usize;
+
+            if i % 64 == 0 {
+                println!("ptrs[{}] = {:#08x}", i, ptrs[i]);
+                println!("ptrs_2[{}] = {:#08x}", i, ptrs_2[i]);
+            }
+        }
     }
 
     #[cfg(test)]

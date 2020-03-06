@@ -10,7 +10,6 @@ pub use crate::paging::KERNEL_HEAP_BASE;
 
 pub use physical::allocate_physical_memory;
 pub use physical::deallocate_physical_memory;
-pub use physical::mark_physical_memory_used;
 pub use physical::register_physical_memory;
 pub use physical::PhysicalMemory;
 

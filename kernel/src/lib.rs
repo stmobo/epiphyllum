@@ -9,7 +9,9 @@
 #![test_runner(crate::test_runner::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+#[macro_use]
 extern crate alloc;
+
 extern crate compiler_builtins;
 
 #[macro_use]
@@ -175,14 +177,12 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         let p3 = PhysicalMemory::new(0x1000).unwrap();
         println!("p3 = {:#08x}", p3.address());
 
-        loop {}
-
         let mut ptrs: [Option<PhysicalMemory>; 512] = [None; 512];
         let mut ptrs_2 = [0usize; 512];
 
         /* see what happens when we allocate a whole lot of stuff: */
         for i in 0..512 {
-            ptrs[i] = Some(PhysicalMemory::new(0x1000).unwrap());
+            ptrs[i] = PhysicalMemory::new(0x1000);
             ptrs_2[i] = alloc::alloc(layout_2) as usize;
 
             if i % 64 == 0 {
@@ -207,7 +207,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         println!("a5 = {:#016x} (mod 8 = {})", a5, a5 % 8);
 
         for i in 0..512 {
-            ptrs[i] = Some(PhysicalMemory::new(0x1000).unwrap());
+            ptrs[i] = PhysicalMemory::new(0x1000);
             ptrs_2[i] = alloc::alloc(layout_2) as usize;
 
             if i % 64 == 0 {

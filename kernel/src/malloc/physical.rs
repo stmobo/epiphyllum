@@ -138,6 +138,50 @@ impl BuddyAllocator {
         }
     }
 
+    fn allocate_specific_block(&mut self, order: u64, index: usize) -> bool {
+        if order == 0 || order > 8 {
+            panic!("attempted to allocate block of invalid order {}", order);
+        }
+
+        if index > (1 << (8 - order)) {
+            panic!(
+                "invalid index {} for order {} within buddy allocator",
+                index, order
+            );
+        }
+
+        if !self.get_block_state(order, index) {
+            let mut cur_idx = index;
+
+            /* try to look upwards and see if we can split blocks to make this
+             * one free
+             */
+            for split_ord in (order + 1)..9 {
+                cur_idx >>= 1;
+                if self.get_block_state(split_ord, cur_idx) {
+                    /* Perform the splits */
+                    let n_ords = split_ord - order;
+                    for i in 0..n_ords {
+                        let idx = index >> (n_ords - i);
+                        self.split_block(split_ord - i, idx);
+                    }
+
+                    /* Allocate the requested block */
+                    self.set_block_state(order, index, false);
+                    self.n_blocks[order as usize] -= 1;
+
+                    return true;
+                }
+            }
+        } else {
+            self.set_block_state(order, index, false);
+            self.n_blocks[order as usize] -= 1;
+            return true;
+        }
+
+        false
+    }
+
     fn mark_range_used_recursive(
         &mut self,
         order: u64,
@@ -271,6 +315,19 @@ impl BuddyAllocator {
 
         self.allocate_block(order)
             .map(|idx| self.get_addr_for_block(order, idx))
+    }
+
+    pub unsafe fn allocate_at(&mut self, addr: usize, order: u64) -> Option<usize> {
+        if order > 8 {
+            return None;
+        }
+
+        let block = self.get_block_for_addr(addr, order);
+        if self.allocate_specific_block(order, block) {
+            Some(self.get_addr_for_block(order, block))
+        } else {
+            None
+        }
     }
 
     pub unsafe fn deallocate(&mut self, addr: usize, order: u64) {
@@ -553,6 +610,31 @@ impl PhysicalMemoryRange {
         new_range
     }
 
+    unsafe fn insert_allocator(
+        &mut self,
+        new_allocator: BuddyAllocator,
+    ) -> Option<&mut BuddyAllocator> {
+        if self.allocator_tree != ptr::null_mut() {
+            let (new_root, new_node) = (*self.allocator_tree).insert(new_allocator);
+            self.allocator_tree = new_root;
+            return Some(&mut new_node.data);
+        } else {
+            use alloc::alloc::alloc;
+
+            let layout = Layout::new::<AVLTree<BuddyAllocator>>();
+            self.allocator_tree = alloc(layout) as *mut AVLTree<BuddyAllocator>;
+            *self.allocator_tree = AVLTree {
+                data: new_allocator,
+                parent: ptr::null_mut(),
+                left: ptr::null_mut(),
+                right: ptr::null_mut(),
+                balance: 0,
+            };
+
+            return Some(&mut (*self.allocator_tree).data);
+        }
+    }
+
     fn add_new_allocator(&mut self) -> Option<&mut BuddyAllocator> {
         if self.free.is_none() {
             return None;
@@ -573,27 +655,7 @@ impl PhysicalMemoryRange {
             self.free = cur_free_head.next.take();
         }
 
-        unsafe {
-            if self.allocator_tree != ptr::null_mut() {
-                let (new_root, new_node) = (*self.allocator_tree).insert(new_allocator);
-                self.allocator_tree = new_root;
-                return Some(&mut new_node.data);
-            } else {
-                use alloc::alloc::alloc;
-
-                let layout = Layout::new::<AVLTree<BuddyAllocator>>();
-                self.allocator_tree = alloc(layout) as *mut AVLTree<BuddyAllocator>;
-                *self.allocator_tree = AVLTree {
-                    data: new_allocator,
-                    parent: ptr::null_mut(),
-                    left: ptr::null_mut(),
-                    right: ptr::null_mut(),
-                    balance: 0,
-                };
-
-                return Some(&mut (*self.allocator_tree).data);
-            }
-        }
+        unsafe { self.insert_allocator(new_allocator) }
     }
 
     unsafe fn range_mark_sweep_avl_nodes(
@@ -679,6 +741,86 @@ impl PhysicalMemoryRange {
                 }
             }
         }
+    }
+
+    /// Allocate a specific range of addresses within this PhysicalMemoryRange.
+    pub unsafe fn allocate_at(&mut self, range_start: usize, range_end: usize) -> Option<usize> {
+        use alloc::vec::Vec;
+
+        let order = BuddyAllocator::round_allocation_size(range_end - range_start);
+        /* Sweep through the free list and see if any currently-free areas
+         * intersect the range.
+         * If any do, add new allocators to cover the intersecting areas.
+         */
+
+        /* Yes, we're deliberately breaking the aliasing rules here. */
+        let cur: *mut FreeMemoryRange = &mut *(self.free.as_deref_mut().unwrap());
+        let mut cur: &mut FreeMemoryRange = &mut *cur;
+        loop {
+            if cur.range_start == range_start && cur.range_end == range_end {
+                /* Exactly intersecting ranges: delete this range. */
+                cur.range_start = cur.range_end;
+
+                let new_allocator =
+                    BuddyAllocator::new(range_start, range_end - range_start).unwrap();
+
+                self.insert_allocator(new_allocator);
+                break;
+            } else if cur.range_start < range_start && cur.range_end > range_end {
+                /* Current free area completely contains the forbidden region */
+                let mut new_free_area: Box<FreeMemoryRange> =
+                    Box::new(FreeMemoryRange::new(range_end, cur.range_end));
+
+                cur.range_end = range_start;
+                new_free_area.next = cur.next.take();
+                cur.next = Some(new_free_area);
+
+                let new_allocator =
+                    BuddyAllocator::new(range_start, range_end - range_start).unwrap();
+
+                self.insert_allocator(new_allocator);
+                break;
+            } else if range_end > cur.range_start && cur.range_end > range_start {
+                /* Otherwise intersecting ranges: */
+                if cur.range_start < range_start {
+                    self.insert_allocator(
+                        BuddyAllocator::new(range_start, cur.range_end - range_start).unwrap(),
+                    );
+                    cur.range_end = range_start;
+                } else if cur.range_end > range_end {
+                    self.insert_allocator(
+                        BuddyAllocator::new(cur.range_start, range_end - cur.range_start).unwrap(),
+                    );
+                    cur.range_start = range_end;
+                }
+            }
+
+            if cur.next.is_some() {
+                cur = cur.next.as_deref_mut().unwrap();
+            } else {
+                break;
+            }
+        }
+
+        /* Sweep through the free list _again_, double checking to ensure we didn't leave
+         * any invalid free regions.
+         */
+        let mut cur: &mut FreeMemoryRange = self.free.as_deref_mut().unwrap();
+        loop {
+            if cur.next.is_none() {
+                break;
+            }
+
+            let mut next: Box<FreeMemoryRange> = cur.next.take().unwrap();
+            if next.range_start == next.range_end {
+                cur.next = next.next.take();
+            } else {
+                cur.next = Some(next);
+                cur = cur.next.as_deref_mut().unwrap();
+            }
+        }
+
+        None
     }
 
     unsafe fn allocate_search(cur: *mut AVLTree<BuddyAllocator>, order: u64) -> Option<usize> {

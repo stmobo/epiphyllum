@@ -760,7 +760,7 @@ impl PhysicalMemoryAllocator {
 
     pub unsafe fn allocate_at(&mut self, addr: usize, size: usize) -> Option<usize> {
         for r in self.ranges.iter_mut() {
-            if r.range_start <= addr && r.range_end >= addr {
+            if r.range_start <= addr && r.range_end >= (addr + size) {
                 return r.allocate_at(addr, addr + size);
             }
         }
@@ -854,7 +854,7 @@ impl PhysicalMemory {
         let alloc_end = addr + (0x1000usize << order);
 
         if (addr & BUDDY_ALLOC_ALIGN_MASK) != (alloc_end & BUDDY_ALLOC_ALIGN_MASK) {
-            return None;
+            panic!("physical address allocation request for {:#016x} ({:#08x} bytes) crosses megabyte boundaries", addr, size);
         }
 
         unsafe {

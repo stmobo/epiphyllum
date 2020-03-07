@@ -16,6 +16,7 @@ extern crate compiler_builtins;
 
 #[macro_use]
 pub mod print;
+pub mod avl_tree;
 pub mod devices;
 pub mod exception_handler;
 pub mod malloc;

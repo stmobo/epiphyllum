@@ -2,7 +2,7 @@ use crate::paging;
 use core::slice;
 use cstr_core::CStr;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[repr(C)]
 pub struct MultibootInfo {
     flags: u32,
@@ -76,13 +76,10 @@ impl MultibootInfo {
             return None;
         }
 
-
         let ct = self.mods_count as usize;
         let ptr: *const ModuleInfo = expand_to_ptr(self.mods_addr);
-        
-        unsafe {
-            Some(slice::from_raw_parts(ptr, ct))
-        }
+
+        unsafe { Some(slice::from_raw_parts(ptr, ct)) }
     }
 
     pub fn get_memory_info(&self) -> Option<MemoryInfoIter> {

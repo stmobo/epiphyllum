@@ -141,7 +141,7 @@ impl BuddyAllocator {
     }
 
     fn allocate_specific_block(&mut self, order: u64, index: usize) -> bool {
-        if order == 0 || order > 8 {
+        if order > 8 {
             panic!("attempted to allocate block of invalid order {}", order);
         }
 
@@ -623,11 +623,13 @@ impl PhysicalMemoryRange {
             self.range_start + ((range_start - self.range_start) & BUDDY_ALLOC_ALIGN_MASK);
         let order = BuddyAllocator::round_allocation_size(range_end - range_start);
 
-        if let Some(node) =
-            (*self.allocator_tree).search(allocators_start, BuddyAllocator::get_range)
-        {
-            if node.data.mem_addr <= range_start && node.data.region_end >= range_end {
-                return node.data.allocate_at(range_start, order);
+        if self.allocator_tree != ptr::null_mut() {
+            if let Some(node) =
+                (*self.allocator_tree).search(allocators_start, BuddyAllocator::get_range)
+            {
+                if node.data.mem_addr <= range_start && node.data.region_end >= range_end {
+                    return node.data.allocate_at(range_start, order);
+                }
             }
         }
 

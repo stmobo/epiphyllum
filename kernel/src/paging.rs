@@ -102,7 +102,10 @@ impl PageTable {
     /// Get a reference to a recursively-mapped Page Table.
     pub fn get_pt(pdp_idx: usize, pd_idx: usize, pt_idx: usize) -> &'static mut PageTable {
         unsafe {
-            let pt_addr = PT_RECURSIVE_BASE + (0x4000_0000 * pdp_idx) + (0x20_0000 * pd_idx) + (0x1000 * pt_idx);
+            let pt_addr = PT_RECURSIVE_BASE
+                + (0x4000_0000 * pdp_idx)
+                + (0x20_0000 * pd_idx)
+                + (0x1000 * pt_idx);
             &mut *(pt_addr as *mut PageTable)
         }
     }

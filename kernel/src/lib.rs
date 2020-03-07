@@ -31,6 +31,7 @@ use x86_64::structures::idt::InterruptDescriptorTable;
 use malloc::PhysicalMemory;
 use multiboot::{MemoryType, MultibootInfo};
 
+#[derive(Debug, Clone)]
 #[repr(C)]
 pub struct KernelLoaderInfo {
     multiboot_info: *const MultibootInfo,
@@ -77,21 +78,23 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     println!("Epiphyllum kernel starting...");
     println!("Boot info structure address: {:#016x}", boot_info as usize);
 
-    let boot_info = paging::physical_memory(boot_info).unwrap();
+    let boot_info_ptr = paging::physical_memory(boot_info).unwrap();
+    let boot_info: KernelLoaderInfo = unsafe { (*boot_info_ptr).clone() };
+
     let mb: MultibootInfo;
+    let idt_phys_addr: usize;
     let mut idt_phys: &'static mut InterruptDescriptorTable;
 
     unsafe {
-        let mb_addr = (*boot_info).multiboot_info as *const MultibootInfo;
-        mb = *(paging::physical_memory(mb_addr).unwrap());
+        let mb_addr = boot_info.multiboot_info as *const MultibootInfo;
+        mb = (*(paging::physical_memory(mb_addr).unwrap())).clone();
 
-        let offset_ptr = paging::physical_memory_mut((*boot_info).idt_phys).unwrap();
+        idt_phys_addr = boot_info.idt_phys as usize;
+        let offset_ptr = paging::physical_memory_mut(boot_info.idt_phys).unwrap();
         idt_phys = &mut *offset_ptr;
     }
 
-    println!("IDT at physical address {:#016x}", unsafe {
-        (*boot_info).idt_phys as usize
-    });
+    println!("IDT at physical address {:#016x}", idt_phys_addr);
 
     exception_handler::initialize_idt(&mut idt_phys);
     idt_phys.load();
@@ -99,11 +102,11 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     unsafe {
         println!(
             "Initializing kernel heap: {} pages at {:#016x}",
-            (*boot_info).heap_pages,
+            boot_info.heap_pages,
             malloc::KERNEL_HEAP_BASE
         );
 
-        malloc::initialize_small_heap(malloc::KERNEL_HEAP_BASE, (*boot_info).heap_pages as usize);
+        malloc::initialize_small_heap(malloc::KERNEL_HEAP_BASE, boot_info.heap_pages as usize);
     }
 
     if let Some(mmap) = mb.get_memory_info() {
@@ -133,6 +136,8 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     } else {
         panic!("Loader did not provide a memory map");
     }
+
+    exception_handler::claim_idt_page(idt_phys_addr);
 
     unsafe {
         use ::alloc::alloc;

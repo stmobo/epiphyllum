@@ -131,13 +131,16 @@ impl<T: PartialOrd> AVLTreeNode<T> {
 
         let layout = Layout::new::<AVLTreeNode<T>>();
         let new_node = alloc(layout) as *mut AVLTreeNode<T>;
-        *new_node = AVLTreeNode {
-            data,
-            parent: ptr::null_mut(),
-            left: ptr::null_mut(),
-            right: ptr::null_mut(),
-            balance: 0,
-        };
+        ptr::write(
+            new_node,
+            AVLTreeNode {
+                data,
+                parent: ptr::null_mut(),
+                left: ptr::null_mut(),
+                right: ptr::null_mut(),
+                balance: 0,
+            },
+        );
 
         new_node
     }

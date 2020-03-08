@@ -436,7 +436,7 @@ impl PhysicalMemoryRange {
 
         if let Some(node) = self
             .allocator_tree
-            .search_interval(range_start, BuddyAllocator::get_range)
+            .search_interval_mut(range_start, BuddyAllocator::get_range)
         {
             if node.mem_addr <= range_start && node.region_end >= range_end {
                 let ret = node.allocate_at(range_start, order);
@@ -552,7 +552,7 @@ impl PhysicalMemoryRange {
         let order = BuddyAllocator::round_allocation_size(size);
         if let Some(node) = self
             .allocator_tree
-            .search_interval(addr, BuddyAllocator::get_range)
+            .search_interval_mut(addr, BuddyAllocator::get_range)
         {
             node.deallocate(addr, order);
             (*p).usage_list_sift_up(node.usage_list_idx);

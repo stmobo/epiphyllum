@@ -21,7 +21,7 @@ impl<T: PartialOrd> AVLTree<T> {
 
     unsafe fn find_first_recursive<P, R>(cur: *mut AVLTreeNode<T>, mapper: &P) -> Option<R>
     where
-        P: Fn(&mut T) -> Option<R>,
+        P: Fn(&T) -> Option<R>,
     {
         if cur == ptr::null_mut() {
             return None;
@@ -40,14 +40,45 @@ impl<T: PartialOrd> AVLTree<T> {
         AVLTree::<T>::find_first_recursive((*cur).right, mapper)
     }
 
-    pub fn find_first<P, R>(&mut self, mapper: P) -> Option<R>
+    pub fn find_first<P, R>(&self, mapper: P) -> Option<R>
     where
-        P: Fn(&mut T) -> Option<R>,
+        P: Fn(&T) -> Option<R>,
     {
         unsafe { AVLTree::<T>::find_first_recursive(self.root, &mapper) }
     }
 
-    pub fn search_interval<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
+    /// Get a reference to a value within this tree.
+    ///
+    /// `key_func` must be a function that maps values within this tree
+    /// to non-overlapping intervals; this function will return the value
+    /// whose interval contains `key`, if it exists within the tree.
+    pub fn search_interval<K, F>(&self, key: K, key_func: F) -> Option<&T>
+    where
+        K: PartialOrd,
+        F: Fn(&T) -> (K, K),
+    {
+        if self.root == ptr::null_mut() {
+            return None;
+        }
+
+        unsafe { (*self.root).search_interval(key, key_func).map(|r| &*r) }
+    }
+
+    /// Get a reference to a value within this tree.
+    pub fn search<K, F>(&self, key: K, key_func: F) -> Option<&T>
+    where
+        K: PartialOrd,
+        F: Fn(&T) -> K,
+    {
+        if self.root == ptr::null_mut() {
+            return None;
+        }
+
+        unsafe { (*self.root).search(key, key_func).map(|r| &*r) }
+    }
+
+    /// Look up a value by interval in this tree and get a mutable reference to it.
+    pub fn search_interval_mut<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
     where
         K: PartialOrd,
         F: Fn(&T) -> (K, K),
@@ -59,7 +90,8 @@ impl<T: PartialOrd> AVLTree<T> {
         unsafe { (*self.root).search_interval(key, key_func) }
     }
 
-    pub fn search<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
+    /// Look up a value in this tree and get a mutable reference to it.
+    pub fn search_mut<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
     where
         K: PartialOrd,
         F: Fn(&T) -> K,
@@ -101,6 +133,9 @@ impl<T: PartialOrd> Drop for AVLTree<T> {
         }
     }
 }
+
+unsafe impl<T: PartialOrd> Send for AVLTree<T> {}
+unsafe impl<T: PartialOrd> Sync for AVLTree<T> {}
 
 #[derive(Debug, Clone)]
 pub struct AVLTreeNode<T: PartialOrd> {

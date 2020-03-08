@@ -1,10 +1,10 @@
-use core::ptr;
 use core::fmt;
+use core::ptr;
 
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-const SCREEN_WIDTH: u64  = 80;
+const SCREEN_WIDTH: u64 = 80;
 const SCREEN_HEIGHT: u64 = 25;
 const DEFAULT_COLOR: Color = Color(0x0F);
 
@@ -16,22 +16,22 @@ lazy_static! {
 #[repr(u8)]
 #[allow(dead_code)]
 pub enum Palette {
-    Black        = 0,
-    Blue         = 1,
-    Green        = 2,
-    Cyan         = 3,
-    Red          = 4,
-    Magenta      = 5,
-    Brown        = 6,
-    Gray         = 7,
-    DarkGrey     = 8,
-    LightBlue    = 9,
-    LightGreen   = 10,
-    LightCyan    = 11,
-    LightRed     = 12,
+    Black = 0,
+    Blue = 1,
+    Green = 2,
+    Cyan = 3,
+    Red = 4,
+    Magenta = 5,
+    Brown = 6,
+    Gray = 7,
+    DarkGrey = 8,
+    LightBlue = 9,
+    LightGreen = 10,
+    LightCyan = 11,
+    LightRed = 12,
     LightMagenta = 13,
-    Yellow       = 14,
-    White        = 15,
+    Yellow = 14,
+    White = 15,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -69,7 +69,7 @@ impl VGATextMode {
         }
     }
 
-    fn offset (x: u64, y: u64) -> Option<usize> {
+    fn offset(x: u64, y: u64) -> Option<usize> {
         if x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT {
             None
         } else {
@@ -78,22 +78,19 @@ impl VGATextMode {
     }
 
     /// Put a character on-screen with a specified color.
-    pub fn put_char_color (&mut self, x: u64, y: u64, glyph: u8, color: Color) {
+    pub fn put_char_color(&mut self, x: u64, y: u64, glyph: u8, color: Color) {
         if let Some(offset) = VGATextMode::offset(x, y) {
-            self.buf[offset] = VGACharacter {
-                color,
-                glyph
-            }
+            self.buf[offset] = VGACharacter { color, glyph }
         }
     }
 
     /// Put a character on-screen with a default color.
-    pub fn put_char (&mut self, x: u64, y: u64, glyph: u8) {
+    pub fn put_char(&mut self, x: u64, y: u64, glyph: u8) {
         self.put_char_color(x, y, glyph, DEFAULT_COLOR);
     }
 
     /// Scroll the display upwards.
-    pub fn scroll (&mut self, lines: u64) {
+    pub fn scroll(&mut self, lines: u64) {
         if lines == 0 || lines >= SCREEN_HEIGHT {
             return;
         }
@@ -110,7 +107,7 @@ impl VGATextMode {
         }
     }
 
-    fn newline (&mut self) {
+    fn newline(&mut self) {
         if self.cur_y >= SCREEN_HEIGHT - 1 {
             self.cur_y = SCREEN_HEIGHT - 1;
             self.scroll(1);
@@ -141,7 +138,7 @@ impl VGATextMode {
         for c in s.bytes() {
             match c {
                 (0x20..=0x7E) | b'\n' => self.write_char(c),
-                _ => self.write_char(0xFE)
+                _ => self.write_char(0xFE),
             };
         }
     }
@@ -167,7 +164,7 @@ impl fmt::Write for VGATextMode {
 }
 
 /// Forcibly take the lock for the default VGA display.
-/// 
+///
 /// Note that this is horrifically unsafe.
 pub unsafe fn force_unlock() {
     DEFAULT_DISPLAY.force_unlock();

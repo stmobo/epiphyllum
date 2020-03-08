@@ -1,11 +1,11 @@
-use cstr_core::CStr;
 use core::slice;
+use cstr_core::CStr;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MultibootInfo {
     flags: u32,
-    
+
     mem_lower: u32,
     mem_upper: u32,
 
@@ -26,7 +26,7 @@ pub struct MultibootInfo {
 
     drives_length: u32,
     drives_addr: u32,
-    
+
     config_table: u32,
     boot_loader_name: u32,
 
@@ -91,7 +91,7 @@ impl MultibootInfo {
 
         Some(MemoryInfoIter {
             buf_end: (self.mmap_addr + self.mmap_length) as *const MemoryInfo,
-            ptr: expand_to_ptr(self.mmap_addr)
+            ptr: expand_to_ptr(self.mmap_addr),
         })
     }
 }

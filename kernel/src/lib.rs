@@ -6,6 +6,7 @@
 #![feature(maybe_uninit_ref)]
 #![feature(alloc_error_handler)]
 #![feature(const_in_array_repeat_expressions)]
+#![feature(asm)]
 #![test_runner(crate::test_runner::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -19,6 +20,7 @@ pub mod print;
 pub mod avl_tree;
 pub mod devices;
 pub mod exception_handler;
+pub mod gdt;
 pub mod malloc;
 pub mod multiboot;
 pub mod paging;
@@ -93,10 +95,14 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         idt_phys_addr = boot_info.idt_phys as usize;
         let offset_ptr = paging::physical_memory_mut(boot_info.idt_phys).unwrap();
         idt_phys = &mut *offset_ptr;
+
+        println!(
+            "IDT at physical address {:#016x}, virtual address {:#016x}",
+            idt_phys_addr, offset_ptr as usize
+        );
     }
 
-    println!("IDT at physical address {:#016x}", idt_phys_addr);
-
+    gdt::initialize_gdt();
     exception_handler::initialize_idt(&mut idt_phys);
     idt_phys.load();
 
@@ -139,6 +145,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     }
 
     exception_handler::claim_idt_page(idt_phys_addr);
+    paging::reserve_bootstrap_physical_pages();
 
     unsafe {
         use ::alloc::alloc;

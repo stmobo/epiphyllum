@@ -8,15 +8,11 @@ extern "C" {
 }
 
 fn loader_start_addr() -> usize {
-    unsafe {
-        (&_loader_start as *const u8) as usize
-    }
+    unsafe { (&_loader_start as *const u8) as usize }
 }
 
 fn loader_end_addr() -> usize {
-    unsafe {
-        (&_loader_end as *const u8) as usize
-    }
+    unsafe { (&_loader_end as *const u8) as usize }
 }
 
 pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
@@ -26,7 +22,7 @@ pub struct PageFrameRange {
     start_addr: usize,
     end_addr: usize,
     cur_alloc_end: usize,
-    valid: bool
+    valid: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -42,9 +38,9 @@ impl PageFrameAllocator {
                 start_addr: 0,
                 end_addr: 0,
                 cur_alloc_end: 0,
-                valid: false
+                valid: false,
             }; 16],
-            n_ranges: 0
+            n_ranges: 0,
         }
     }
 
@@ -59,10 +55,13 @@ impl PageFrameAllocator {
             if !pf_range.valid || (pf_range.end_addr - pf_range.start_addr) < 0x1000 {
                 continue;
             }
-            
+
             if (pf_range.end_addr > from_page) && (to_page > pf_range.start_addr) {
                 /* If we have a spare range, add it */
-                if self.n_ranges < 16 && pf_range.start_addr < from_page && pf_range.end_addr > to_page {
+                if self.n_ranges < 16
+                    && pf_range.start_addr < from_page
+                    && pf_range.end_addr > to_page
+                {
                     let old_end_addr = pf_range.end_addr;
                     pf_range.end_addr = from_page;
 
@@ -71,9 +70,9 @@ impl PageFrameAllocator {
                             start_addr: to_page,
                             end_addr: old_end_addr,
                             cur_alloc_end: to_page,
-                            valid: true
+                            valid: true,
                         };
-                
+
                         self.n_ranges += 1;
                     }
                 } else if pf_range.end_addr > to_page {
@@ -106,7 +105,7 @@ impl PageFrameAllocator {
 
         if (to_addr > loader_start_page) && (loader_end_page > from_addr) {
             if from_addr < loader_start_page && to_addr > loader_end_page {
-                /* Create two ranges (if possible): 
+                /* Create two ranges (if possible):
                  * one for [from_addr, loader_start_page], and
                  * one for [loader_end_page, to_addr]
                  */
@@ -142,14 +141,14 @@ impl PageFrameAllocator {
             start_addr: from_addr,
             end_addr: to_addr,
             cur_alloc_end: from_addr,
-            valid: true
+            valid: true,
         };
 
         self.n_ranges += 1;
     }
 
     /// Allocate a contiguous block of physical memory pages.
-    /// 
+    ///
     /// Panics if the request cannot be satisfied from any available memory
     /// ranges.
     pub fn allocate(&mut self, n_pages: u64) -> usize {
@@ -161,29 +160,32 @@ impl PageFrameAllocator {
             if !pf_range.valid || (pf_range.end_addr - pf_range.cur_alloc_end) < 0x1000 {
                 continue;
             }
-            
+
             let alloc_end = pf_range.cur_alloc_end + ((n_pages as usize) * 0x1000);
             if alloc_end > pf_range.end_addr {
                 continue;
             }
-    
+
             let alloc_start = pf_range.cur_alloc_end;
             pf_range.cur_alloc_end = alloc_end;
 
             return alloc_start;
         }
 
-        panic!("no page frame ranges available to satisfy request for {} frames", n_pages);
+        panic!(
+            "no page frame ranges available to satisfy request for {} frames",
+            n_pages
+        );
     }
 
     /// Get the number of memory ranges available to this allocator.
     pub fn n_ranges(&self) -> usize {
-        self.ranges.iter()
+        self.ranges
+            .iter()
             .filter(|r| r.valid && (r.end_addr - r.cur_alloc_end) >= 0x1000)
             .count()
     }
 }
-
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[repr(transparent)]
@@ -194,7 +196,7 @@ pub struct PageTableEntry {
 impl PageTableEntry {
     pub fn set_physical_address(&mut self, addr: usize) {
         let aligned = (addr & !0xFFF) as u64;
-        self.entry = aligned | (self.entry & 0xFFF); 
+        self.entry = aligned | (self.entry & 0xFFF);
     }
 
     pub fn present(&self) -> bool {
@@ -211,13 +213,13 @@ impl PageTableEntry {
 }
 
 const PML4T_RECURSIVE_BASE: usize = 0xFFFF_FFFF_FFFF_F000;
-const PDPT_RECURSIVE_BASE: usize  = 0xFFFF_FFFF_FFE0_0000;
-const PD_RECURSIVE_BASE: usize    = 0xFFFF_FFFF_C000_0000;
-const PT_RECURSIVE_BASE: usize    = 0xFFFF_FF80_0000_0000;
+const PDPT_RECURSIVE_BASE: usize = 0xFFFF_FFFF_FFE0_0000;
+const PD_RECURSIVE_BASE: usize = 0xFFFF_FFFF_C000_0000;
+const PT_RECURSIVE_BASE: usize = 0xFFFF_FF80_0000_0000;
 
 #[repr(transparent)]
 pub struct PageTable {
-    entries: [PageTableEntry; 512]
+    entries: [PageTableEntry; 512],
 }
 
 impl PageTable {
@@ -241,7 +243,7 @@ impl PageTable {
     }
 
     /// Get a reference to a recursively-mapped PD Pointer Table.
-    pub fn get_pdp(pdp_idx: usize) -> &'static mut PageTable {
+    pub fn get_pdpt(pdp_idx: usize) -> &'static mut PageTable {
         unsafe {
             let pdp_addr = PDPT_RECURSIVE_BASE + (0x1000 * pdp_idx);
             &mut *(pdp_addr as *mut PageTable)
@@ -259,7 +261,10 @@ impl PageTable {
     /// Get a reference to a recursively-mapped Page Table.
     pub fn get_pt(pdp_idx: usize, pd_idx: usize, pt_idx: usize) -> &'static mut PageTable {
         unsafe {
-            let pt_addr = PT_RECURSIVE_BASE + (0x4000_0000 * pdp_idx) + (0x20_0000 * pd_idx) + (0x1000 * pt_idx);
+            let pt_addr = PT_RECURSIVE_BASE
+                + (0x4000_0000 * pdp_idx)
+                + (0x20_0000 * pd_idx)
+                + (0x1000 * pt_idx);
             &mut *(pt_addr as *mut PageTable)
         }
     }
@@ -268,27 +273,33 @@ impl PageTable {
 impl ops::Index<usize> for PageTable {
     type Output = PageTableEntry;
 
-    fn index (&self, idx: usize) -> &Self::Output {
+    fn index(&self, idx: usize) -> &Self::Output {
         &self.entries[idx]
     }
 }
 
 impl ops::IndexMut<usize> for PageTable {
-    fn index_mut (&mut self, idx: usize) -> &mut Self::Output {
+    fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
         &mut self.entries[idx]
     }
 }
 
 /// Change the mapping for the given virtual address.
-/// 
+///
 /// Allocates memory as needed for page tables, etc.
-pub fn map_address (pf_allocator: &mut PageFrameAllocator, phys_addr: usize, virt_addr: usize) {
+pub fn map_address(pf_allocator: &mut PageFrameAllocator, phys_addr: usize, virt_addr: usize) {
     if (phys_addr & 0xFFF) > 0 {
-        panic!("attempt to map unaligned physical address {:#016x}", phys_addr);
+        panic!(
+            "attempt to map unaligned physical address {:#016x}",
+            phys_addr
+        );
     }
 
     if (virt_addr & 0xFFF) > 0 {
-        panic!("attempt to map unaligned virtual address {:#016x}", virt_addr);
+        panic!(
+            "attempt to map unaligned virtual address {:#016x}",
+            virt_addr
+        );
     }
 
     let pml4_idx: usize = (virt_addr >> 39) & 0x1FF;
@@ -304,10 +315,10 @@ pub fn map_address (pf_allocator: &mut PageFrameAllocator, phys_addr: usize, vir
         let pdpt_phys = pf_allocator.allocate(1);
         pml4t.map_addr(pml4_idx, pdpt_phys);
 
-        pdpt = PageTable::get_pdp(pml4_idx);
+        pdpt = PageTable::get_pdpt(pml4_idx);
         pdpt.clear();
     } else {
-        pdpt = PageTable::get_pdp(pml4_idx);
+        pdpt = PageTable::get_pdpt(pml4_idx);
     }
 
     let pd;

@@ -1,7 +1,7 @@
 use alloc::alloc::{GlobalAlloc, Layout};
 
-mod physical;
-mod small_zone_alloc;
+pub mod physical;
+pub mod small_zone_alloc;
 
 use small_zone_alloc::SmallZoneAllocator;
 use small_zone_alloc::KERNEL_SMA;
@@ -9,6 +9,7 @@ use small_zone_alloc::KERNEL_SMA;
 pub use crate::paging::KERNEL_HEAP_BASE;
 
 pub use physical::allocate_physical_memory;
+pub use physical::allocate_physical_memory_at;
 pub use physical::deallocate_physical_memory;
 pub use physical::register_physical_memory;
 pub use physical::PhysicalMemory;

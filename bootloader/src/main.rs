@@ -10,18 +10,18 @@ extern crate compiler_builtins;
 mod print;
 
 mod devices;
-mod multiboot;
-mod exception_handler;
-mod paging;
 mod elf;
+mod exception_handler;
+mod multiboot;
+mod paging;
 
+use compiler_builtins::mem::{memcpy, memset};
 use core::panic::PanicInfo;
-use compiler_builtins::mem::{memset, memcpy};
 use x86_64::structures::idt::InterruptDescriptorTable;
 
-use multiboot::{MultibootInfo, ModuleInfo, MemoryType};
-use paging::PageFrameAllocator;
 use elf::Elf64Header;
+use multiboot::{MemoryType, ModuleInfo, MultibootInfo};
+use paging::PageFrameAllocator;
 
 extern "C" {
     static mut long_mode_idt: InterruptDescriptorTable;
@@ -49,7 +49,7 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
     println!("Epiphyllum-Loader starting (Multiboot 1 mode)...");
 
     /* Right now, our IDT is still set up to point at 32-bit code,
-     * so any CPU exceptions we cause are generally going to cause a 
+     * so any CPU exceptions we cause are generally going to cause a
      * triple fault. Fix this now.
      */
     let idt: &'static mut InterruptDescriptorTable;
@@ -64,12 +64,18 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
     unsafe {
         let loader_start: usize = (&_loader_start as *const u8) as usize;
         let loader_end: usize = (&_loader_end as *const u8) as usize;
-        println!("Bootloader at memory range {:#x} - {:#x}", loader_start, loader_end);
+        println!(
+            "Bootloader at memory range {:#x} - {:#x}",
+            loader_start, loader_end
+        );
     }
 
     let f: usize = multiboot_struct as usize;
     println!("Multiboot structure located at {:#016X}", f);
-    println!("Kernel command line: {}", mb.get_command_line().unwrap_or(""));
+    println!(
+        "Kernel command line: {}",
+        mb.get_command_line().unwrap_or("")
+    );
 
     let mut pf_allocator = PageFrameAllocator::new();
     if let Some(mmap) = mb.get_memory_info() {
@@ -88,11 +94,8 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
 
                     let start_page = (m.base_addr & !0xFFF) + 0x1000;
                     let end_page = (m.base_addr + m.length) & !0xFFF;
-                    pf_allocator.add_range(
-                        start_page as usize,
-                        end_page as usize
-                    );
-                },
+                    pf_allocator.add_range(start_page as usize, end_page as usize);
+                }
                 MemoryType::ACPI => println!("ACPI information"),
                 MemoryType::Defective => println!("Defective"),
                 MemoryType::MustPreserve => println!("System Reserved"),
@@ -124,13 +127,16 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
     }
 
     let mods = mb.get_modules().unwrap();
-    let kernel_mod: &ModuleInfo = mods.iter().find(|m| {
-        if let Some(s) = m.get_string() {
-            s == "kernel"
-        } else {
-            false
-        }
-    }).expect("Could not find kernel module");
+    let kernel_mod: &ModuleInfo = mods
+        .iter()
+        .find(|m| {
+            if let Some(s) = m.get_string() {
+                s == "kernel"
+            } else {
+                false
+            }
+        })
+        .expect("Could not find kernel module");
 
     let kheader_ptr = (kernel_mod.mod_start as usize) as *const Elf64Header;
     let kernel_header: &'static Elf64Header = unsafe { &*kheader_ptr };
@@ -220,7 +226,7 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
     let loader_info = KernelLoaderInfo {
         multiboot_info: &mb,
         idt_phys: unsafe { &mut long_mode_idt as *mut InterruptDescriptorTable },
-        heap_pages: n_heap_pages
+        heap_pages: n_heap_pages,
     };
 
     /* Let's cross our fingers and hope this works... */
@@ -228,7 +234,7 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
         higher_half_trampoline(
             kernel_header.entry_point(),
             higher_half_stack_addr,
-            &loader_info as *const KernelLoaderInfo as usize
+            &loader_info as *const KernelLoaderInfo as usize,
         );
     }
 

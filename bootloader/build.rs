@@ -6,10 +6,7 @@ fn main() {
     println!("cargo:rerun-if-changed=linker.ld");
 
     cc::Build::new()
-        .files(vec![
-            "src/asm/protected_mode.S",
-            "src/asm/long_mode.S",
-        ])
+        .files(vec!["src/asm/protected_mode.S", "src/asm/long_mode.S"])
         .pic(false)
         .debug(true)
         .flag("-g")

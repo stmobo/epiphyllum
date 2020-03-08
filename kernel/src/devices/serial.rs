@@ -1,8 +1,8 @@
 use core::fmt;
 
-use x86_64::instructions::port::Port;
 use lazy_static::lazy_static;
 use spin::Mutex;
+use x86_64::instructions::port::Port;
 
 const DEFAULT_LCR_SETTINGS: u8 = 0x03; // 8N1
 lazy_static! {
@@ -22,10 +22,10 @@ pub struct SerialPort {
 }
 
 impl SerialPort {
-    pub fn new (io_base: u16) -> SerialPort {
+    pub fn new(io_base: u16) -> SerialPort {
         let mut ser = SerialPort {
             off0: Port::new(io_base),
-            off1: Port::new(io_base+1),
+            off1: Port::new(io_base + 1),
             // interrupt_id: Port::new(io_base + 2),
             line_control: Port::new(io_base + 3),
             // line_status: Port::new(io_base + 5)
@@ -34,13 +34,13 @@ impl SerialPort {
         unsafe {
             ser.configure_interrupts(false, false);
             ser.set_divisor(3); // 38400 baud
-        }        
+        }
 
         ser
     }
 
     /// Configure the Line Control Register.
-    /// 
+    ///
     /// Currently, only 8-N-1 operation is supported.
     pub unsafe fn configure_lcr(&mut self, dlab: bool) {
         if dlab {

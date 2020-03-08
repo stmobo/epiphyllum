@@ -1,7 +1,7 @@
 use core::fmt;
 
-use crate::devices::vga;
 use crate::devices::serial;
+use crate::devices::vga;
 
 #[macro_export]
 macro_rules! print {

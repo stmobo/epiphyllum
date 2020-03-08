@@ -1,6 +1,8 @@
 use core::ops;
 use x86_64::instructions::tlb;
 
+use crate::malloc;
+
 pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
 
 const PML4T_RECURSIVE_BASE: usize = 0xFFFF_FFFF_FFFF_F000;
@@ -20,6 +22,7 @@ const MAX_PHYSICAL_MEMORY: usize = KERNEL_HEAP_BASE - PHYSICAL_MAP_BASE;
 // const KERNEL_BASE_PML4_IDX: usize = 0b110_001_000;
 const KERNEL_HEAP_PML4_IDX: usize = 0b110_000_001;
 const PHYSICAL_MAP_PML4_IDX: usize = 0b100_000_010;
+const HIGHER_HALF_PML4_IDX: usize = 0b100_000_000;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[repr(transparent)]
@@ -84,7 +87,7 @@ impl PageTable {
     }
 
     /// Get a reference to a recursively-mapped PD Pointer Table.
-    pub fn get_pdp(pdp_idx: usize) -> &'static mut PageTable {
+    pub fn get_pdpt(pdp_idx: usize) -> &'static mut PageTable {
         unsafe {
             let pdp_addr = PDPT_RECURSIVE_BASE + (0x1000 * pdp_idx);
             &mut *(pdp_addr as *mut PageTable)
@@ -145,7 +148,7 @@ pub fn get_mapping(virt_addr: usize) -> Option<PageTableEntry> {
 
     let pml4t = PageTable::get_pml4t();
     if pml4t[pml4_idx].present() {
-        let pdpt = PageTable::get_pdp(pml4_idx);
+        let pdpt = PageTable::get_pdpt(pml4_idx);
 
         if pdpt[pdp_idx].present() {
             let pd = PageTable::get_pd(pml4_idx, pdp_idx);
@@ -178,6 +181,35 @@ pub fn remap_boot_identity_paging() {
     }
 
     tlb::flush_all();
+}
+
+pub fn reserve_bootstrap_physical_pages() {
+    unsafe {
+        let pml4t = PageTable::get_pml4t();
+        for (pml4_idx, ent) in pml4t
+            .iter()
+            .enumerate()
+            .skip(HIGHER_HALF_PML4_IDX - 1)
+            .filter(|p| p.1.present())
+        {
+            malloc::allocate_physical_memory_at(ent.physical_address(), 0x1000);
+            let pdpt = PageTable::get_pdpt(pml4_idx);
+
+            for (pdpt_idx, ent) in pdpt.iter().enumerate().filter(|e| e.1.present()) {
+                malloc::allocate_physical_memory_at(ent.physical_address(), 0x1000);
+                let pd = PageTable::get_pd(pml4_idx, pdpt_idx);
+
+                for (pd_idx, ent) in pd.iter().enumerate().filter(|e| e.1.present()) {
+                    malloc::allocate_physical_memory_at(ent.physical_address(), 0x1000);
+                    let pt = PageTable::get_pt(pml4_idx, pdpt_idx, pd_idx);
+
+                    for ent in pt.iter().filter(|e| e.present()) {
+                        malloc::allocate_physical_memory_at(ent.physical_address(), 0x1000);
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub fn physical_memory_offset(phys_addr: usize) -> Option<usize> {

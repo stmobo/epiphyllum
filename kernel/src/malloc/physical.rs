@@ -4,6 +4,7 @@ use crate::paging::PAGE_MASK;
 
 use alloc::vec::Vec;
 use core::cmp::Ordering;
+use core::ptr;
 
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -25,20 +26,22 @@ pub struct BuddyAllocator {
     ord_2_bitmap: u64,
     hi_ord_bitmap: u64,
     n_blocks: [u16; 9],
+    free_bytes: usize,
+    usage_list_idx: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BuddyAllocatorError {
-    RegionTooSmall,
-    RegionTooLarge,
+    RegionTooSmall(usize),
+    RegionTooLarge(usize),
 }
 
 impl BuddyAllocator {
     fn new(addr: usize, region_len: usize) -> Result<BuddyAllocator, BuddyAllocatorError> {
         if region_len < 0x1000 {
-            return Err(BuddyAllocatorError::RegionTooSmall);
+            return Err(BuddyAllocatorError::RegionTooSmall(region_len));
         } else if region_len > (0x1000 * 1024) {
-            return Err(BuddyAllocatorError::RegionTooLarge);
+            return Err(BuddyAllocatorError::RegionTooLarge(region_len));
         }
 
         let mut ord = 8u64;
@@ -54,13 +57,14 @@ impl BuddyAllocator {
             ord_2_bitmap: 0,
             hi_ord_bitmap: 0,
             n_blocks: [0; 9],
+            free_bytes: 0,
+            usage_list_idx: 0,
         };
 
         while remaining_region_size > 0 {
             if remaining_region_size >= block_sz {
                 let block_n = allocator.get_block_for_addr(cur_addr, ord);
                 allocator.set_block_state(ord, block_n, true);
-                allocator.n_blocks[ord as usize] += 1;
 
                 cur_addr += block_sz;
                 remaining_region_size -= block_sz;
@@ -88,8 +92,6 @@ impl BuddyAllocator {
         self.set_block_state(order, index, false);
         self.set_block_state(order - 1, index << 1, true);
         self.set_block_state(order - 1, (index << 1) + 1, true);
-        self.n_blocks[order as usize] -= 1;
-        self.n_blocks[(order - 1) as usize] += 2;
     }
 
     fn find_free_block_single(&self, order: u64) -> Option<usize> {
@@ -106,7 +108,6 @@ impl BuddyAllocator {
         if self.n_blocks[order as usize] > 0 {
             if let Some(idx) = self.find_free_block_single(order) {
                 self.set_block_state(order, idx, false);
-                self.n_blocks[order as usize] -= 1;
 
                 return Some(idx);
             }
@@ -131,7 +132,6 @@ impl BuddyAllocator {
 
             if let Some(idx) = self.find_free_block_single(order) {
                 self.set_block_state(order, idx, false);
-                self.n_blocks[order as usize] -= 1;
                 Some(idx)
             } else {
                 None
@@ -169,14 +169,12 @@ impl BuddyAllocator {
 
                     /* Allocate the requested block */
                     self.set_block_state(order, index, false);
-                    self.n_blocks[order as usize] -= 1;
 
                     return true;
                 }
             }
         } else {
             self.set_block_state(order, index, false);
-            self.n_blocks[order as usize] -= 1;
             return true;
         }
 
@@ -197,11 +195,9 @@ impl BuddyAllocator {
 
         if order < 8 && index != 255 && self.get_block_state(order, index + 1) {
             self.set_block_state(order, index + 1, false);
-            self.n_blocks[order as usize] -= 1;
             self.free_block(order + 1, index >> 1);
         } else {
             self.set_block_state(order, index, true);
-            self.n_blocks[order as usize] += 1;
         }
     }
 
@@ -230,6 +226,14 @@ impl BuddyAllocator {
     }
 
     fn set_block_state(&mut self, order: u64, index: usize, state: bool) {
+        if state {
+            self.n_blocks[order as usize] += 1;
+            self.free_bytes += (0x1000 << order) as usize;
+        } else {
+            self.n_blocks[order as usize] -= 1;
+            self.free_bytes -= (0x1000 << order) as usize;
+        }
+
         match order {
             0 => {
                 if state {
@@ -280,8 +284,11 @@ impl BuddyAllocator {
             return None;
         }
 
-        self.allocate_block(order)
-            .map(|idx| self.get_addr_for_block(order, idx))
+        let ret = self
+            .allocate_block(order)
+            .map(|idx| self.get_addr_for_block(order, idx));
+
+        ret
     }
 
     pub unsafe fn allocate_at(&mut self, addr: usize, order: u64) -> Option<usize> {
@@ -343,7 +350,8 @@ pub struct PhysicalMemoryRange {
     range_start: usize,
     range_end: usize,
     free: Vec<FreeMemoryRange>,
-    allocator_tree: AVLTree<BuddyAllocator>,
+    allocator_tree: AVLTree<BuddyAllocator>, /* Organized by memory range address */
+    allocator_usage_list: Vec<*mut BuddyAllocator>, /* Sorted by free space amount. */
 }
 
 impl PhysicalMemoryRange {
@@ -360,31 +368,61 @@ impl PhysicalMemoryRange {
             range_end: addr + len,
             free: vec![FreeMemoryRange::new(addr, addr + len)],
             allocator_tree: AVLTree::<BuddyAllocator>::new(),
+            allocator_usage_list: Vec::new(),
         };
 
         new_range
     }
 
-    fn add_new_allocator(&mut self) -> Option<&mut BuddyAllocator> {
-        if let Some(cur_free_head) = self.free.get_mut(0) {
-            let mut new_allocator_sz = cur_free_head.range_end - cur_free_head.range_start;
-            if new_allocator_sz > BUDDY_ALLOC_MAX_SIZE {
-                new_allocator_sz = BUDDY_ALLOC_MAX_SIZE;
-            }
-
-            let new_allocator =
-                BuddyAllocator::new(cur_free_head.range_start, new_allocator_sz).unwrap();
-
-            cur_free_head.range_start += new_allocator_sz;
-            if cur_free_head.range_start >= cur_free_head.range_end {
-                drop(cur_free_head);
-                self.free.swap_remove(0);
-            }
-
-            return Some(self.allocator_tree.insert(new_allocator));
+    unsafe fn usage_list_sift_up(&mut self, idx: usize) {
+        use core::mem::swap;
+        if idx == 0 {
+            return;
         }
 
-        None
+        let parent_idx = (idx - 1) >> 1;
+        let parent = self.allocator_usage_list[parent_idx];
+        let child = self.allocator_usage_list[idx];
+
+        if (*child).free_bytes > (*parent).free_bytes {
+            let t = self.allocator_usage_list[parent_idx];
+            self.allocator_usage_list[parent_idx] = self.allocator_usage_list[idx];
+            self.allocator_usage_list[idx] = t;
+
+            swap(&mut (*child).usage_list_idx, &mut (*parent).usage_list_idx);
+            return self.usage_list_sift_up(parent_idx);
+        }
+    }
+
+    unsafe fn usage_list_sift_down(&mut self, idx: usize) {
+        use core::mem::swap;
+        let mut swap_idx = idx;
+
+        if let Some(c1) = self.allocator_usage_list.get_mut((idx << 1) + 1) {
+            let c1 = *c1;
+            if (*c1).free_bytes > (*self.allocator_usage_list[swap_idx]).free_bytes {
+                swap_idx = (idx << 1) + 1;
+            }
+        }
+
+        if let Some(c2) = self.allocator_usage_list.get_mut((idx << 1) + 2) {
+            let c2 = *c2;
+            if (*c2).free_bytes > (*self.allocator_usage_list[swap_idx]).free_bytes {
+                swap_idx = (idx << 1) + 2;
+            }
+        }
+
+        if swap_idx != idx {
+            let cur = self.allocator_usage_list[idx];
+            let larger = self.allocator_usage_list[swap_idx];
+
+            let t = self.allocator_usage_list[swap_idx];
+            self.allocator_usage_list[swap_idx] = self.allocator_usage_list[idx];
+            self.allocator_usage_list[idx] = t;
+
+            swap(&mut (*cur).usage_list_idx, &mut (*larger).usage_list_idx);
+            return self.usage_list_sift_up(swap_idx);
+        }
     }
 
     /// Allocate a specific range of addresses within this PhysicalMemoryRange.
@@ -394,19 +432,23 @@ impl PhysicalMemoryRange {
         let allocators_start =
             self.range_start + ((range_start - self.range_start) & BUDDY_ALLOC_ALIGN_MASK);
         let order = BuddyAllocator::round_allocation_size(range_end - range_start);
+        let p = self as *mut PhysicalMemoryRange;
 
         if let Some(node) = self
             .allocator_tree
-            .search_interval(allocators_start, BuddyAllocator::get_range)
+            .search_interval(range_start, BuddyAllocator::get_range)
         {
             if node.mem_addr <= range_start && node.region_end >= range_end {
-                return node.allocate_at(range_start, order);
+                let ret = node.allocate_at(range_start, order);
+                (*p).usage_list_sift_down(node.usage_list_idx);
+
+                return ret;
             }
         }
 
         let allocators_end: usize;
-        if self.range_start + BUDDY_ALLOC_MAX_SIZE <= self.range_end {
-            allocators_end = self.range_start + BUDDY_ALLOC_MAX_SIZE;
+        if allocators_start + BUDDY_ALLOC_MAX_SIZE <= self.range_end {
+            allocators_end = allocators_start + BUDDY_ALLOC_MAX_SIZE;
         } else {
             allocators_end = self.range_end;
         }
@@ -448,38 +490,53 @@ impl PhysicalMemoryRange {
             .retain(|range| range.range_start < range.range_end);
 
         /* Insert our new allocator. */
-        self.allocator_tree.insert(
+        let r = self.allocator_tree.insert(
             BuddyAllocator::new(allocators_start, allocators_end - allocators_start).unwrap(),
         );
 
-        if let Some(node) = self
-            .allocator_tree
-            .search_interval(allocators_start, BuddyAllocator::get_range)
-        {
-            if node.mem_addr <= range_start && node.region_end >= range_end {
-                return node.allocate_at(range_start, order);
-            } else {
-                panic!("physical address allocation request for {:#016x} ({:#08x} bytes) crosses allocator boundaries", range_start, range_end - range_start);
-            }
-        } else {
-            panic!(
-                "could not find allocator for physical address {:#016x}",
-                range_start
-            );
-        }
+        r.usage_list_idx = self.allocator_usage_list.len();
+
+        self.allocator_usage_list.push(r as *mut BuddyAllocator);
+        let ret = r.allocate_at(range_start, order);
+        self.usage_list_sift_up(self.allocator_usage_list.len() - 1);
+
+        return ret;
     }
 
     pub fn allocate(&mut self, size: usize) -> Option<usize> {
         let order = BuddyAllocator::round_allocation_size(size);
         unsafe {
-            let res = self
-                .allocator_tree
-                .find_first(|ba: &mut BuddyAllocator| ba.allocate(order));
+            if let Some(head_allocator) = self.allocator_usage_list.get_mut(0) {
+                let head_allocator = *head_allocator;
+                if let Some(addr) = (*head_allocator).allocate(order) {
+                    self.usage_list_sift_down((*head_allocator).usage_list_idx);
+                    return Some(addr);
+                }
+            }
 
-            if let Some(addr) = res {
-                return Some(addr);
-            } else if let Some(new_allocator) = self.add_new_allocator() {
-                return new_allocator.allocate(order);
+            if let Some(cur_free_head) = self.free.get_mut(0) {
+                let mut new_allocator_sz = cur_free_head.range_end - cur_free_head.range_start;
+                if new_allocator_sz > BUDDY_ALLOC_MAX_SIZE {
+                    new_allocator_sz = BUDDY_ALLOC_MAX_SIZE;
+                }
+
+                let new_allocator =
+                    BuddyAllocator::new(cur_free_head.range_start, new_allocator_sz).unwrap();
+
+                cur_free_head.range_start += new_allocator_sz;
+                if cur_free_head.range_start >= cur_free_head.range_end {
+                    drop(cur_free_head);
+                    self.free.swap_remove(0);
+                }
+
+                let r = self.allocator_tree.insert(new_allocator);
+                r.usage_list_idx = self.allocator_usage_list.len();
+                self.allocator_usage_list.push(r as *mut BuddyAllocator);
+
+                let ret = r.allocate(order);
+                self.usage_list_sift_up(self.allocator_usage_list.len() - 1);
+
+                return ret;
             }
         }
 
@@ -491,12 +548,14 @@ impl PhysicalMemoryRange {
             return;
         }
 
+        let p = self as *mut PhysicalMemoryRange;
         let order = BuddyAllocator::round_allocation_size(size);
         if let Some(node) = self
             .allocator_tree
             .search_interval(addr, BuddyAllocator::get_range)
         {
             node.deallocate(addr, order);
+            (*p).usage_list_sift_up(node.usage_list_idx);
         }
     }
 }

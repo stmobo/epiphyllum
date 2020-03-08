@@ -65,6 +65,11 @@ fn panic(info: &PanicInfo) -> ! {
         print!(" - no location information available\n");
     }
 
+    println!("Stack trace:");
+    for frame in exception_handler::trace_stack() {
+        println!("    {:#016x}", frame.frame_ip);
+    }
+
     #[cfg(test)]
     test_runner::exit_qemu(test_runner::TestExitCode::Failure);
 

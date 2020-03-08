@@ -57,17 +57,17 @@ impl<T: Ord> AVLTree<T> {
             return None;
         }
 
-        if let Some(p) = unsafe { (*self.root).search(key, key_func) } {
-            let (new_root, ret) = unsafe { (*p).remove() };
+        unsafe {
+            if let Some(p) = (*self.root).search(key, key_func) {
+                let (new_root, ret) = (*p).remove();
+                self.root = new_root;
 
-            self.root = new_root;
-            let layout = Layout::new::<AVLTreeNode<T>>();
-            unsafe {
+                let layout = Layout::new::<AVLTreeNode<T>>();
                 ptr::drop_in_place(p);
                 dealloc(p as *mut u8, layout);
-            }
 
-            return Some(ret);
+                return Some(ret);
+            }
         }
 
         None
@@ -382,6 +382,7 @@ impl<T: Ord> AVLTreeNode<T> {
             }
         }
 
+        assert_ne!(retrace_from, ptr::null_mut());
         let new_root = (*retrace_from).retrace_delete();
         self.parent = ptr::null_mut();
         self.left = ptr::null_mut();

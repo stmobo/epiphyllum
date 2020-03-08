@@ -152,88 +152,22 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     exception_handler::claim_idt_page(idt_phys_addr);
     paging::reserve_bootstrap_physical_pages();
 
+    println!("Physical memory allocator initialized.");
+
+    let test_addr: usize = 0xA_BAD_1DEA_000;
+    paging::map_virtual_address(test_addr, 0);
+
     unsafe {
-        use ::alloc::alloc;
-        use ::alloc::alloc::Layout;
-        println!("Testing allocations:");
-
-        let layout_1 = Layout::from_size_align_unchecked(8, 8);
-        let layout_2 = Layout::from_size_align_unchecked(64, 64);
-        let layout_3 = Layout::from_size_align_unchecked(128, 128);
-
-        let a1 = alloc::alloc(layout_1) as usize;
-        let a2 = alloc::alloc(layout_2) as usize;
-
+        use core::ptr;
+        ptr::write_volatile(test_addr as *mut u64, 0xDEADBEEF);
         println!(
-            "a1 = {:#016x} (mod 8 = {})\na2 = {:#016x} (mod 64 = {})",
-            a1,
-            a1 % 8,
-            a2,
-            a2 % 64
+            "test read: {:#08x}",
+            ptr::read_volatile(test_addr as *const u64)
         );
-
-        alloc::dealloc(a1 as *mut u8, layout_1);
-        let a3 = alloc::alloc(layout_3) as usize;
-        println!("a3 = {:#016x} (mod 128 = {})", a3, a3 % 128);
-
-        let a4 = alloc::alloc(layout_1) as usize;
-        println!("a4 = {:#016x} (mod 8 = {})", a4, a4 % 8);
-        alloc::dealloc(a4 as *mut u8, layout_1);
-
-        let p1 = PhysicalMemory::new(0x2000).unwrap();
-        let p2 = PhysicalMemory::new(0x5000).unwrap();
-
-        println!(
-            "p1 = {:#08x} (allocation in {:#08x} blocks)",
-            p1.address(),
-            0x1000usize << 8
-        );
-        println!("p2 = {:#08x}", p2.address());
-
-        drop(p1);
-
-        let p3 = PhysicalMemory::new(0x1000).unwrap();
-        println!("p3 = {:#08x}", p3.address());
-
-        let mut ptrs: [Option<PhysicalMemory>; 512] = [None; 512];
-        let mut ptrs_2 = [0usize; 512];
-
-        /* see what happens when we allocate a whole lot of stuff: */
-        for i in 0..512 {
-            ptrs[i] = PhysicalMemory::new(0x1000);
-            ptrs_2[i] = alloc::alloc(layout_2) as usize;
-
-            if i % 64 == 0 {
-                println!("ptrs[{}] = {:#08x}", i, ptrs[i].as_ref().unwrap().address());
-                println!("ptrs_2[{}] = {:#08x}", i, ptrs_2[i]);
-            }
-        }
-
-        let p4 = PhysicalMemory::new(0x10000).unwrap();
-        println!("p4 = {:#08x}", p4.address());
-
-        /* Then clean it up: */
-        for i in 0..512 {
-            drop(ptrs[i].take());
-            alloc::dealloc(ptrs_2[i] as *mut u8, layout_2);
-        }
-
-        let p5 = PhysicalMemory::new(0x10000).unwrap();
-        println!("p5 = {:#08x}", p5.address());
-
-        let a5 = alloc::alloc(layout_1) as usize;
-        println!("a5 = {:#016x} (mod 8 = {})", a5, a5 % 8);
-
-        for i in 0..512 {
-            ptrs[i] = PhysicalMemory::new(0x1000);
-            ptrs_2[i] = alloc::alloc(layout_2) as usize;
-
-            if i % 64 == 0 {
-                println!("ptrs[{}] = {:#08x}", i, ptrs[i].as_ref().unwrap().address());
-                println!("ptrs_2[{}] = {:#08x}", i, ptrs_2[i]);
-            }
-        }
     }
+
+    paging::unmap_virtual_address(test_addr);
+    println!("Test address unmapped...");
 
     #[cfg(test)]
     test_main();

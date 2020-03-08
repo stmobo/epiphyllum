@@ -4,11 +4,11 @@ use core::ptr;
 
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct AVLTree<T: PartialOrd> {
+pub struct AVLTree<T: Ord> {
     root: *mut AVLTreeNode<T>,
 }
 
-impl<T: PartialOrd> AVLTree<T> {
+impl<T: Ord> AVLTree<T> {
     pub fn new() -> AVLTree<T> {
         AVLTree {
             root: ptr::null_mut(),
@@ -54,7 +54,7 @@ impl<T: PartialOrd> AVLTree<T> {
     /// whose interval contains `key`, if it exists within the tree.
     pub fn search_interval<K, F>(&self, key: K, key_func: F) -> Option<&T>
     where
-        K: PartialOrd,
+        K: Ord,
         F: Fn(&T) -> (K, K),
     {
         if self.root == ptr::null_mut() {
@@ -67,7 +67,7 @@ impl<T: PartialOrd> AVLTree<T> {
     /// Get a reference to a value within this tree.
     pub fn search<K, F>(&self, key: K, key_func: F) -> Option<&T>
     where
-        K: PartialOrd,
+        K: Ord,
         F: Fn(&T) -> K,
     {
         if self.root == ptr::null_mut() {
@@ -80,7 +80,7 @@ impl<T: PartialOrd> AVLTree<T> {
     /// Look up a value by interval in this tree and get a mutable reference to it.
     pub fn search_interval_mut<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
     where
-        K: PartialOrd,
+        K: Ord,
         F: Fn(&T) -> (K, K),
     {
         if self.root == ptr::null_mut() {
@@ -93,7 +93,7 @@ impl<T: PartialOrd> AVLTree<T> {
     /// Look up a value in this tree and get a mutable reference to it.
     pub fn search_mut<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
     where
-        K: PartialOrd,
+        K: Ord,
         F: Fn(&T) -> K,
     {
         if self.root == ptr::null_mut() {
@@ -120,7 +120,7 @@ impl<T: PartialOrd> AVLTree<T> {
     }
 }
 
-impl<T: PartialOrd> Drop for AVLTree<T> {
+impl<T: Ord> Drop for AVLTree<T> {
     fn drop(&mut self) {
         use alloc::alloc::dealloc;
 
@@ -134,11 +134,11 @@ impl<T: PartialOrd> Drop for AVLTree<T> {
     }
 }
 
-unsafe impl<T: PartialOrd> Send for AVLTree<T> {}
-unsafe impl<T: PartialOrd> Sync for AVLTree<T> {}
+unsafe impl<T: Ord> Send for AVLTree<T> {}
+unsafe impl<T: Ord> Sync for AVLTree<T> {}
 
 #[derive(Debug, Clone)]
-pub struct AVLTreeNode<T: PartialOrd> {
+pub struct AVLTreeNode<T: Ord> {
     data: T,
     parent: *mut AVLTreeNode<T>,
     left: *mut AVLTreeNode<T>,
@@ -146,7 +146,7 @@ pub struct AVLTreeNode<T: PartialOrd> {
     balance: i8,
 }
 
-impl<T: PartialOrd> Deref for AVLTreeNode<T> {
+impl<T: Ord> Deref for AVLTreeNode<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -154,13 +154,13 @@ impl<T: PartialOrd> Deref for AVLTreeNode<T> {
     }
 }
 
-impl<T: PartialOrd> DerefMut for AVLTreeNode<T> {
+impl<T: Ord> DerefMut for AVLTreeNode<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.data
     }
 }
 
-impl<T: PartialOrd> AVLTreeNode<T> {
+impl<T: Ord> AVLTreeNode<T> {
     unsafe fn new_alloc(data: T) -> *mut AVLTreeNode<T> {
         use alloc::alloc::alloc;
 
@@ -182,7 +182,7 @@ impl<T: PartialOrd> AVLTreeNode<T> {
 
     fn search_interval<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
     where
-        K: PartialOrd,
+        K: Ord,
         F: Fn(&T) -> (K, K),
     {
         let mut cur: *mut AVLTreeNode<T> = self as *mut AVLTreeNode<T>;
@@ -214,7 +214,7 @@ impl<T: PartialOrd> AVLTreeNode<T> {
 
     fn search<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
     where
-        K: PartialOrd,
+        K: Ord,
         F: Fn(&T) -> K,
     {
         let mut cur: *mut AVLTreeNode<T> = self as *mut AVLTreeNode<T>;
@@ -394,7 +394,7 @@ impl<T: PartialOrd> AVLTreeNode<T> {
     }
 }
 
-impl<T: PartialOrd> Drop for AVLTreeNode<T> {
+impl<T: Ord> Drop for AVLTreeNode<T> {
     fn drop(&mut self) {
         use alloc::alloc::dealloc;
 

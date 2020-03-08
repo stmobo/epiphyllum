@@ -324,9 +324,17 @@ impl PartialEq for BuddyAllocator {
     }
 }
 
+impl Eq for BuddyAllocator {}
+
 impl PartialOrd for BuddyAllocator {
     fn partial_cmp(&self, other: &BuddyAllocator) -> Option<Ordering> {
         Some(self.mem_addr.cmp(&other.mem_addr))
+    }
+}
+
+impl Ord for BuddyAllocator {
+    fn cmp(&self, other: &BuddyAllocator) -> Ordering {
+        self.mem_addr.cmp(&other.mem_addr)
     }
 }
 

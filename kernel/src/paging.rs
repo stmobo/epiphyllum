@@ -399,14 +399,12 @@ fn remove_page_table_ref(index: PageHierarchyIndex) {
 
         match parent {
             PageHierarchyIndex::PML4T => {
-                parent_table[parent.pml4t_index().unwrap()].set_present(false)
+                parent_table[index.pml4t_index().unwrap()].set_present(false)
             }
             PageHierarchyIndex::PDPT(_) => {
-                parent_table[parent.pdpt_index().unwrap()].set_present(false)
+                parent_table[index.pdpt_index().unwrap()].set_present(false)
             }
-            PageHierarchyIndex::PD(_) => {
-                parent_table[parent.pd_index().unwrap()].set_present(false)
-            }
+            PageHierarchyIndex::PD(_) => parent_table[index.pd_index().unwrap()].set_present(false),
             _ => {}
         }
 

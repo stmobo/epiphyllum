@@ -353,7 +353,7 @@ impl<T: Ord> AVLTreeNode<T> {
         } else {
             /* No children */
             replacement = ptr::null_mut();
-            retrace_from = replacement;
+            retrace_from = self.parent;
         }
 
         if replacement != ptr::null_mut() {

@@ -94,11 +94,11 @@ impl Iterator for StackFrameIterator {
     }
 }
 
-pub fn trace_stack() -> StackFrameIterator {
+pub fn trace_stack() -> impl Iterator<Item = StackFrame> {
     let mut it = StackFrameIterator::new();
     it.next();
     it.next();
-    it
+    it.filter(|frame| frame.frame_ip >= KERNEL_BASE)
 }
 
 extern "x86-interrupt" fn divide_error(isf: &mut InterruptStackFrame) {

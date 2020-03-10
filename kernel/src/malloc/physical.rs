@@ -3,7 +3,6 @@ use crate::paging;
 use crate::paging::PAGE_MASK;
 
 use alloc::vec::Vec;
-use core::cmp::Ordering;
 
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -314,26 +313,6 @@ impl BuddyAllocator {
 
     pub fn get_range(allocator: &BuddyAllocator) -> (usize, usize) {
         (allocator.mem_addr, allocator.region_end)
-    }
-}
-
-impl PartialEq for BuddyAllocator {
-    fn eq(&self, other: &BuddyAllocator) -> bool {
-        self.mem_addr == other.mem_addr
-    }
-}
-
-impl Eq for BuddyAllocator {}
-
-impl PartialOrd for BuddyAllocator {
-    fn partial_cmp(&self, other: &BuddyAllocator) -> Option<Ordering> {
-        Some(self.mem_addr.cmp(&other.mem_addr))
-    }
-}
-
-impl Ord for BuddyAllocator {
-    fn cmp(&self, other: &BuddyAllocator) -> Ordering {
-        self.mem_addr.cmp(&other.mem_addr)
     }
 }
 

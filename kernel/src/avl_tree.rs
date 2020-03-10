@@ -39,7 +39,8 @@ impl<T, K: Ord> AVLTree<T, K> {
         }
 
         unsafe {
-            if let Some(p) = (*self.root).search(key) {
+            let p = (*self.root).search(key);
+            if p != ptr::null_mut() {
                 let (new_root, ret) = (*p).remove();
                 self.root = new_root;
 
@@ -67,7 +68,7 @@ impl<T, K: Ord> AVLTree<T, K> {
             return None;
         }
 
-        unsafe { (*self.root).search_interval(key, key_func).map(|r| &*r) }
+        unsafe { (*self.root).search_interval(key, &key_func).map(|r| &*r) }
     }
 
     /// Get a reference to a value within this tree.
@@ -77,9 +78,12 @@ impl<T, K: Ord> AVLTree<T, K> {
         }
 
         unsafe {
-            (*self.root)
-                .search(key)
-                .map(|p| (*p).data.as_ref().unwrap())
+            let p = (*self.root).search(key);
+            if p != ptr::null_mut() {
+                (*p).data.as_ref()
+            } else {
+                None
+            }
         }
     }
 
@@ -92,7 +96,7 @@ impl<T, K: Ord> AVLTree<T, K> {
             return None;
         }
 
-        unsafe { (*self.root).search_interval(key, key_func) }
+        unsafe { (*self.root).search_interval(key, &key_func) }
     }
 
     /// Look up a value in this tree and get a mutable reference to it.
@@ -102,9 +106,12 @@ impl<T, K: Ord> AVLTree<T, K> {
         }
 
         unsafe {
-            (*self.root)
-                .search(key)
-                .map(|p| (*p).data.as_mut().unwrap())
+            let p = (*self.root).search(key);
+            if p != ptr::null_mut() {
+                (*p).data.as_mut()
+            } else {
+                None
+            }
         }
     }
 
@@ -210,60 +217,73 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
         None
     }
 
-    fn search_interval<F>(&mut self, key: K, key_func: F) -> Option<&mut T>
+    fn search_interval<F>(&mut self, key: K, key_func: &F) -> Option<&mut T>
     where
         K: Ord,
         F: Fn(&T) -> (K, K),
     {
-        let mut cur: *mut AVLTreeNode<T, K> = self as *mut AVLTreeNode<T, K>;
+        unsafe {
+            let (key_ival_start, key_ival_end) = key_func(self.data.as_ref().unwrap());
+            if key >= key_ival_start && key < key_ival_end {
+                return self.data.as_mut();
+            }
 
-        loop {
-            unsafe {
-                let (key_ival_start, key_ival_end) = key_func((*cur).data.as_ref().unwrap());
-
-                if key >= key_ival_start && key < key_ival_end {
-                    return Some((*cur).data.as_mut().unwrap());
-                }
-
-                if key < key_ival_start {
-                    if (*cur).left != ptr::null_mut() {
-                        cur = (*cur).left;
-                    } else {
-                        return None;
-                    }
+            if key < key_ival_start {
+                if self.left != ptr::null_mut() {
+                    (*self.left).search_interval(key, key_func)
                 } else {
-                    if (*cur).right != ptr::null_mut() {
-                        cur = (*cur).right;
+                    None
+                }
+            } else {
+                if self.right != ptr::null_mut() {
+                    (*self.right).search_interval(key, key_func)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn search(&mut self, key: K) -> *mut AVLTreeNode<T, K> {
+        use core::cmp::Ordering;
+
+        unsafe {
+            match key.cmp(&self.key) {
+                Ordering::Equal => self as *mut AVLTreeNode<T, K>,
+                Ordering::Less => {
+                    if self.left != ptr::null_mut() {
+                        (*self.left).search(key)
                     } else {
-                        return None;
+                        ptr::null_mut()
+                    }
+                }
+                Ordering::Greater => {
+                    if self.right != ptr::null_mut() {
+                        (*self.right).search(key)
+                    } else {
+                        ptr::null_mut()
                     }
                 }
             }
         }
     }
 
-    fn search(&mut self, key: K) -> Option<*mut AVLTreeNode<T, K>> {
-        let mut cur: *mut AVLTreeNode<T, K> = self as *mut AVLTreeNode<T, K>;
-
-        loop {
-            unsafe {
-                if key == (*cur).key {
-                    return Some(&mut *cur);
+    fn find_least_successor(&mut self, key: K) -> *mut AVLTreeNode<T, K> {
+        if key < self.key {
+            if self.left != ptr::null_mut() {
+                unsafe {
+                    return (*self.left).find_least_successor(key);
                 }
-
-                if key < (*cur).key {
-                    if (*cur).left != ptr::null_mut() {
-                        cur = (*cur).left;
-                    } else {
-                        return None;
-                    }
-                } else {
-                    if (*cur).right != ptr::null_mut() {
-                        cur = (*cur).right;
-                    } else {
-                        return None;
-                    }
+            } else {
+                return self as *mut AVLTreeNode<T, K>;
+            }
+        } else {
+            if self.right != ptr::null_mut() {
+                unsafe {
+                    return (*self.right).find_least_successor(key);
                 }
+            } else {
+                return self.successor();
             }
         }
     }
@@ -624,22 +644,22 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
         self.recurse_to_root()
     }
 
-    unsafe fn successor(&mut self) -> *mut AVLTreeNode<T, K> {
-        if self.right != ptr::null_mut() {
-            return (*self.right).leftmost();
-        } else if self.parent != ptr::null_mut() {
-            let mut cur = self as *mut AVLTreeNode<T, K>;
-            while (*cur).parent != ptr::null_mut() {
-                let parent = (*cur).parent;
-                if (*parent).left == cur {
-                    return parent;
+    fn successor(&mut self) -> *mut AVLTreeNode<T, K> {
+        unsafe {
+            if self.right != ptr::null_mut() {
+                return (*self.right).leftmost();
+            } else if self.parent != ptr::null_mut() {
+                let mut cur = self as *mut AVLTreeNode<T, K>;
+                while (*cur).parent != ptr::null_mut() {
+                    let parent = (*cur).parent;
+                    if (*parent).left == cur {
+                        return parent;
+                    }
+                    cur = parent;
                 }
-
-                cur = parent;
             }
+            ptr::null_mut()
         }
-
-        ptr::null_mut()
     }
 }
 

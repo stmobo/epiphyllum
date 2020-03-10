@@ -288,19 +288,23 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
         }
     }
 
-    unsafe fn leftmost(&mut self) -> *mut AVLTreeNode<T, K> {
-        if self.left == ptr::null_mut() {
-            return self as *mut AVLTreeNode<T, K>;
-        } else {
-            return (*self.left).leftmost();
+    fn leftmost(&mut self) -> *mut AVLTreeNode<T, K> {
+        unsafe {
+            if self.left == ptr::null_mut() {
+                return self as *mut AVLTreeNode<T, K>;
+            } else {
+                return (*self.left).leftmost();
+            }
         }
     }
 
-    unsafe fn rightmost(&mut self) -> *mut AVLTreeNode<T, K> {
-        if self.right == ptr::null_mut() {
-            return self as *mut AVLTreeNode<T, K>;
-        } else {
-            return (*self.right).rightmost();
+    fn rightmost(&mut self) -> *mut AVLTreeNode<T, K> {
+        unsafe {
+            if self.right == ptr::null_mut() {
+                return self as *mut AVLTreeNode<T, K>;
+            } else {
+                return (*self.right).rightmost();
+            }
         }
     }
 

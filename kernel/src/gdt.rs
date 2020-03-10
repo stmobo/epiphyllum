@@ -47,6 +47,7 @@ impl GDTEntry {
     }
 }
 
+#[allow(dead_code)]
 #[repr(transparent)]
 struct GDT {
     entries: [GDTEntry; 3],

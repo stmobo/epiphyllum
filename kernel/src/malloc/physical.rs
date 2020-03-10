@@ -4,7 +4,6 @@ use crate::paging::PAGE_MASK;
 
 use alloc::vec::Vec;
 use core::cmp::Ordering;
-use core::ptr;
 
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -358,7 +357,7 @@ pub struct PhysicalMemoryRange {
     range_start: usize,
     range_end: usize,
     free: Vec<FreeMemoryRange>,
-    allocator_tree: AVLTree<BuddyAllocator>, /* Organized by memory range address */
+    allocator_tree: AVLTree<BuddyAllocator, usize>, /* Organized by memory range address */
     allocator_usage_list: Vec<*mut BuddyAllocator>, /* Sorted by free space amount. */
 }
 
@@ -375,7 +374,7 @@ impl PhysicalMemoryRange {
             range_start: addr,
             range_end: addr + len,
             free: vec![FreeMemoryRange::new(addr, addr + len)],
-            allocator_tree: AVLTree::<BuddyAllocator>::new(),
+            allocator_tree: AVLTree::<BuddyAllocator, usize>::new(),
             allocator_usage_list: Vec::new(),
         };
 
@@ -498,9 +497,11 @@ impl PhysicalMemoryRange {
             .retain(|range| range.range_start < range.range_end);
 
         /* Insert our new allocator. */
-        let r = self.allocator_tree.insert(
-            BuddyAllocator::new(allocators_start, allocators_end - allocators_start).unwrap(),
-        );
+        let new_allocator =
+            BuddyAllocator::new(allocators_start, allocators_end - allocators_start).unwrap();
+        let r = self
+            .allocator_tree
+            .insert(new_allocator.mem_addr, new_allocator);
 
         r.usage_list_idx = self.allocator_usage_list.len();
 
@@ -537,7 +538,9 @@ impl PhysicalMemoryRange {
                     self.free.swap_remove(0);
                 }
 
-                let r = self.allocator_tree.insert(new_allocator);
+                let r = self
+                    .allocator_tree
+                    .insert(new_allocator.mem_addr, new_allocator);
                 r.usage_list_idx = self.allocator_usage_list.len();
                 self.allocator_usage_list.push(r as *mut BuddyAllocator);
 

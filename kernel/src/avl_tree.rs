@@ -4,12 +4,12 @@ use core::ptr;
 
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct AVLTree<T: Ord> {
-    root: *mut AVLTreeNode<T>,
+pub struct AVLTree<T, K: Ord> {
+    root: *mut AVLTreeNode<T, K>,
 }
 
-impl<T: Ord> AVLTree<T> {
-    pub fn new() -> AVLTree<T> {
+impl<T, K: Ord> AVLTree<T, K> {
+    pub fn new() -> AVLTree<T, K> {
         AVLTree {
             root: ptr::null_mut(),
         }
@@ -19,50 +19,31 @@ impl<T: Ord> AVLTree<T> {
         self.root == ptr::null_mut()
     }
 
-    unsafe fn find_first_recursive<P, R>(cur: *mut AVLTreeNode<T>, mapper: &P) -> Option<R>
-    where
-        P: Fn(&T) -> Option<R>,
-    {
-        if cur == ptr::null_mut() {
-            return None;
-        }
-
-        if let Some(result) = mapper((*cur).data.as_mut().unwrap()) {
-            return Some(result);
-        }
-
-        if (*cur).left != ptr::null_mut() {
-            if let Some(result) = AVLTree::<T>::find_first_recursive((*cur).left, mapper) {
-                return Some(result);
-            }
-        }
-
-        AVLTree::<T>::find_first_recursive((*cur).right, mapper)
-    }
-
     pub fn find_first<P, R>(&self, mapper: P) -> Option<R>
     where
         P: Fn(&T) -> Option<R>,
     {
-        unsafe { AVLTree::<T>::find_first_recursive(self.root, &mapper) }
+        unsafe {
+            if self.root != ptr::null_mut() {
+                (*self.root).find_first(&mapper)
+            } else {
+                None
+            }
+        }
     }
 
-    pub fn delete<K, F>(&mut self, key: K, key_func: F) -> Option<T>
-    where
-        K: Ord,
-        F: Fn(&T) -> K,
-    {
+    pub fn delete(&mut self, key: K) -> Option<T> {
         use alloc::alloc::dealloc;
         if self.root == ptr::null_mut() {
             return None;
         }
 
         unsafe {
-            if let Some(p) = (*self.root).search(key, key_func) {
+            if let Some(p) = (*self.root).search(key) {
                 let (new_root, ret) = (*p).remove();
                 self.root = new_root;
 
-                let layout = Layout::new::<AVLTreeNode<T>>();
+                let layout = Layout::new::<AVLTreeNode<T, K>>();
                 ptr::drop_in_place(p);
                 dealloc(p as *mut u8, layout);
 
@@ -78,9 +59,8 @@ impl<T: Ord> AVLTree<T> {
     /// `key_func` must be a function that maps values within this tree
     /// to non-overlapping intervals; this function will return the value
     /// whose interval contains `key`, if it exists within the tree.
-    pub fn search_interval<K, F>(&self, key: K, key_func: F) -> Option<&T>
+    pub fn search_interval<F>(&self, key: K, key_func: F) -> Option<&T>
     where
-        K: Ord,
         F: Fn(&T) -> (K, K),
     {
         if self.root == ptr::null_mut() {
@@ -91,26 +71,21 @@ impl<T: Ord> AVLTree<T> {
     }
 
     /// Get a reference to a value within this tree.
-    pub fn search<K, F>(&self, key: K, key_func: F) -> Option<&T>
-    where
-        K: Ord,
-        F: Fn(&T) -> K,
-    {
+    pub fn search(&self, key: K) -> Option<&T> {
         if self.root == ptr::null_mut() {
             return None;
         }
 
         unsafe {
             (*self.root)
-                .search(key, key_func)
+                .search(key)
                 .map(|p| (*p).data.as_ref().unwrap())
         }
     }
 
     /// Look up a value by interval in this tree and get a mutable reference to it.
-    pub fn search_interval_mut<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
+    pub fn search_interval_mut<F>(&mut self, key: K, key_func: F) -> Option<&mut T>
     where
-        K: Ord,
         F: Fn(&T) -> (K, K),
     {
         if self.root == ptr::null_mut() {
@@ -121,18 +96,14 @@ impl<T: Ord> AVLTree<T> {
     }
 
     /// Look up a value in this tree and get a mutable reference to it.
-    pub fn search_mut<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
-    where
-        K: Ord,
-        F: Fn(&T) -> K,
-    {
+    pub fn search_mut(&mut self, key: K) -> Option<&mut T> {
         if self.root == ptr::null_mut() {
             return None;
         }
 
         unsafe {
             (*self.root)
-                .search(key, key_func)
+                .search(key)
                 .map(|p| (*p).data.as_mut().unwrap())
         }
     }
@@ -140,25 +111,25 @@ impl<T: Ord> AVLTree<T> {
     /// Insert a new node into this tree.
     ///
     /// Returns a reference to the inserted element.
-    pub fn insert(&mut self, data: T) -> &mut T {
+    pub fn insert(&mut self, key: K, data: T) -> &mut T {
         if self.root != ptr::null_mut() {
-            let (new_root, elem) = unsafe { (*self.root).insert(data) };
+            let (new_root, elem) = unsafe { (*self.root).insert(key, data) };
             self.root = new_root;
             elem.data.as_mut().unwrap()
         } else {
             unsafe {
-                self.root = AVLTreeNode::<T>::new_alloc(data);
+                self.root = AVLTreeNode::<T, K>::new_alloc(key, data);
                 (*self.root).data.as_mut().unwrap()
             }
         }
     }
 }
 
-impl<T: Ord> Drop for AVLTree<T> {
+impl<T, K: Ord> Drop for AVLTree<T, K> {
     fn drop(&mut self) {
         use alloc::alloc::dealloc;
 
-        let layout = Layout::new::<AVLTreeNode<T>>();
+        let layout = Layout::new::<AVLTreeNode<T, K>>();
         unsafe {
             if self.root != ptr::null_mut() {
                 ptr::drop_in_place(self.root);
@@ -168,19 +139,20 @@ impl<T: Ord> Drop for AVLTree<T> {
     }
 }
 
-unsafe impl<T: Ord> Send for AVLTree<T> {}
-unsafe impl<T: Ord> Sync for AVLTree<T> {}
+unsafe impl<T, K: Ord> Send for AVLTree<T, K> {}
+unsafe impl<T, K: Ord> Sync for AVLTree<T, K> {}
 
 #[derive(Debug)]
-pub struct AVLTreeNode<T: Ord> {
+pub struct AVLTreeNode<T, K: Ord> {
+    key: K,
     data: Option<T>,
-    parent: *mut AVLTreeNode<T>,
-    left: *mut AVLTreeNode<T>,
-    right: *mut AVLTreeNode<T>,
+    parent: *mut AVLTreeNode<T, K>,
+    left: *mut AVLTreeNode<T, K>,
+    right: *mut AVLTreeNode<T, K>,
     balance: i8,
 }
 
-impl<T: Ord> Deref for AVLTreeNode<T> {
+impl<T, K: Ord> Deref for AVLTreeNode<T, K> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -188,21 +160,22 @@ impl<T: Ord> Deref for AVLTreeNode<T> {
     }
 }
 
-impl<T: Ord> DerefMut for AVLTreeNode<T> {
+impl<T, K: Ord> DerefMut for AVLTreeNode<T, K> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data.as_mut().unwrap()
     }
 }
 
-impl<T: Ord> AVLTreeNode<T> {
-    unsafe fn new_alloc(data: T) -> *mut AVLTreeNode<T> {
+impl<T, K: Ord> AVLTreeNode<T, K> {
+    unsafe fn new_alloc(key: K, data: T) -> *mut AVLTreeNode<T, K> {
         use alloc::alloc::alloc;
 
-        let layout = Layout::new::<AVLTreeNode<T>>();
-        let new_node = alloc(layout) as *mut AVLTreeNode<T>;
+        let layout = Layout::new::<AVLTreeNode<T, K>>();
+        let new_node = alloc(layout) as *mut AVLTreeNode<T, K>;
         ptr::write(
             new_node,
             AVLTreeNode {
+                key,
                 data: Some(data),
                 parent: ptr::null_mut(),
                 left: ptr::null_mut(),
@@ -214,12 +187,35 @@ impl<T: Ord> AVLTreeNode<T> {
         new_node
     }
 
-    fn search_interval<K, F>(&mut self, key: K, key_func: F) -> Option<&mut T>
+    unsafe fn find_first<P, R>(&mut self, mapper: &P) -> Option<R>
+    where
+        P: Fn(&T) -> Option<R>,
+    {
+        if let Some(result) = mapper(self.data.as_mut().unwrap()) {
+            return Some(result);
+        }
+
+        if self.left != ptr::null_mut() {
+            if let Some(result) = (*self.left).find_first(mapper) {
+                return Some(result);
+            }
+        }
+
+        if self.right != ptr::null_mut() {
+            if let Some(result) = (*self.right).find_first(mapper) {
+                return Some(result);
+            }
+        }
+
+        None
+    }
+
+    fn search_interval<F>(&mut self, key: K, key_func: F) -> Option<&mut T>
     where
         K: Ord,
         F: Fn(&T) -> (K, K),
     {
-        let mut cur: *mut AVLTreeNode<T> = self as *mut AVLTreeNode<T>;
+        let mut cur: *mut AVLTreeNode<T, K> = self as *mut AVLTreeNode<T, K>;
 
         loop {
             unsafe {
@@ -246,22 +242,16 @@ impl<T: Ord> AVLTreeNode<T> {
         }
     }
 
-    fn search<K, F>(&mut self, key: K, key_func: F) -> Option<*mut AVLTreeNode<T>>
-    where
-        K: Ord,
-        F: Fn(&T) -> K,
-    {
-        let mut cur: *mut AVLTreeNode<T> = self as *mut AVLTreeNode<T>;
+    fn search(&mut self, key: K) -> Option<*mut AVLTreeNode<T, K>> {
+        let mut cur: *mut AVLTreeNode<T, K> = self as *mut AVLTreeNode<T, K>;
 
         loop {
             unsafe {
-                let cur_key = key_func((*cur).data.as_ref().unwrap());
-
-                if key == cur_key {
+                if key == (*cur).key {
                     return Some(&mut *cur);
                 }
 
-                if key < cur_key {
+                if key < (*cur).key {
                     if (*cur).left != ptr::null_mut() {
                         cur = (*cur).left;
                     } else {
@@ -278,33 +268,33 @@ impl<T: Ord> AVLTreeNode<T> {
         }
     }
 
-    unsafe fn leftmost(&mut self) -> *mut AVLTreeNode<T> {
+    unsafe fn leftmost(&mut self) -> *mut AVLTreeNode<T, K> {
         if self.left == ptr::null_mut() {
-            return self as *mut AVLTreeNode<T>;
+            return self as *mut AVLTreeNode<T, K>;
         } else {
             return (*self.left).leftmost();
         }
     }
 
-    unsafe fn rightmost(&mut self) -> *mut AVLTreeNode<T> {
+    unsafe fn rightmost(&mut self) -> *mut AVLTreeNode<T, K> {
         if self.right == ptr::null_mut() {
-            return self as *mut AVLTreeNode<T>;
+            return self as *mut AVLTreeNode<T, K>;
         } else {
             return (*self.right).rightmost();
         }
     }
 
     /// Remove this node from the tree.
-    unsafe fn remove(&mut self) -> (*mut AVLTreeNode<T>, T) {
-        let self_ptr = self as *mut AVLTreeNode<T>;
+    unsafe fn remove(&mut self) -> (*mut AVLTreeNode<T, K>, T) {
+        let self_ptr = self as *mut AVLTreeNode<T, K>;
 
-        let replacement: *mut AVLTreeNode<T>;
-        let retrace_from: *mut AVLTreeNode<T>;
+        let replacement: *mut AVLTreeNode<T, K>;
+        let retrace_from: *mut AVLTreeNode<T, K>;
 
         if self.left != ptr::null_mut() && self.right != ptr::null_mut() {
             /* Two children */
-            let replacement_child: *mut AVLTreeNode<T>;
-            let replacement_parent: *mut AVLTreeNode<T>;
+            let replacement_child: *mut AVLTreeNode<T, K>;
+            let replacement_parent: *mut AVLTreeNode<T, K>;
 
             if self.balance <= 0 {
                 /* Replace with in-order successor node */
@@ -391,13 +381,13 @@ impl<T: Ord> AVLTreeNode<T> {
         (new_root, self.data.take().unwrap())
     }
 
-    unsafe fn retrace_delete(&mut self) -> *mut AVLTreeNode<T> {
+    unsafe fn retrace_delete(&mut self) -> *mut AVLTreeNode<T, K> {
         if self.parent == ptr::null_mut() {
-            return self as *mut AVLTreeNode<T>;
+            return self as *mut AVLTreeNode<T, K>;
         }
 
         let prev_parent = self.parent;
-        if (*self.parent).right == (self as *mut AVLTreeNode<T>) {
+        if (*self.parent).right == (self as *mut AVLTreeNode<T, K>) {
             /* Right subtree has decreased in height */
 
             if (*self.parent).balance < 0 {
@@ -463,18 +453,18 @@ impl<T: Ord> AVLTreeNode<T> {
     /// Returns a tuple consisting of:
     ///   - a pointer to the new root node, and
     ///   - a reference to the inserted element.
-    fn insert(&mut self, data: T) -> (*mut AVLTreeNode<T>, &mut AVLTreeNode<T>) {
-        let mut cur: *mut AVLTreeNode<T> = self as *mut AVLTreeNode<T>;
-        let new_node: *mut AVLTreeNode<T>;
+    fn insert(&mut self, key: K, data: T) -> (*mut AVLTreeNode<T, K>, &mut AVLTreeNode<T, K>) {
+        let mut cur: *mut AVLTreeNode<T, K> = self as *mut AVLTreeNode<T, K>;
+        let new_node: *mut AVLTreeNode<T, K>;
 
         unsafe {
-            new_node = AVLTreeNode::<T>::new_alloc(data);
+            new_node = AVLTreeNode::<T, K>::new_alloc(key, data);
         }
 
         loop {
             unsafe {
-                let r1 = (*new_node).data.as_ref().unwrap();
-                let r2 = (*cur).data.as_ref().unwrap();
+                let r1 = &(*new_node).key;
+                let r2 = &(*cur).key;
 
                 if *r1 < *r2 {
                     if (*cur).left != ptr::null_mut() {
@@ -502,20 +492,20 @@ impl<T: Ord> AVLTreeNode<T> {
         }
     }
 
-    unsafe fn right_rotate(&mut self) -> *mut AVLTreeNode<T> {
+    unsafe fn right_rotate(&mut self) -> *mut AVLTreeNode<T, K> {
         let pivot = self.left;
 
         if pivot != ptr::null_mut() {
             self.left = (*pivot).right;
-            (*pivot).right = self as *mut AVLTreeNode<T>;
+            (*pivot).right = self as *mut AVLTreeNode<T, K>;
 
             if self.left != ptr::null_mut() {
-                (*self.left).parent = self as *mut AVLTreeNode<T>;
+                (*self.left).parent = self as *mut AVLTreeNode<T, K>;
             }
 
             let prev_parent = self.parent;
             if prev_parent != ptr::null_mut() {
-                if (*prev_parent).left == (self as *mut AVLTreeNode<T>) {
+                if (*prev_parent).left == (self as *mut AVLTreeNode<T, K>) {
                     (*prev_parent).left = pivot;
                 } else {
                     (*prev_parent).right = pivot;
@@ -537,20 +527,20 @@ impl<T: Ord> AVLTreeNode<T> {
         pivot
     }
 
-    unsafe fn left_rotate(&mut self) -> *mut AVLTreeNode<T> {
+    unsafe fn left_rotate(&mut self) -> *mut AVLTreeNode<T, K> {
         let pivot = self.right;
 
         if pivot != ptr::null_mut() {
             self.right = (*pivot).left;
-            (*pivot).left = self as *mut AVLTreeNode<T>;
+            (*pivot).left = self as *mut AVLTreeNode<T, K>;
 
             if self.right != ptr::null_mut() {
-                (*self.right).parent = self as *mut AVLTreeNode<T>;
+                (*self.right).parent = self as *mut AVLTreeNode<T, K>;
             }
 
             let prev_parent = self.parent;
             if prev_parent != ptr::null_mut() {
-                if (*prev_parent).left == (self as *mut AVLTreeNode<T>) {
+                if (*prev_parent).left == (self as *mut AVLTreeNode<T, K>) {
                     (*prev_parent).left = pivot;
                 } else {
                     (*prev_parent).right = pivot;
@@ -572,9 +562,9 @@ impl<T: Ord> AVLTreeNode<T> {
         pivot
     }
 
-    fn recurse_to_root(&mut self) -> *mut AVLTreeNode<T> {
+    fn recurse_to_root(&mut self) -> *mut AVLTreeNode<T, K> {
         if self.parent == ptr::null_mut() {
-            return self as *mut AVLTreeNode<T>;
+            return self as *mut AVLTreeNode<T, K>;
         } else {
             unsafe { (*self.parent).recurse_to_root() }
         }
@@ -583,13 +573,13 @@ impl<T: Ord> AVLTreeNode<T> {
     /// Retracing loop after subtree height increases.
     ///
     /// Returns the new overall root of the tree.
-    unsafe fn retrace_insert(&mut self) -> *mut AVLTreeNode<T> {
+    unsafe fn retrace_insert(&mut self) -> *mut AVLTreeNode<T, K> {
         if self.parent == ptr::null_mut() {
-            return self as *mut AVLTreeNode<T>;
+            return self as *mut AVLTreeNode<T, K>;
         }
 
         let prev_parent = self.parent;
-        if (*self.parent).right == (self as *mut AVLTreeNode<T>) {
+        if (*self.parent).right == (self as *mut AVLTreeNode<T, K>) {
             /* We are right-hand child: */
 
             if (*self.parent).balance > 0 {
@@ -633,13 +623,31 @@ impl<T: Ord> AVLTreeNode<T> {
 
         self.recurse_to_root()
     }
+
+    unsafe fn successor(&mut self) -> *mut AVLTreeNode<T, K> {
+        if self.right != ptr::null_mut() {
+            return (*self.right).leftmost();
+        } else if self.parent != ptr::null_mut() {
+            let mut cur = self as *mut AVLTreeNode<T, K>;
+            while (*cur).parent != ptr::null_mut() {
+                let parent = (*cur).parent;
+                if (*parent).left == cur {
+                    return parent;
+                }
+
+                cur = parent;
+            }
+        }
+
+        ptr::null_mut()
+    }
 }
 
-impl<T: Ord> Drop for AVLTreeNode<T> {
+impl<T, K: Ord> Drop for AVLTreeNode<T, K> {
     fn drop(&mut self) {
         use alloc::alloc::dealloc;
 
-        let layout = Layout::new::<AVLTreeNode<T>>();
+        let layout = Layout::new::<AVLTreeNode<T, K>>();
         unsafe {
             if let Some(data) = self.data.take() {
                 drop(data);

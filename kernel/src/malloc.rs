@@ -2,6 +2,7 @@ use alloc::alloc::{GlobalAlloc, Layout};
 
 pub mod physical;
 pub mod small_zone_alloc;
+pub mod virtual_mem;
 
 use small_zone_alloc::SmallZoneAllocator;
 use small_zone_alloc::KERNEL_SMA;

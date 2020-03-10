@@ -34,6 +34,25 @@ lazy_static! {
         Mutex::new(AVLTree::new());
 }
 
+pub fn is_page_aligned<T: Into<usize>>(value: T) -> bool {
+    let v: usize = value.into();
+    v & PAGE_MASK != 0
+}
+
+pub fn round_to_next_page<T: Into<usize>>(value: T) -> usize {
+    let v: usize = value.into();
+    if v & PAGE_MASK != 0 {
+        (v & PAGE_MASK) + 0x1000
+    } else {
+        v
+    }
+}
+
+pub fn round_to_prev_page<T: Into<usize>>(value: T) -> usize {
+    let v: usize = value.into();
+    v & PAGE_MASK
+}
+
 fn get_paging_metadata() -> MutexGuard<'static, AVLTree<PageTableMetadata, PageHierarchyIndex>> {
     PAGING_METADATA.lock()
 }

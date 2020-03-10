@@ -407,7 +407,7 @@ impl PhysicalMemoryRange {
             self.allocator_usage_list[idx] = t;
 
             swap(&mut (*cur).usage_list_idx, &mut (*larger).usage_list_idx);
-            return self.usage_list_sift_up(swap_idx);
+            return self.usage_list_sift_down(swap_idx);
         }
     }
 

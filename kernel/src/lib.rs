@@ -159,6 +159,13 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     println!("Heap virtual memory allocator initialized.");
 
+    let addr = malloc::virtual_mem::allocate(0x1000).unwrap();
+    println!("Test allocation: {:#016x}", addr);
+
+    malloc::virtual_mem::deallocate(addr, 0x1000);
+
+    println!("Test allocation freed.");
+
     let test_addr: usize = 0xA_BAD_1DEA_000;
     paging::map_virtual_address(test_addr, 0);
 

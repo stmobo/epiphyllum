@@ -89,8 +89,8 @@ impl PartialOrd for RangeWrapper {
         let r = rhs.borrow();
         let s = self.borrow();
 
-        let s1 = r.size();
-        let s2 = s.size();
+        let s1 = s.size();
+        let s2 = r.size();
 
         Some(s1.cmp(&s2))
     }
@@ -101,8 +101,8 @@ impl Ord for RangeWrapper {
         let r = rhs.borrow();
         let s = self.borrow();
 
-        let s1 = r.size();
-        let s2 = s.size();
+        let s1 = s.size();
+        let s2 = r.size();
 
         s1.cmp(&s2)
     }
@@ -295,7 +295,7 @@ impl VirtualMemoryAllocator {
             range.start = start;
         }
 
-        if range.end > end && end - range.end >= 0x1000 {
+        if range.end > end && range.end - end >= 0x1000 {
             /* Same thing, but with extra space at the end of the region */
             self.add_range(
                 RangeWrapper::new(VirtualMemoryRange::new(end, range.end)),
@@ -358,6 +358,12 @@ impl VirtualMemoryAllocator {
             merge_next = None;
         }
 
+        if merge_prev.is_some() && merge_next.is_some() {
+            println!("{:#016x}", self.free[merge_next.unwrap()].borrow().start);
+            println!("{:#016x}", self.free[merge_prev.unwrap()].borrow().start);
+            assert_ne!(merge_next, merge_prev);
+        }
+
         if let Some(idx) = merge_prev {
             /* Take the entry off the free list first. */
             let merge_wrapper = self.remove_free_list_entry(idx);
@@ -398,9 +404,18 @@ fn kernel_heap_allocator() -> MutexGuard<'static, VirtualMemoryAllocator> {
     KERNEL_HEAP_VMEM_ALLOC.lock()
 }
 
-pub unsafe fn initialize() {
+pub unsafe fn initialize(boot_heap_pages: u64) {
     use crate::paging::{KERNEL_BASE, KERNEL_HEAP_BASE};
-    kernel_heap_allocator().register_memory(KERNEL_HEAP_BASE, KERNEL_BASE);
+    let mut l = kernel_heap_allocator();
+
+    l.register_memory(KERNEL_HEAP_BASE, KERNEL_BASE);
+    let mut cur_addr = KERNEL_HEAP_BASE;
+
+    for i in 0..(boot_heap_pages as usize) {
+        l.allocate_at(cur_addr, cur_addr + 0x1000);
+
+        cur_addr += 0x1000;
+    }
 }
 
 /// Allocate virtual memory pages from the kernel heap.

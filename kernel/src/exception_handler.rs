@@ -179,16 +179,17 @@ extern "x86-interrupt" fn stack_segment_fault(isf: &mut InterruptStackFrame, _co
     );
 }
 
-extern "x86-interrupt" fn protection_fault(isf: &mut InterruptStackFrame, _code: u64) {
+extern "x86-interrupt" fn protection_fault(isf: &mut InterruptStackFrame, code: u64) {
     panic!(
-        "general protection fault (#GP) at {:#016x}",
-        isf.instruction_pointer.as_u64()
+        "general protection fault (#GP) at {:#016x} (code {})",
+        isf.instruction_pointer.as_u64(),
+        code
     );
 }
 
 extern "x86-interrupt" fn page_fault(isf: &mut InterruptStackFrame, _code: PageFaultErrorCode) {
     panic!(
-        "unhandled page fault (#GP) at {:#016x}",
+        "unhandled page fault (#PG) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }

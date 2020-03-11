@@ -19,6 +19,17 @@ impl<T, K: Ord> AVLTree<T, K> {
         self.root == ptr::null_mut()
     }
 
+    pub fn traverse<F>(&self, f: F)
+    where
+        F: Fn(&K, &T) -> (),
+    {
+        if self.root != ptr::null_mut() {
+            unsafe {
+                return (*self.root).inorder_traversal(&f);
+            }
+        }
+    }
+
     pub fn successor(&self, key: K) -> Option<(&K, &T)> {
         if self.root == ptr::null_mut() {
             return None;
@@ -266,6 +277,21 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
         new_node
     }
 
+    unsafe fn inorder_traversal<F>(&self, func: &F)
+    where
+        F: Fn(&K, &T) -> (),
+    {
+        if self.left != ptr::null_mut() {
+            (*self.left).inorder_traversal(func);
+        }
+
+        func(&self.key, self.data.as_ref().unwrap());
+
+        if self.right != ptr::null_mut() {
+            return (*self.right).inorder_traversal(func);
+        }
+    }
+
     unsafe fn find_first<P, R>(&mut self, mapper: &P) -> Option<R>
     where
         P: Fn(&T) -> Option<R>,
@@ -344,7 +370,7 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
         use core::cmp::Ordering;
 
         match key.cmp(&self.key) {
-            Ordering::Equal => self as *mut AVLTreeNode<T, K>,
+            Ordering::Equal => self.successor(),
             Ordering::Less => {
                 if self.left != ptr::null_mut() {
                     unsafe { (*self.left).find_successor(key) }
@@ -365,8 +391,8 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
     fn find_predecessor(&mut self, key: K) -> *mut AVLTreeNode<T, K> {
         use core::cmp::Ordering;
 
-        match key.cmp(&self.key) {
-            Ordering::Equal => self as *mut AVLTreeNode<T, K>,
+        match self.key.cmp(&key) {
+            Ordering::Equal => self.predecessor(),
             Ordering::Less => {
                 if self.left != ptr::null_mut() {
                     unsafe { (*self.left).find_predecessor(key) }
@@ -408,6 +434,10 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
     unsafe fn remove(&mut self) -> (*mut AVLTreeNode<T, K>, T) {
         let self_ptr = self as *mut AVLTreeNode<T, K>;
 
+        assert_ne!(self.left, self_ptr);
+        assert_ne!(self.right, self_ptr);
+        assert_ne!(self.parent, self_ptr);
+
         let replacement: *mut AVLTreeNode<T, K>;
         let retrace_from: *mut AVLTreeNode<T, K>;
 
@@ -422,14 +452,8 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
                 replacement_child = (*replacement).right;
                 replacement_parent = (*replacement).parent;
 
-                (*replacement).left = self.left;
-                (*self.left).parent = replacement;
-
                 if replacement != self.right {
                     (*replacement_parent).left = replacement_child;
-                    retrace_from = replacement_child;
-                } else {
-                    retrace_from = replacement;
                 }
             } else {
                 /* Replace with in-order predecessor node */
@@ -437,14 +461,8 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
                 replacement_child = (*replacement).left;
                 replacement_parent = (*replacement).parent;
 
-                (*replacement).right = self.right;
-                (*self.right).parent = replacement;
-
                 if replacement != self.left {
                     (*replacement_parent).right = replacement_child;
-                    retrace_from = replacement_child;
-                } else {
-                    retrace_from = replacement;
                 }
             }
 
@@ -452,6 +470,8 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
             if replacement_parent != self_ptr && replacement_child != ptr::null_mut() {
                 (*replacement_child).parent = replacement_parent;
             }
+
+            retrace_from = replacement;
         } else if self.left != ptr::null_mut() {
             /* One child */
             replacement = self.left;
@@ -468,7 +488,7 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
             }
 
             replacement = ptr::null_mut();
-            retrace_from = self.parent;
+            retrace_from = self_ptr;
         }
 
         if replacement != ptr::null_mut() {
@@ -498,10 +518,11 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
         }
 
         assert_ne!(retrace_from, ptr::null_mut());
-        let new_root = (*retrace_from).retrace_delete();
-        self.parent = ptr::null_mut();
         self.left = ptr::null_mut();
         self.right = ptr::null_mut();
+
+        let new_root = (*retrace_from).retrace_delete();
+        self.parent = ptr::null_mut();
 
         (new_root, self.data.take().unwrap())
     }
@@ -520,27 +541,19 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
                 let sibling = (*self.parent).left;
                 let b = (*sibling).balance;
 
-                if (*sibling).balance <= 0 {
-                    (*self.parent).right_rotate();
+                if (*sibling).balance > 0 {
+                    (*sibling).left_right_rotate();
                 } else {
-                    let prev_parent = self.parent;
-                    (*sibling).left_rotate();
-                    (*prev_parent).right_rotate();
-                }
-
-                if b != 0 {
-                    return (*prev_parent).retrace_delete();
+                    (*self.parent).right_rotate();
                 }
             } else {
                 /* Tree is still balanced. */
-                (*self.parent).balance -= 1;
                 if (*self.parent).balance == 0 {
-                    /* Need to continue retracing. */
-                    return (*self.parent).retrace_insert();
+                    (*self.parent).balance = -1;
+                    return self.recurse_to_root();
+                } else {
+                    (*self.parent).balance = 0;
                 }
-
-                /* Otherwise, tree is balanced */
-                return self.recurse_to_root();
             }
         } else {
             /* Left subtree has decreased in height */
@@ -549,28 +562,22 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
                 let sibling = (*self.parent).right;
                 let b = (*sibling).balance;
 
-                if (*sibling).balance >= 0 {
-                    (*self.parent).left_rotate();
+                if (*sibling).balance < 0 {
+                    (*sibling).right_left_rotate();
                 } else {
-                    let prev_parent = self.parent;
-                    (*sibling).right_rotate();
-                    (*prev_parent).left_rotate();
-                }
-
-                if b != 0 {
-                    return (*prev_parent).retrace_delete();
+                    (*self.parent).left_rotate();
                 }
             } else {
-                (*self.parent).balance += 1;
                 if (*self.parent).balance == 0 {
-                    return (*self.parent).retrace_insert();
+                    (*self.parent).balance = 1;
+                    return self.recurse_to_root();
+                } else {
+                    (*self.parent).balance = 0;
                 }
-
-                return self.recurse_to_root();
             }
         }
 
-        self.recurse_to_root()
+        return (*prev_parent).retrace_delete();
     }
 
     /// Insert a new node into this tree.
@@ -581,6 +588,11 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
     fn insert(&mut self, key: K, data: T) -> (*mut AVLTreeNode<T, K>, &mut AVLTreeNode<T, K>) {
         let mut cur: *mut AVLTreeNode<T, K> = self as *mut AVLTreeNode<T, K>;
         let new_node: *mut AVLTreeNode<T, K>;
+        let self_ptr = self as *mut AVLTreeNode<T, K>;
+
+        assert_ne!(self.left, self_ptr);
+        assert_ne!(self.right, self_ptr);
+        assert_ne!(self.parent, self_ptr);
 
         unsafe {
             new_node = AVLTreeNode::<T, K>::new_alloc(key, data);
@@ -588,10 +600,7 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
 
         loop {
             unsafe {
-                let r1 = &(*new_node).key;
-                let r2 = &(*cur).key;
-
-                if *r1 < *r2 {
+                if (*new_node).key < (*cur).key {
                     if (*cur).left != ptr::null_mut() {
                         cur = (*cur).left;
                     } else {
@@ -620,33 +629,31 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
     unsafe fn right_rotate(&mut self) -> *mut AVLTreeNode<T, K> {
         let pivot = self.left;
 
-        if pivot != ptr::null_mut() {
-            self.left = (*pivot).right;
-            (*pivot).right = self as *mut AVLTreeNode<T, K>;
+        self.left = (*pivot).right;
+        (*pivot).right = self as *mut AVLTreeNode<T, K>;
 
-            if self.left != ptr::null_mut() {
-                (*self.left).parent = self as *mut AVLTreeNode<T, K>;
-            }
+        if self.left != ptr::null_mut() {
+            (*self.left).parent = self as *mut AVLTreeNode<T, K>;
+        }
 
-            let prev_parent = self.parent;
-            if prev_parent != ptr::null_mut() {
-                if (*prev_parent).left == (self as *mut AVLTreeNode<T, K>) {
-                    (*prev_parent).left = pivot;
-                } else {
-                    (*prev_parent).right = pivot;
-                }
-            }
-
-            (*pivot).parent = prev_parent;
-            self.parent = pivot;
-
-            if (*pivot).balance == 0 {
-                self.balance = -1;
-                (*pivot).balance = 1;
+        let prev_parent = self.parent;
+        if prev_parent != ptr::null_mut() {
+            if (*prev_parent).left == (self as *mut AVLTreeNode<T, K>) {
+                (*prev_parent).left = pivot;
             } else {
-                self.balance = 0;
-                (*pivot).balance = 0;
+                (*prev_parent).right = pivot;
             }
+        }
+
+        (*pivot).parent = prev_parent;
+        self.parent = pivot;
+
+        if (*pivot).balance == 0 {
+            self.balance = -1;
+            (*pivot).balance = 1;
+        } else {
+            self.balance = 0;
+            (*pivot).balance = 0;
         }
 
         pivot
@@ -655,36 +662,80 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
     unsafe fn left_rotate(&mut self) -> *mut AVLTreeNode<T, K> {
         let pivot = self.right;
 
-        if pivot != ptr::null_mut() {
-            self.right = (*pivot).left;
-            (*pivot).left = self as *mut AVLTreeNode<T, K>;
+        self.right = (*pivot).left;
+        (*pivot).left = self as *mut AVLTreeNode<T, K>;
 
-            if self.right != ptr::null_mut() {
-                (*self.right).parent = self as *mut AVLTreeNode<T, K>;
-            }
+        if self.right != ptr::null_mut() {
+            (*self.right).parent = self as *mut AVLTreeNode<T, K>;
+        }
 
-            let prev_parent = self.parent;
-            if prev_parent != ptr::null_mut() {
-                if (*prev_parent).left == (self as *mut AVLTreeNode<T, K>) {
-                    (*prev_parent).left = pivot;
-                } else {
-                    (*prev_parent).right = pivot;
-                }
-            }
-
-            (*pivot).parent = prev_parent;
-            self.parent = pivot;
-
-            if (*pivot).balance == 0 {
-                self.balance = 1;
-                (*pivot).balance = -1;
+        let prev_parent = self.parent;
+        if prev_parent != ptr::null_mut() {
+            if (*prev_parent).left == (self as *mut AVLTreeNode<T, K>) {
+                (*prev_parent).left = pivot;
             } else {
-                self.balance = 0;
-                (*pivot).balance = 0;
+                (*prev_parent).right = pivot;
             }
         }
 
+        (*pivot).parent = prev_parent;
+        self.parent = pivot;
+
+        if (*pivot).balance == 0 {
+            self.balance = 1;
+            (*pivot).balance = -1;
+        } else {
+            self.balance = 0;
+            (*pivot).balance = 0;
+        }
+
         pivot
+    }
+
+    unsafe fn right_left_rotate(&mut self) {
+        let parent = self.parent;
+        let pivot = self.left;
+
+        let pivot_balance = (*pivot).balance;
+
+        self.right_rotate();
+        (*parent).left_rotate();
+
+        if pivot_balance > 0 {
+            (*parent).balance = -1;
+            self.balance = 0;
+        } else if pivot_balance == 0 {
+            (*parent).balance = 0;
+            self.balance = 0;
+        } else {
+            (*parent).balance = 0;
+            self.balance = 1;
+        }
+
+        (*pivot).balance = 0;
+    }
+
+    unsafe fn left_right_rotate(&mut self) {
+        let parent = self.parent;
+        let pivot = self.right;
+
+        let pivot_balance = (*pivot).balance;
+
+        self.left_rotate();
+        (*parent).right_rotate();
+
+        if pivot_balance > 0 {
+            (*parent).balance = 1;
+            self.balance = 0;
+        } else if pivot_balance == 0 {
+            (*parent).balance = 0;
+            self.balance = 0;
+        } else {
+            (*parent).balance = 0;
+            self.balance = -1;
+        }
+
+        (*pivot).balance = 0;
     }
 
     fn recurse_to_root(&mut self) -> *mut AVLTreeNode<T, K> {
@@ -714,13 +765,15 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
                     (*self.parent).left_rotate();
                 } else {
                     /* Right-Left case. */
-                    self.right_rotate();
-                    (*prev_parent).left_rotate();
+                    self.right_left_rotate();
                 }
             } else {
                 /* Tree is still balanced. */
-                (*self.parent).balance += 1;
-                if (*self.parent).balance == 1 {
+                if (*self.parent).balance < 0 {
+                    (*self.parent).balance = 0;
+                    return self.recurse_to_root();
+                } else {
+                    (*self.parent).balance = 1;
                     /* Need to continue retracing. */
                     return (*self.parent).retrace_insert();
                 }
@@ -735,12 +788,14 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
                     (*self.parent).right_rotate();
                 } else {
                     /* Left-Right case. */
-                    self.left_rotate();
-                    (*prev_parent).right_rotate();
+                    self.left_right_rotate();
                 }
             } else {
-                (*self.parent).balance -= 1;
-                if (*self.parent).balance == -1 {
+                if (*self.parent).balance > 0 {
+                    (*self.parent).balance = 0;
+                    return self.recurse_to_root();
+                } else {
+                    (*self.parent).balance = -1;
                     return (*self.parent).retrace_insert();
                 }
             }

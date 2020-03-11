@@ -154,14 +154,23 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     println!("Physical memory allocator initialized.");
 
     unsafe {
-        malloc::virtual_mem::initialize();
+        malloc::virtual_mem::initialize(boot_info.heap_pages);
     }
 
     println!("Heap virtual memory allocator initialized.");
 
     let addr = malloc::virtual_mem::allocate(0x1000).unwrap();
     println!("Test allocation: {:#016x}", addr);
+    /*
+        use avl_tree::AVLTree;
+        let mut t: AVLTree<u64, u64> = AVLTree::new();
+        for i in 0..25 {
+            t.insert(i, i);
+        }
+        t.traverse(|k, _| println!("{:?}", *k));
 
+        loop {}
+    */
     malloc::virtual_mem::deallocate(addr, 0x1000);
 
     println!("Test allocation freed.");

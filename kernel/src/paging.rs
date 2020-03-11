@@ -36,12 +36,12 @@ lazy_static! {
 
 pub fn is_page_aligned<T: Into<usize>>(value: T) -> bool {
     let v: usize = value.into();
-    v & PAGE_MASK != 0
+    v & (!PAGE_MASK) == 0
 }
 
 pub fn round_to_next_page<T: Into<usize>>(value: T) -> usize {
     let v: usize = value.into();
-    if v & PAGE_MASK != 0 {
+    if v & (!PAGE_MASK) != 0 {
         (v & PAGE_MASK) + 0x1000
     } else {
         v

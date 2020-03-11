@@ -371,9 +371,7 @@ impl PhysicalMemoryRange {
         let child = self.allocator_usage_list[idx];
 
         if (*child).free_bytes > (*parent).free_bytes {
-            let t = self.allocator_usage_list[parent_idx];
-            self.allocator_usage_list[parent_idx] = self.allocator_usage_list[idx];
-            self.allocator_usage_list[idx] = t;
+            self.allocator_usage_list.swap(idx, parent_idx);
 
             swap(&mut (*child).usage_list_idx, &mut (*parent).usage_list_idx);
             return self.usage_list_sift_up(parent_idx);
@@ -382,6 +380,10 @@ impl PhysicalMemoryRange {
 
     unsafe fn usage_list_sift_down(&mut self, idx: usize) {
         use core::mem::swap;
+        if self.allocator_usage_list.len() >= idx {
+            return;
+        }
+
         let mut swap_idx = idx;
 
         if let Some(c1) = self.allocator_usage_list.get_mut((idx << 1) + 1) {
@@ -399,15 +401,26 @@ impl PhysicalMemoryRange {
         }
 
         if swap_idx != idx {
+            self.allocator_usage_list.swap(swap_idx, idx);
+
             let cur = self.allocator_usage_list[idx];
             let larger = self.allocator_usage_list[swap_idx];
 
-            let t = self.allocator_usage_list[swap_idx];
-            self.allocator_usage_list[swap_idx] = self.allocator_usage_list[idx];
-            self.allocator_usage_list[idx] = t;
-
             swap(&mut (*cur).usage_list_idx, &mut (*larger).usage_list_idx);
             return self.usage_list_sift_down(swap_idx);
+        }
+    }
+
+    fn remove_usage_list_entry(&mut self, idx: usize) {
+        self.allocator_usage_list.swap_remove(idx);
+        for ent in self.allocator_usage_list.iter().skip(idx) {
+            unsafe {
+                let p = *ent;
+                (*p).usage_list_idx -= 1;
+            }
+        }
+        unsafe {
+            self.usage_list_sift_down(idx);
         }
     }
 
@@ -514,7 +527,7 @@ impl PhysicalMemoryRange {
                 cur_free_head.range_start += new_allocator_sz;
                 if cur_free_head.range_start >= cur_free_head.range_end {
                     drop(cur_free_head);
-                    self.free.swap_remove(0);
+                    self.remove_usage_list_entry(0);
                 }
 
                 let r = self

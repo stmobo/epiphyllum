@@ -462,6 +462,11 @@ impl<T, K: Ord> AVLTreeNode<T, K> {
             retrace_from = replacement;
         } else {
             /* No children */
+            if self.parent == ptr::null_mut() {
+                /* We're the only node in the tree */
+                return (ptr::null_mut(), self.data.take().unwrap());
+            }
+
             replacement = ptr::null_mut();
             retrace_from = self.parent;
         }

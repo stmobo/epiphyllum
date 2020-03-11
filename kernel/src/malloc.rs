@@ -1,6 +1,6 @@
 use alloc::alloc::{GlobalAlloc, Layout};
 
-pub mod physical;
+pub mod physical_mem;
 pub mod small_zone_alloc;
 pub mod virtual_mem;
 
@@ -8,12 +8,7 @@ use small_zone_alloc::SmallZoneAllocator;
 use small_zone_alloc::KERNEL_SMA;
 
 pub use crate::paging::KERNEL_HEAP_BASE;
-
-pub use physical::allocate_physical_memory;
-pub use physical::allocate_physical_memory_at;
-pub use physical::deallocate_physical_memory;
-pub use physical::register_physical_memory;
-pub use physical::PhysicalMemory;
+pub use physical_mem::PhysicalMemory;
 
 pub struct KernelHeapAllocator {
     sma_ready: bool,

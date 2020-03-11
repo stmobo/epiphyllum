@@ -605,7 +605,7 @@ impl PhysicalMemoryAllocator {
 unsafe impl Send for PhysicalMemoryAllocator {}
 
 /// Register a range of physical memory with the allocator.
-pub unsafe fn register_physical_memory(addr: usize, len: usize) {
+pub unsafe fn register(addr: usize, len: usize) {
     let mut l = KERNEL_PHYS_ALLOC.lock();
     l.register_range(addr, len);
 }
@@ -613,7 +613,7 @@ pub unsafe fn register_physical_memory(addr: usize, len: usize) {
 /// Allocate a given amount of physical memory in bytes.
 ///
 /// The given size must be a multiple of the page size!
-pub unsafe fn allocate_physical_memory(size: usize) -> Option<usize> {
+pub unsafe fn allocate(size: usize) -> Option<usize> {
     let mut l = KERNEL_PHYS_ALLOC.lock();
     l.allocate(size)
 }
@@ -622,7 +622,7 @@ pub unsafe fn allocate_physical_memory(size: usize) -> Option<usize> {
 ///
 /// The given size must be a multiple of the page size, and the allocated
 /// buffer must not cross a megabyte boundary.
-pub unsafe fn allocate_physical_memory_at(addr: usize, size: usize) -> Option<usize> {
+pub unsafe fn allocate_at(addr: usize, size: usize) -> Option<usize> {
     let mut l = KERNEL_PHYS_ALLOC.lock();
     l.allocate_at(addr, size)
 }
@@ -631,7 +631,7 @@ pub unsafe fn allocate_physical_memory_at(addr: usize, size: usize) -> Option<us
 ///
 /// The size passed to this function must be the same size as
 /// passed to the original allocation call!
-pub unsafe fn deallocate_physical_memory(addr: usize, size: usize) {
+pub unsafe fn deallocate(addr: usize, size: usize) {
     let mut l = KERNEL_PHYS_ALLOC.lock();
     l.deallocate(addr, size);
 }
@@ -658,7 +658,7 @@ impl PhysicalMemory {
         }
 
         unsafe {
-            allocate_physical_memory(alloc_sz).map(|address| PhysicalMemory {
+            allocate(alloc_sz).map(|address| PhysicalMemory {
                 address,
                 size: alloc_sz,
             })
@@ -683,7 +683,7 @@ impl PhysicalMemory {
         }
 
         unsafe {
-            allocate_physical_memory_at(addr, alloc_sz).map(|address| PhysicalMemory {
+            allocate_at(addr, alloc_sz).map(|address| PhysicalMemory {
                 address,
                 size: alloc_sz,
             })
@@ -713,6 +713,6 @@ impl PhysicalMemory {
 
 impl Drop for PhysicalMemory {
     fn drop(&mut self) {
-        unsafe { deallocate_physical_memory(self.address(), self.size()) }
+        unsafe { deallocate(self.address(), self.size()) }
     }
 }

@@ -135,7 +135,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
                     println!("Available");
 
                     unsafe {
-                        malloc::register_physical_memory(m.base_addr as usize, m.length as usize);
+                        malloc::physical_mem::register(m.base_addr as usize, m.length as usize);
                     }
                 }
                 MemoryType::ACPI => println!("ACPI information"),
@@ -152,6 +152,12 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     paging::reserve_bootstrap_physical_pages();
 
     println!("Physical memory allocator initialized.");
+
+    unsafe {
+        malloc::virtual_mem::initialize();
+    }
+
+    println!("Heap virtual memory allocator initialized.");
 
     let test_addr: usize = 0xA_BAD_1DEA_000;
     paging::map_virtual_address(test_addr, 0);

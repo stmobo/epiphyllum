@@ -6,7 +6,7 @@ use lazy_static::lazy_static;
 use spin::{Mutex, MutexGuard};
 
 use crate::avl_tree::AVLTree;
-use crate::malloc;
+use crate::malloc::physical_mem;
 
 pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
 
@@ -399,7 +399,7 @@ fn remove_page_table_ref(index: PageHierarchyIndex) {
 
         let paddr = table.table_addr();
         unsafe {
-            malloc::deallocate_physical_memory(paddr, 0x1000);
+            physical_mem::deallocate(paddr, 0x1000);
         }
 
         if parent != PageHierarchyIndex::PML4T {
@@ -419,7 +419,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
 
     let pdpt;
     if !pml4t[pml4t_idx].present() {
-        let table_addr = unsafe { malloc::allocate_physical_memory(0x1000) };
+        let table_addr = unsafe { physical_mem::allocate(0x1000) };
         if table_addr.is_none() {
             return false;
         }
@@ -433,7 +433,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
 
     let pd;
     if !pdpt[pdpt_idx].present() {
-        let table_addr = unsafe { malloc::allocate_physical_memory(0x1000) };
+        let table_addr = unsafe { physical_mem::allocate(0x1000) };
         if table_addr.is_none() {
             return false;
         }
@@ -447,7 +447,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
 
     let pt;
     if !pd[pd_idx].present() {
-        let table_addr = unsafe { malloc::allocate_physical_memory(0x1000) };
+        let table_addr = unsafe { physical_mem::allocate(0x1000) };
         if table_addr.is_none() {
             return false;
         }
@@ -540,27 +540,27 @@ pub fn reserve_bootstrap_physical_pages() {
         {
             pml4t_rc += 1;
 
-            malloc::allocate_physical_memory_at(ent.physical_address(), 0x1000);
+            physical_mem::allocate_at(ent.physical_address(), 0x1000);
             let pdpt = PageTable::get_pdpt(pml4_idx);
             let mut pdpt_rc = 0;
 
             for (pdpt_idx, ent) in pdpt.iter().enumerate().filter(|e| e.1.present()) {
                 pdpt_rc += 1;
 
-                malloc::allocate_physical_memory_at(ent.physical_address(), 0x1000);
+                physical_mem::allocate_at(ent.physical_address(), 0x1000);
                 let pd = PageTable::get_pd(pml4_idx, pdpt_idx);
                 let mut pd_rc = 0;
 
                 for (pd_idx, ent) in pd.iter().enumerate().filter(|e| e.1.present()) {
                     pd_rc += 1;
 
-                    malloc::allocate_physical_memory_at(ent.physical_address(), 0x1000);
+                    physical_mem::allocate_at(ent.physical_address(), 0x1000);
                     let pt = PageTable::get_pt(pml4_idx, pdpt_idx, pd_idx);
                     let mut pt_rc = 0;
 
                     for ent in pt.iter().filter(|e| e.present()) {
                         pt_rc += 1;
-                        malloc::allocate_physical_memory_at(ent.physical_address(), 0x1000);
+                        physical_mem::allocate_at(ent.physical_address(), 0x1000);
                     }
 
                     let index =

@@ -6,6 +6,14 @@ use alloc::vec::Vec;
 use core::cell::{Ref, RefCell, RefMut};
 use core::cmp::Ordering;
 
+use lazy_static::lazy_static;
+use spin::{Mutex, MutexGuard};
+
+lazy_static! {
+    static ref KERNEL_HEAP_VMEM_ALLOC: Mutex<VirtualMemoryAllocator> =
+        Mutex::new(VirtualMemoryAllocator::new());
+}
+
 #[derive(Debug, Clone)]
 struct VirtualMemoryRange {
     start: usize,
@@ -106,6 +114,13 @@ struct VirtualMemoryAllocator {
 }
 
 impl VirtualMemoryAllocator {
+    fn new() -> VirtualMemoryAllocator {
+        VirtualMemoryAllocator {
+            regions: AVLTree::new(),
+            free: Vec::new(),
+        }
+    }
+
     fn add_range(&mut self, range: RangeWrapper, free: bool) {
         self.regions.insert(range.start(), range.clone());
         if free {
@@ -374,4 +389,40 @@ impl VirtualMemoryAllocator {
         drop(freed_region);
         self.add_range(wrapper, true);
     }
+}
+
+unsafe impl Send for VirtualMemoryAllocator {}
+unsafe impl Sync for VirtualMemoryAllocator {}
+
+fn kernel_heap_allocator() -> MutexGuard<'static, VirtualMemoryAllocator> {
+    KERNEL_HEAP_VMEM_ALLOC.lock()
+}
+
+pub unsafe fn initialize() {
+    use crate::paging::{KERNEL_BASE, KERNEL_HEAP_BASE};
+    kernel_heap_allocator().register_memory(KERNEL_HEAP_BASE, KERNEL_BASE);
+}
+
+/// Allocate virtual memory pages from the kernel heap.
+///
+/// The size of the memory request is in bytes; if the size is not already a
+/// multiple of the page size, it will be rounded up accordingly.
+pub fn allocate(size: usize) -> Option<usize> {
+    kernel_heap_allocator().allocate(size)
+}
+
+/// Allocate a specific address range from the kernel heap space.
+///
+/// The given `start` and `end` addresses, if not already page-aligned, will
+/// be rounded down and up (respectively) to align them to page boundaries.
+pub fn allocate_at(start: usize, end: usize) -> Option<usize> {
+    kernel_heap_allocator().allocate_at(start, end)
+}
+
+/// Deallocate virtual memory pages from the kernel heap.
+///
+/// The allocation memory address and size must match a previous call
+/// to [allocate_kernel_heap_pages] or []
+pub fn deallocate(addr: usize, size: usize) {
+    kernel_heap_allocator().deallocate(addr, size);
 }

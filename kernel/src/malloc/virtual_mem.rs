@@ -411,7 +411,7 @@ pub unsafe fn initialize(boot_heap_pages: u64) {
     l.register_memory(KERNEL_HEAP_BASE, KERNEL_BASE);
     let mut cur_addr = KERNEL_HEAP_BASE;
 
-    for i in 0..(boot_heap_pages as usize) {
+    for _ in 0..(boot_heap_pages as usize) {
         l.allocate_at(cur_addr, cur_addr + 0x1000);
 
         cur_addr += 0x1000;

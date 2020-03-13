@@ -256,10 +256,18 @@ impl SmallZoneAllocator {
     /// Pop a page off the free list and make it available for allocations
     /// of the specified order.
     unsafe fn init_new_zone_page(&mut self, order: usize) -> *mut SmallZone {
-        let p = self.free_list;
+        use super::heap_pages;
+        let mut p = self.free_list;
 
         if p == ptr::null_mut() {
-            panic!("no free pages left for heap allocations");
+            if let Some(vaddr) = heap_pages::allocate(0x1000) {
+                self.add_free_pages(vaddr, 1);
+                p = self.free_list;
+            }
+
+            if p == ptr::null_mut() {
+                panic!("no free pages left for heap allocations");
+            }
         }
 
         let next = (*p).next;

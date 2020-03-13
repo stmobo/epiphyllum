@@ -161,16 +161,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     let addr = malloc::virtual_mem::allocate(0x1000).unwrap();
     println!("Test allocation: {:#016x}", addr);
-    /*
-        use avl_tree::AVLTree;
-        let mut t: AVLTree<u64, u64> = AVLTree::new();
-        for i in 0..25 {
-            t.insert(i, i);
-        }
-        t.traverse(|k, _| println!("{:?}", *k));
 
-        loop {}
-    */
     malloc::virtual_mem::deallocate(addr, 0x1000);
 
     println!("Test allocation freed.");
@@ -189,6 +180,19 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     paging::unmap_virtual_address(test_addr);
     println!("Test address unmapped...");
+
+    unsafe {
+        use core::ptr;
+
+        let test2 = malloc::heap_pages::allocate(0x2000).unwrap();
+        println!("Test heap page allocation at: {:#016x}", test2);
+
+        ptr::write_volatile(test2 as *mut u64, 0xDEADC0DE);
+        println!(
+            "test read: {:#08x}",
+            ptr::read_volatile(test2 as *const u64)
+        );
+    }
 
     #[cfg(test)]
     test_main();

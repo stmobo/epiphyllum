@@ -1,11 +1,34 @@
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::structures::idt::{
+    HandlerFunc, InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode,
+};
 
 use crate::malloc::PhysicalMemory;
 use crate::paging::KERNEL_BASE;
 
 static mut IDT_PAGE: Option<PhysicalMemory> = None;
+static mut IDT: Option<&'static mut InterruptDescriptorTable> = None;
 
-pub fn initialize_idt(idt: &mut InterruptDescriptorTable) {
+#[repr(C, packed)]
+struct IDTDescriptor {
+    size: u16,
+    offset: u64,
+}
+
+fn load_idt(idt_addr: usize) {
+    use core::mem;
+
+    let idt_size = mem::size_of::<InterruptDescriptorTable>() - 1;
+    unsafe {
+        let descriptor = IDTDescriptor {
+            size: idt_size as u16,
+            offset: idt_addr as u64,
+        };
+
+        asm!("lidt [$0]" :: "r"(&descriptor) :: "volatile", "intel");
+    }
+}
+
+pub fn initialize_idt(idt: &'static mut InterruptDescriptorTable) {
     idt.divide_error.set_handler_fn(divide_error);
     idt.debug.set_handler_fn(debug_exception);
     idt.non_maskable_interrupt.set_handler_fn(nmi);
@@ -34,6 +57,11 @@ pub fn initialize_idt(idt: &mut InterruptDescriptorTable) {
     for i in 32..256 {
         idt[i].set_handler_fn(unhandled_interrupt);
     }
+
+    unsafe {
+        load_idt((idt as *mut InterruptDescriptorTable) as usize);
+        IDT = Some(idt);
+    }
 }
 
 pub fn claim_idt_page(addr: usize) {
@@ -41,6 +69,14 @@ pub fn claim_idt_page(addr: usize) {
         IDT_PAGE = PhysicalMemory::new_at(addr, 0x1000);
         if !IDT_PAGE.is_some() {
             panic!("could not claim IDT physical memory page");
+        }
+    }
+}
+
+pub fn register_handler(vector: usize, func: HandlerFunc) {
+    unsafe {
+        if let Some(idt) = IDT.as_deref_mut() {
+            idt[vector].set_handler_fn(func);
         }
     }
 }

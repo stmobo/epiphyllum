@@ -90,7 +90,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     let mb: MultibootInfo;
     let idt_phys_addr: usize;
-    let mut idt_phys: &'static mut InterruptDescriptorTable;
+    let idt_phys: &'static mut InterruptDescriptorTable;
 
     unsafe {
         let mb_addr = boot_info.multiboot_info as *const MultibootInfo;
@@ -107,8 +107,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     }
 
     gdt::initialize_gdt();
-    exception_handler::initialize_idt(&mut idt_phys);
-    idt_phys.load();
+    exception_handler::initialize_idt(idt_phys);
 
     unsafe {
         println!(

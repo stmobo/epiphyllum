@@ -182,6 +182,12 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     paging::unmap_virtual_address(test_addr);
     println!("Test address unmapped...");
 
+    interrupts::register_handler(0x40, |vector: u8| -> interrupts::InterruptHandlerStatus {
+        println!("handled interrupt 0x40");
+
+        interrupts::InterruptHandlerStatus::Handled
+    });
+
     unsafe {
         use core::ptr;
 

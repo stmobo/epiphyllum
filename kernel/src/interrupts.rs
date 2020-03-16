@@ -1,6 +1,8 @@
 mod exceptions;
+mod handler;
 mod idt;
 
+pub use handler::{register_handler, InterruptHandlerStatus};
 pub use idt::{claim_idt_page, initialize_idt};
 
 #[repr(C)]
@@ -36,15 +38,9 @@ pub struct InterruptFrame {
 
 #[no_mangle]
 pub extern "C" fn kernel_entry(frame: InterruptFrame) {
-    unsafe {
-        if frame.interrupt_no < 32 {
-            return exceptions::handle_exception(&frame);
-        }
-    }
-
-    println!("{:#016x}", (&frame as *const InterruptFrame) as usize);
-
-    unsafe {
-        println!("spurious interrupt {}", frame.interrupt_no);
+    if frame.interrupt_no < 32 {
+        return exceptions::handle_exception(&frame);
+    } else {
+        return handler::handle_interrupt(&frame);
     }
 }

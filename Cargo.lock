@@ -44,6 +44,7 @@ checksum = "c4e1d41c471573612df00397113557693b5bf5909666a8acb253930612b93312"
 name = "epiphyllum"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "compiler_builtins",
  "cstr_core",
  "lazy_static",

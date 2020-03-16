@@ -22,6 +22,9 @@ path = "src/main.rs"
 #]
 #test-success-exit-code = 33
 
+[build-dependencies]
+cc = "1.0"
+
 [dependencies]
 spin = "*"
 x86_64 = "^0.9"

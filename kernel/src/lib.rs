@@ -19,11 +19,12 @@ extern crate compiler_builtins;
 pub mod print;
 pub mod avl_tree;
 pub mod devices;
-pub mod exception_handler;
 pub mod gdt;
+pub mod interrupts;
 pub mod malloc;
 pub mod multiboot;
 pub mod paging;
+pub mod stack_trace;
 
 #[cfg(test)]
 pub mod test_runner;
@@ -65,7 +66,7 @@ fn panic(info: &PanicInfo) -> ! {
     }
 
     println!("Stack trace:");
-    for frame in exception_handler::trace_stack() {
+    for frame in stack_trace::trace_stack() {
         println!("    {:#016x}", frame.frame_ip);
     }
 
@@ -90,24 +91,25 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     let mb: MultibootInfo;
     let idt_phys_addr: usize;
-    let idt_phys: &'static mut InterruptDescriptorTable;
+    let idt_phys: usize;
 
     unsafe {
         let mb_addr = boot_info.multiboot_info as *const MultibootInfo;
         mb = (*(paging::physical_memory(mb_addr).unwrap())).clone();
 
         idt_phys_addr = boot_info.idt_phys as usize;
-        let offset_ptr = paging::physical_memory_mut(boot_info.idt_phys).unwrap();
-        idt_phys = &mut *offset_ptr;
+        idt_phys = paging::physical_memory_offset(boot_info.idt_phys as usize).unwrap();
 
         println!(
             "IDT at physical address {:#016x}, virtual address {:#016x}",
-            idt_phys_addr, offset_ptr as usize
+            idt_phys_addr, idt_phys
         );
     }
 
     gdt::initialize_gdt();
-    exception_handler::initialize_idt(idt_phys);
+    unsafe {
+        interrupts::initialize_idt(idt_phys);
+    }
 
     unsafe {
         println!(
@@ -147,7 +149,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         panic!("Loader did not provide a memory map");
     }
 
-    exception_handler::claim_idt_page(idt_phys_addr);
+    interrupts::claim_idt_page(idt_phys_addr);
     paging::reserve_bootstrap_physical_pages();
 
     println!("Physical memory allocator initialized.");
@@ -183,8 +185,12 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     unsafe {
         use core::ptr;
 
+        asm!("int $$0x40" :::: "volatile");
+
         let test2 = malloc::heap_pages::allocate(0x2000).unwrap();
         println!("Test heap page allocation at: {:#016x}", test2);
+
+        asm!("int $$0x1" :::: "volatile");
 
         ptr::write_volatile(test2 as *mut u64, 0xDEADC0DE);
         println!(

@@ -48,7 +48,7 @@ pub fn register_handler(interrupt_no: u8, handler: InterruptHandler) {
     }
 }
 
-pub fn handle_interrupt(frame: &InterruptFrame) {
+pub fn handle_interrupt(frame: &mut InterruptFrame) {
     if frame.interrupt_no < 32 {
         return;
     }

@@ -1,6 +1,6 @@
 use super::InterruptFrame;
 
-pub fn handle_exception(frame: &InterruptFrame) {
+pub fn handle_exception(frame: &mut InterruptFrame) {
     match frame.interrupt_no {
         0 => divide_error(frame),
         1 => debug_exception(frame),

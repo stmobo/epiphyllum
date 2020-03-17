@@ -60,6 +60,8 @@ enter_kernel:
     movabs $kernel_entry, %rax
     call *%rax
 
+    mov %rax, %rsp
+
     LOAD_REGISTERS
 
     add $16, %rsp

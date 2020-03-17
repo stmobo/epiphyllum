@@ -37,10 +37,12 @@ pub struct InterruptFrame {
 }
 
 #[no_mangle]
-pub extern "C" fn kernel_entry(frame: InterruptFrame) {
+pub extern "C" fn kernel_entry(mut frame: InterruptFrame) -> *mut InterruptFrame {
     if frame.interrupt_no < 32 {
-        return exceptions::handle_exception(&frame);
+        exceptions::handle_exception(&mut frame);
     } else {
-        return handler::handle_interrupt(&frame);
+        handler::handle_interrupt(&mut frame);
     }
+
+    return &mut frame;
 }

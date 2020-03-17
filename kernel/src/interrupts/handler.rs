@@ -1,22 +1,15 @@
-use super::InterruptFrame;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 use lazy_static::lazy_static;
 use spin::RwLock;
 
+use super::InterruptFrame;
 use crate::devices::pic::local_apic;
-
-pub type InterruptHandler = fn(u8) -> InterruptHandlerStatus;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum InterruptHandlerStatus {
-    Handled,
-    NotHandled,
-}
 
 struct IRQInfo {
     handlers: Vec<InterruptHandler>,
+    cur_id: u64,
 }
 
 lazy_static! {
@@ -32,25 +25,65 @@ lazy_static! {
     };
 }
 
-pub fn register_handler(interrupt_no: u8, handler: InterruptHandler) {
-    if interrupt_no < 32 {
-        return;
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum InterruptHandlerStatus {
+    Handled,
+    NotHandled,
+}
+
+struct InterruptHandler {
+    handler: Box<dyn Fn() -> InterruptHandlerStatus + Send + Sync + 'static>,
+    id: u64,
+}
+
+impl InterruptHandler {
+    fn new<T>(handler: T) -> InterruptHandler
+    where
+        T: Fn() -> InterruptHandlerStatus + Send + Sync + 'static,
+    {
+        InterruptHandler {
+            handler: Box::new(handler),
+            id: 0,
+        }
     }
 
-    let mut lock = INTERRUPT_VECTORS[(interrupt_no - 32) as usize].write();
-
-    if lock.is_none() {
-        lock.replace(Box::new(IRQInfo {
-            handlers: vec![handler],
-        }));
-        return;
-    } else {
-        let info: &mut IRQInfo = lock.as_deref_mut().unwrap();
-        info.handlers.push(handler);
+    fn run(&self) -> InterruptHandlerStatus {
+        (self.handler)()
     }
 }
 
-pub fn unregister_handler(interrupt_no: u8, handler: InterruptHandler) {
+pub fn register_handler<T>(interrupt_no: u8, handler: T) -> Result<u64, ()>
+where
+    T: Fn() -> InterruptHandlerStatus + Send + Sync + 'static,
+{
+    if interrupt_no < 32 {
+        return Err(());
+    }
+
+    let mut lock = INTERRUPT_VECTORS[(interrupt_no - 32) as usize].write();
+    let mut handler = InterruptHandler::new(handler);
+
+    if lock.is_none() {
+        handler.id = 0;
+        lock.replace(Box::new(IRQInfo {
+            handlers: vec![handler],
+            cur_id: 1,
+        }));
+
+        return Ok(0);
+    } else {
+        let info: &mut IRQInfo = lock.as_deref_mut().unwrap();
+        let id = info.cur_id;
+
+        handler.id = id;
+        info.cur_id += 1;
+
+        info.handlers.push(handler);
+        return Ok(id);
+    }
+}
+
+pub fn unregister_handler(interrupt_no: u8, id: u64) {
     if interrupt_no < 32 {
         return;
     }
@@ -59,8 +92,8 @@ pub fn unregister_handler(interrupt_no: u8, handler: InterruptHandler) {
 
     if lock.is_some() {
         let info: &mut IRQInfo = lock.as_deref_mut().unwrap();
-        for i in 0..info.handlers.len() {
-            if info.handlers[i] == handler {
+        for (i, handler) in info.handlers.iter().enumerate() {
+            if handler.id == id {
                 info.handlers.swap_remove(i);
                 return;
             }
@@ -84,7 +117,7 @@ pub fn handle_interrupt(frame: &mut InterruptFrame) {
 
     if let Some(vector_data) = lock.as_deref() {
         for handler in vector_data.handlers.iter() {
-            if handler(frame.interrupt_no as u8) == InterruptHandlerStatus::Handled {
+            if handler.run() == InterruptHandlerStatus::Handled {
                 found_handler = true;
                 break;
             }

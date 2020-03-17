@@ -1,7 +1,6 @@
 //! Intel PIT support.
 
 use crate::asm::ports;
-use crate::paging;
 
 const CH0_ADDR: u16 = 0x40;
 const COMMAND_ADDR: u16 = 0x43;

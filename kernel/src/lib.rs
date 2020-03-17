@@ -168,10 +168,11 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         asm::interrupts::set_if(true);
     }
 
-    interrupts::register_handler(0x20, |vector: u8| -> interrupts::InterruptHandlerStatus {
+    interrupts::register_handler(0x20, || -> interrupts::InterruptHandlerStatus {
         println!("handled interrupt 0x20");
         interrupts::InterruptHandlerStatus::Handled
-    });
+    })
+    .unwrap();
 
     lapic
         .configure_timer(devices::pic::local_apic::TimerMode::OneShot, 1, 0x20)

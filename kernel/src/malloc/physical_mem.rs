@@ -774,11 +774,11 @@ impl PhysicalMemory {
     }
 
     pub fn as_ptr<T>(&self) -> *const T {
-        paging::physical_address(self.address()).unwrap()
+        paging::offset_direct_map(self.address()) as *const T
     }
 
     pub fn as_mut_ptr<T>(&self) -> *mut T {
-        paging::physical_address_mut(self.address()).unwrap()
+        paging::offset_direct_map(self.address()) as *mut T
     }
 }
 

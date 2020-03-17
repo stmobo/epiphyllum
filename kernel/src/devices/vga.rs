@@ -62,7 +62,7 @@ pub struct VGATextMode {
 impl VGATextMode {
     fn new(base_addr: usize) -> VGATextMode {
         let sz: usize = (SCREEN_WIDTH * SCREEN_HEIGHT) as usize;
-        let base: *mut VGACharacter = paging::physical_address_mut(base_addr).unwrap();
+        let base: *mut VGACharacter = paging::offset_direct_map(base_addr) as *mut VGACharacter;
 
         VGATextMode {
             buf: unsafe { &mut *ptr::slice_from_raw_parts_mut(base, sz) },

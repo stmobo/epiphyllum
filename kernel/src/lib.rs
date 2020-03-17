@@ -17,6 +17,7 @@ extern crate compiler_builtins;
 
 #[macro_use]
 pub mod print;
+pub mod asm;
 pub mod avl_tree;
 pub mod devices;
 pub mod gdt;
@@ -86,7 +87,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     println!("Epiphyllum kernel starting...");
     println!("Boot info structure address: {:#016x}", boot_info as usize);
 
-    let boot_info_ptr = paging::physical_memory(boot_info).unwrap();
+    let boot_info_ptr = paging::direct_map_pointer(boot_info);
     let boot_info: KernelLoaderInfo = unsafe { (*boot_info_ptr).clone() };
 
     let mb: MultibootInfo;
@@ -95,10 +96,10 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     unsafe {
         let mb_addr = boot_info.multiboot_info as *const MultibootInfo;
-        mb = (*(paging::physical_memory(mb_addr).unwrap())).clone();
+        mb = (*(paging::direct_map_pointer(mb_addr))).clone();
 
         idt_phys_addr = boot_info.idt_phys as usize;
-        idt_phys = paging::physical_memory_offset(boot_info.idt_phys as usize).unwrap();
+        idt_phys = paging::offset_direct_map(boot_info.idt_phys as usize);
 
         println!(
             "IDT at physical address {:#016x}, virtual address {:#016x}",

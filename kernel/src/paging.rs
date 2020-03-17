@@ -1,3 +1,4 @@
+use core::convert::TryInto;
 use core::ops;
 use x86_64::instructions::tlb;
 use x86_64::VirtAddr;
@@ -592,26 +593,18 @@ pub fn reserve_bootstrap_physical_pages() {
     }
 }
 
-pub fn physical_memory_offset(phys_addr: usize) -> Option<usize> {
-    if phys_addr >= MAX_PHYSICAL_MEMORY {
-        return None;
+pub fn offset_direct_map<T: TryInto<usize>>(phys_addr: T) -> usize {
+    if let Ok(offset) = phys_addr.try_into() {
+        PHYSICAL_MAP_BASE + offset
+    } else {
+        panic!("could not convert offset into usize");
     }
-
-    Some(PHYSICAL_MAP_BASE + phys_addr)
 }
 
-pub fn physical_memory<T>(ptr: *const T) -> Option<*const T> {
-    physical_memory_offset(ptr as usize).map(|v| v as *const T)
+pub fn direct_map_pointer<T>(ptr: *const T) -> *const T {
+    offset_direct_map(ptr as usize) as *const T
 }
 
-pub fn physical_address<T, U: Into<usize>>(addr: U) -> Option<*const T> {
-    physical_memory_offset(addr.into()).map(|v| v as *const T)
-}
-
-pub fn physical_memory_mut<T>(ptr: *mut T) -> Option<*mut T> {
-    physical_memory_offset(ptr as usize).map(|v| v as *mut T)
-}
-
-pub fn physical_address_mut<T, U: Into<usize>>(addr: U) -> Option<*mut T> {
-    physical_memory_offset(addr.into()).map(|v| v as *mut T)
+pub fn direct_map_pointer_mut<T>(ptr: *mut T) -> *mut T {
+    offset_direct_map(ptr as usize) as *mut T
 }

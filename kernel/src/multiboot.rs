@@ -48,7 +48,7 @@ pub struct MultibootInfo {
 }
 
 fn expand_to_ptr<T>(addr: u32) -> *const T {
-    paging::physical_address(addr as usize).unwrap()
+    paging::offset_direct_map(addr) as *const T
 }
 
 impl MultibootInfo {

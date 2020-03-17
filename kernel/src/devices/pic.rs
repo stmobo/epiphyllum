@@ -142,6 +142,7 @@ pub mod local_apic {
 
         pub fn enable_apic(&self) {
             self.write_register(WritableRegisters::SpuriousInterruptVector, 0x1FF);
+            self.write_register(WritableRegisters::TaskPriority, 0);
         }
 
         pub fn set_timer_ticks(&self, ticks: u32) {

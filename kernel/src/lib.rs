@@ -161,50 +161,29 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     println!("Heap virtual memory allocator initialized.");
 
-    let addr = malloc::virtual_mem::allocate(0x1000).unwrap();
-    println!("Test allocation: {:#016x}", addr);
-
-    malloc::virtual_mem::deallocate(addr, 0x1000);
-
-    println!("Test allocation freed.");
-
-    let test_addr: usize = 0xA_BAD_1DEA_000;
-    paging::map_virtual_address(test_addr, 0);
+    let lapic = devices::pic::initialize();
+    println!("Local APIC initialized.");
 
     unsafe {
-        use core::ptr;
-        ptr::write_volatile(test_addr as *mut u64, 0xDEADBEEF);
-        println!(
-            "test read: {:#08x}",
-            ptr::read_volatile(test_addr as *const u64)
-        );
+        asm::interrupts::set_if(true);
     }
 
-    paging::unmap_virtual_address(test_addr);
-    println!("Test address unmapped...");
+    interrupts::register_handler(0x20, |vector: u8| -> interrupts::InterruptHandlerStatus {
+        println!("handled interrupt 0x20");
+        interrupts::InterruptHandlerStatus::Handled
+    });
+
+    lapic
+        .configure_timer(devices::pic::local_apic::TimerMode::OneShot, 1, 0x20)
+        .unwrap();
+
+    lapic.set_timer_ticks(0xFFFF);
 
     interrupts::register_handler(0x40, |vector: u8| -> interrupts::InterruptHandlerStatus {
         println!("handled interrupt 0x40");
 
         interrupts::InterruptHandlerStatus::Handled
     });
-
-    unsafe {
-        use core::ptr;
-
-        asm!("int $$0x40" :::: "volatile");
-
-        let test2 = malloc::heap_pages::allocate(0x2000).unwrap();
-        println!("Test heap page allocation at: {:#016x}", test2);
-
-        asm!("int $$0x1" :::: "volatile");
-
-        ptr::write_volatile(test2 as *mut u64, 0xDEADC0DE);
-        println!(
-            "test read: {:#08x}",
-            ptr::read_volatile(test2 as *const u64)
-        );
-    }
 
     #[cfg(test)]
     test_main();

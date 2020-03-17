@@ -5,6 +5,8 @@ use core::mem::MaybeUninit;
 use lazy_static::lazy_static;
 use spin::RwLock;
 
+use crate::devices::pic::local_apic;
+
 pub type InterruptHandler = fn(u8) -> InterruptHandlerStatus;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -53,6 +55,12 @@ pub fn handle_interrupt(frame: &mut InterruptFrame) {
         return;
     }
 
+    if frame.interrupt_no == 0xFF {
+        println!("Received spurious interrupt 0xFF");
+        return;
+    }
+
+    let lapic = local_apic::LocalAPIC::new();
     let mut found_handler = false;
     let lock = INTERRUPT_VECTORS[(frame.interrupt_no as usize) - 32].read();
 
@@ -67,5 +75,9 @@ pub fn handle_interrupt(frame: &mut InterruptFrame) {
 
     if !found_handler {
         println!("spurious interrupt {}", frame.interrupt_no);
+    }
+
+    if lapic.has_irqs_in_service() {
+        lapic.send_eoi();
     }
 }

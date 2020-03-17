@@ -1,5 +1,49 @@
 pub mod cpuid;
 
+fn get_flags() -> u64 {
+    let flags: u64;
+    unsafe {
+        asm!("pushfq; popq $0" : "=r"(flags) ::: "volatile");
+    }
+
+    return flags;
+}
+
+pub mod interrupts {
+    pub fn enabled() -> bool {
+        let flags = super::get_flags();
+        (flags & (1 << 9)) != 0
+    }
+
+    pub unsafe fn set_if(enabled: bool) {
+        if enabled {
+            asm!("sti" :::: "volatile");
+        } else {
+            asm!("cli" :::: "volatile");
+        }
+    }
+
+    pub struct InterruptDisableGuard(bool);
+    impl InterruptDisableGuard {
+        pub fn new() -> InterruptDisableGuard {
+            unsafe {
+                let ret = InterruptDisableGuard(enabled());
+                set_if(false);
+
+                ret
+            }
+        }
+    }
+
+    impl Drop for InterruptDisableGuard {
+        fn drop(&mut self) {
+            unsafe {
+                set_if(self.0);
+            }
+        }
+    }
+}
+
 pub mod ports {
     pub unsafe fn inb(addr: u16) -> u8 {
         let ret: u8;

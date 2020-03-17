@@ -5,10 +5,10 @@ clean:
 	xargo clean
 
 bootloader: 
-	cd bootloader && RUST_TARGET_PATH=`pwd` xargo build --target x86_64-bootloader
+	cd bootloader && RUST_TARGET_PATH=`pwd` xargo +nightly build --target x86_64-bootloader
 
 kernel: 
-	cd kernel && RUST_TARGET_PATH=`pwd` xargo build --target x86_64-epiphyllum
+	cd kernel && RUST_TARGET_PATH=`pwd` xargo +nightly -Zfeatures=all build --target x86_64-epiphyllum
 
 iso: bootloader kernel grub.cfg
 	mkdir -p target/iso/boot/grub

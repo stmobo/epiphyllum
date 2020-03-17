@@ -17,6 +17,7 @@ extern crate compiler_builtins;
 
 #[macro_use]
 pub mod print;
+pub mod acpica;
 pub mod asm;
 pub mod avl_tree;
 pub mod devices;

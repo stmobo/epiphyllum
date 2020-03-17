@@ -179,6 +179,10 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     lapic.set_timer_ticks(0xFFFF);
 
+    unsafe {
+        devices::pit::set_oneshot(2330);
+    }
+
     #[cfg(test)]
     test_main();
 

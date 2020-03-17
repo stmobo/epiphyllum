@@ -50,6 +50,24 @@ pub fn register_handler(interrupt_no: u8, handler: InterruptHandler) {
     }
 }
 
+pub fn unregister_handler(interrupt_no: u8, handler: InterruptHandler) {
+    if interrupt_no < 32 {
+        return;
+    }
+
+    let mut lock = INTERRUPT_VECTORS[(interrupt_no - 32) as usize].write();
+
+    if lock.is_some() {
+        let info: &mut IRQInfo = lock.as_deref_mut().unwrap();
+        for i in 0..info.handlers.len() {
+            if info.handlers[i] == handler {
+                info.handlers.swap_remove(i);
+                return;
+            }
+        }
+    }
+}
+
 pub fn handle_interrupt(frame: &mut InterruptFrame) {
     if frame.interrupt_no < 32 {
         return;
@@ -74,7 +92,7 @@ pub fn handle_interrupt(frame: &mut InterruptFrame) {
     }
 
     if !found_handler {
-        println!("spurious interrupt {}", frame.interrupt_no);
+        println!("spurious interrupt {:#2x}", frame.interrupt_no);
     }
 
     if lapic.has_irqs_in_service() {

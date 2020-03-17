@@ -179,12 +179,6 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     lapic.set_timer_ticks(0xFFFF);
 
-    interrupts::register_handler(0x40, |vector: u8| -> interrupts::InterruptHandlerStatus {
-        println!("handled interrupt 0x40");
-
-        interrupts::InterruptHandlerStatus::Handled
-    });
-
     #[cfg(test)]
     test_main();
 

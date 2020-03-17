@@ -4,9 +4,10 @@ use crate::asm::{msr, ports};
 use crate::paging;
 
 use core::ptr;
-use spin::Once;
+use spin::{Mutex, MutexGuard, Once};
 
 static LAPIC_BASE: Once<usize> = Once::new();
+static DEFAULT_IOAPIC: Once<Mutex<io_apic::IOAPIC>> = Once::new();
 const PIC1: u16 = 0x0020;
 const PIC2: u16 = 0x00A0;
 
@@ -91,6 +92,11 @@ pub mod local_apic {
             }
         }
 
+        pub fn id(&self) -> u8 {
+            let data = self.read_register(ReadableRegisters::ID);
+            ((data >> 24) & 0xFF) as u8
+        }
+
         pub fn read_irr(&self, irq_no: u8) -> bool {
             let bit_no = (irq_no % 32) as u32;
             let offset = 0x200 + (((irq_no as isize) / 32) * 16);
@@ -143,6 +149,8 @@ pub mod local_apic {
         pub fn enable_apic(&self) {
             self.write_register(WritableRegisters::SpuriousInterruptVector, 0x1FF);
             self.write_register(WritableRegisters::TaskPriority, 0);
+
+            println!("lapic: initialized lapic {}", self.id());
         }
 
         pub fn set_timer_ticks(&self, ticks: u32) {
@@ -243,11 +251,187 @@ pub mod local_apic {
     }
 }
 
+pub mod io_apic {
+    use super::*;
+
+    #[derive(Debug, Copy, Clone)]
+    #[repr(transparent)]
+    pub struct IOAPIC {
+        base_addr: *mut u32,
+    }
+
+    impl IOAPIC {
+        unsafe fn read_direct(&self, index: u32) -> u32 {
+            ptr::write_volatile(self.base_addr, index);
+            ptr::read_volatile(self.base_addr.offset(4))
+        }
+
+        unsafe fn write_direct(&mut self, index: u32, value: u32) {
+            ptr::write_volatile(self.base_addr, index);
+            ptr::write_volatile(self.base_addr.offset(4), value);
+        }
+
+        pub fn default() -> MutexGuard<'static, IOAPIC> {
+            DEFAULT_IOAPIC
+                .call_once(|| {
+                    let vaddr = paging::offset_direct_map(0xFEC00000u64);
+                    paging::map_virtual_address(vaddr, 0xFEC00000);
+
+                    Mutex::new(IOAPIC {
+                        base_addr: vaddr as *mut u32,
+                    })
+                })
+                .lock()
+        }
+
+        pub fn id(&self) -> u8 {
+            unsafe { ((self.read_direct(0) >> 24) & 0xF) as u8 }
+        }
+
+        pub fn max_redirection_entries(&self) -> u8 {
+            unsafe { ((self.read_direct(1) >> 16) & 0xFF) as u8 }
+        }
+
+        pub fn apic_version(&self) -> u8 {
+            unsafe { (self.read_direct(1) & 0xFF) as u8 }
+        }
+
+        pub fn get_redirection_entry(&self, index: u8) -> Result<RedirectionEntry, u8> {
+            let max_ent = self.max_redirection_entries();
+            if index > max_ent {
+                return Err(max_ent);
+            }
+
+            let lo = unsafe { self.read_direct(16 + (2 * index as u32)) };
+            let hi = unsafe { self.read_direct(17 + (2 * index as u32)) };
+
+            let data = ((hi as u64) << 32) | (lo as u64);
+            Ok(RedirectionEntry { data })
+        }
+
+        pub fn set_redirection_entry(
+            &mut self,
+            index: u8,
+            entry: RedirectionEntry,
+        ) -> Result<(), u8> {
+            let max_ent = self.max_redirection_entries();
+            if index > max_ent {
+                return Err(max_ent);
+            }
+
+            let lo = (entry.data & 0xFFFF_FFFF) as u32;
+            let hi = ((entry.data >> 32) & 0xFFFF_FFFF) as u32;
+
+            unsafe {
+                self.write_direct(16 + (2 * index as u32), lo);
+                self.write_direct(17 + (2 * index as u32), hi);
+            }
+
+            Ok(())
+        }
+    }
+
+    unsafe impl Send for IOAPIC {}
+    unsafe impl Sync for IOAPIC {}
+
+    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    #[repr(transparent)]
+    pub struct RedirectionEntry {
+        data: u64,
+    }
+
+    impl RedirectionEntry {
+        pub fn new() -> RedirectionEntry {
+            RedirectionEntry { data: 0 }
+        }
+
+        pub fn interrupt_vector(&self) -> u8 {
+            (self.data & 0xFF) as u8
+        }
+
+        pub fn set_vector(&mut self, vector: u8) {
+            self.data = (self.data & !0xFF) | (vector as u64);
+        }
+
+        pub fn delivery_status(&self) -> bool {
+            (self.data & (1 << 12)) != 0
+        }
+
+        pub fn pin_polarity(&self) -> bool {
+            (self.data & (1 << 13)) != 0
+        }
+
+        pub fn set_pin_polarity(&mut self, low_active: bool) {
+            if low_active {
+                self.data |= 1 << 13;
+            } else {
+                self.data &= !(1 << 13);
+            }
+        }
+
+        pub fn remote_irr(&self) -> bool {
+            (self.data & (1 << 14)) != 0
+        }
+
+        pub fn trigger_mode(&self) -> bool {
+            (self.data & (1 << 15)) != 0
+        }
+
+        pub fn set_trigger_mode(&mut self, level_sensitive: bool) {
+            if level_sensitive {
+                self.data |= 1 << 15;
+            } else {
+                self.data &= !(1 << 15);
+            }
+        }
+
+        pub fn is_masked(&self) -> bool {
+            (self.data & (1 << 16)) != 0
+        }
+
+        pub fn set_masked(&mut self, masked: bool) {
+            if masked {
+                self.data |= 1 << 16;
+            } else {
+                self.data &= !(1 << 16);
+            }
+        }
+
+        pub fn destination_apic(&self) -> u8 {
+            ((self.data >> 56) & 0xFF) as u8
+        }
+
+        pub fn set_destination_apic(&mut self, destination: u8) {
+            self.data = (self.data & 0x00FF_FFFF_FFFF_FFFF) | ((destination as u64) << 56);
+        }
+    }
+}
+
 pub fn initialize() -> local_apic::LocalAPIC {
     initialize_8529();
 
     let lapic = local_apic::LocalAPIC::new();
     lapic.enable_apic();
+
+    let mut iapic = io_apic::IOAPIC::default();
+    println!("ioapic: initializing IOAPIC {}", iapic.id());
+    println!(
+        "ioapic: version {:#02x} / {} redirection entries",
+        iapic.apic_version(),
+        iapic.max_redirection_entries() + 1
+    );
+
+    for i in 0..(iapic.max_redirection_entries() + 1) {
+        let cur_entry = iapic.get_redirection_entry(i).unwrap();
+        let mut entry = io_apic::RedirectionEntry::new();
+
+        entry.set_vector(0x30 + i);
+        entry.set_pin_polarity(cur_entry.pin_polarity());
+        entry.set_trigger_mode(cur_entry.trigger_mode());
+        entry.set_destination_apic(lapic.id());
+
+        iapic.set_redirection_entry(i, entry).unwrap();
+    }
 
     lapic
 }

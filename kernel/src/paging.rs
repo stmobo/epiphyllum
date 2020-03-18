@@ -89,6 +89,18 @@ impl PageTableEntry {
             self.entry = self.entry & !1;
         }
     }
+
+    pub fn writable(&self) -> bool {
+        (self.entry & 2) != 0
+    }
+
+    pub fn set_writable(&mut self, writable: bool) {
+        if writable {
+            self.entry = self.entry | 2;
+        } else {
+            self.entry = self.entry & !2;
+        }
+    }
 }
 
 #[repr(transparent)]
@@ -97,9 +109,43 @@ pub struct PageTable {
 }
 
 impl PageTable {
-    pub fn map_addr(&mut self, index: usize, phys_addr: usize) {
-        self.entries[index].set_physical_address(phys_addr);
-        self.entries[index].set_present(true);
+    pub fn map_addr(&mut self, index: usize, phys_addr: usize) -> Result<(), usize> {
+        let mut entry = self.get_entry(index)?;
+
+        entry.set_physical_address(phys_addr);
+        entry.set_present(true);
+
+        self.set_entry(index, entry)
+    }
+
+    pub fn unmap_entry(&mut self, index: usize) -> Result<(), usize> {
+        let mut entry = self.get_entry(index)?;
+        entry.set_present(false);
+        self.set_entry(index, entry)
+    }
+
+    pub fn get_entry(&self, index: usize) -> Result<PageTableEntry, usize> {
+        use core::ptr;
+        if index >= 512 {
+            return Err(index);
+        }
+
+        let p = self.table_addr() as *const PageTableEntry;
+        unsafe { Ok(ptr::read_volatile(p.offset(index as isize))) }
+    }
+
+    pub fn set_entry(&mut self, index: usize, entry: PageTableEntry) -> Result<(), usize> {
+        use core::ptr;
+        if index >= 512 {
+            return Err(index);
+        }
+
+        let p = self.table_addr() as *mut PageTableEntry;
+        unsafe {
+            ptr::write_volatile(p.offset(index as isize), entry);
+        }
+
+        Ok(())
     }
 
     pub fn table_addr(&self) -> usize {
@@ -145,20 +191,6 @@ impl PageTable {
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut PageTableEntry> {
         self.entries.iter_mut()
-    }
-}
-
-impl ops::Index<usize> for PageTable {
-    type Output = PageTableEntry;
-
-    fn index(&self, idx: usize) -> &Self::Output {
-        &self.entries[idx]
-    }
-}
-
-impl ops::IndexMut<usize> for PageTable {
-    fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
-        &mut self.entries[idx]
     }
 }
 
@@ -296,7 +328,7 @@ impl PageHierarchyIndex {
             }
             PageHierarchyIndex::PDPT(i) => {
                 let pml4t_idx = PageHierarchyIndex::extract_pdpt_indexes(i);
-                let pte: &PageTableEntry = &pml4t[pml4t_idx];
+                let pte: PageTableEntry = pml4t.get_entry(pml4t_idx).unwrap();
 
                 if pte.present() {
                     return unsafe { Some(PageTable::get_pdpt(pml4t_idx)) };
@@ -306,11 +338,11 @@ impl PageHierarchyIndex {
             }
             PageHierarchyIndex::PD(i) => {
                 let (pml4t_idx, pdpt_idx) = PageHierarchyIndex::extract_pd_indexes(i);
-                let pte: &PageTableEntry = &pml4t[pml4t_idx];
+                let pte: PageTableEntry = pml4t.get_entry(pml4t_idx).unwrap();
 
                 if pte.present() {
                     let pdpt = unsafe { PageTable::get_pdpt(pml4t_idx) };
-                    let pte = pdpt[pdpt_idx];
+                    let pte = pdpt.get_entry(pdpt_idx).unwrap();
 
                     if pte.present() {
                         return unsafe { Some(PageTable::get_pd(pml4t_idx, pdpt_idx)) };
@@ -321,15 +353,15 @@ impl PageHierarchyIndex {
             }
             PageHierarchyIndex::PT(i) => {
                 let (pml4t_idx, pdpt_idx, pd_idx) = PageHierarchyIndex::extract_pt_indexes(i);
-                let pte: &PageTableEntry = &pml4t[pml4t_idx];
+                let pte: PageTableEntry = pml4t.get_entry(pml4t_idx).unwrap();
 
                 if pte.present() {
                     let pdpt = unsafe { PageTable::get_pdpt(pml4t_idx) };
-                    let pte = pdpt[pdpt_idx];
+                    let pte = pdpt.get_entry(pdpt_idx).unwrap();
 
                     if pte.present() {
                         let pd = unsafe { PageTable::get_pd(pml4t_idx, pdpt_idx) };
-                        let pte = pd[pd_idx];
+                        let pte = pd.get_entry(pd_idx).unwrap();
 
                         if pte.present() {
                             return unsafe { Some(PageTable::get_pt(pml4t_idx, pdpt_idx, pd_idx)) };
@@ -388,13 +420,15 @@ fn remove_page_table_ref(index: PageHierarchyIndex) {
         let parent_table = parent.get_table().unwrap();
 
         match parent {
-            PageHierarchyIndex::PML4T => {
-                parent_table[index.pml4t_index().unwrap()].set_present(false)
+            PageHierarchyIndex::PML4T => parent_table
+                .unmap_entry(index.pml4t_index().unwrap())
+                .unwrap(),
+            PageHierarchyIndex::PDPT(_) => parent_table
+                .unmap_entry(index.pdpt_index().unwrap())
+                .unwrap(),
+            PageHierarchyIndex::PD(_) => {
+                parent_table.unmap_entry(index.pd_index().unwrap()).unwrap()
             }
-            PageHierarchyIndex::PDPT(_) => {
-                parent_table[index.pdpt_index().unwrap()].set_present(false)
-            }
-            PageHierarchyIndex::PD(_) => parent_table[index.pd_index().unwrap()].set_present(false),
             _ => {}
         }
 
@@ -415,55 +449,92 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
     let pml4t_idx = table_index.pml4t_index().unwrap();
     let pdpt_idx = table_index.pdpt_index().unwrap();
     let pd_idx = table_index.pd_index().unwrap();
+    let pt_offset = (virt_addr >> 12) & 0x1FF;
 
     let pml4t = PageTable::get_pml4t();
+    let mut tlb_reload_required = false;
 
     let pdpt;
-    if !pml4t[pml4t_idx].present() {
+    if !pml4t.get_entry(pml4t_idx).unwrap().present() {
         let table_addr = unsafe { physical_mem::allocate(0x1000) };
-        if table_addr.is_none() {
+        if table_addr.is_err() {
             return false;
         }
 
-        pml4t.map_addr(pml4t_idx, table_addr.unwrap());
+        pml4t
+            .map_addr(pml4t_idx, table_addr.unwrap())
+            .expect("failed to map PDPT");
+
         pdpt = unsafe { PageTable::get_pdpt(pml4t_idx) };
+        tlb::flush(VirtAddr::new(((pdpt as *mut PageTable) as usize) as u64));
+
         pdpt.clear();
+
+        tlb_reload_required = true;
     } else {
         pdpt = unsafe { PageTable::get_pdpt(pml4t_idx) };
     }
 
     let pd;
-    if !pdpt[pdpt_idx].present() {
+    if !pdpt.get_entry(pdpt_idx).unwrap().present() {
         let table_addr = unsafe { physical_mem::allocate(0x1000) };
-        if table_addr.is_none() {
+        if table_addr.is_err() {
             return false;
         }
 
-        pdpt.map_addr(pdpt_idx, table_addr.unwrap());
+        pdpt.map_addr(pdpt_idx, table_addr.unwrap())
+            .expect("failed to map PD");
+
         pd = unsafe { PageTable::get_pd(pml4t_idx, pdpt_idx) };
+        tlb::flush(VirtAddr::new(((pd as *mut PageTable) as usize) as u64));
+
         pd.clear();
+
+        tlb_reload_required = true;
     } else {
         pd = unsafe { PageTable::get_pd(pml4t_idx, pdpt_idx) };
     }
 
-    let pt;
-    if !pd[pd_idx].present() {
+    let pt: &'static mut PageTable;
+    if !pd.get_entry(pd_idx).unwrap().present() {
         let table_addr = unsafe { physical_mem::allocate(0x1000) };
-        if table_addr.is_none() {
+        if table_addr.is_err() {
             return false;
         }
 
-        pd.map_addr(pd_idx, table_addr.unwrap());
+        pd.map_addr(pd_idx, table_addr.unwrap())
+            .expect("failed to map PT");
+
         pt = unsafe { PageTable::get_pt(pml4t_idx, pdpt_idx, pd_idx) };
+        tlb::flush(VirtAddr::new(((pt as *mut PageTable) as usize) as u64));
+
         pt.clear();
+
+        tlb_reload_required = true;
     } else {
         pt = unsafe { PageTable::get_pt(pml4t_idx, pdpt_idx, pd_idx) };
     }
 
-    let pt_offset = (virt_addr >> 12) & 0x1FF;
-    pt.map_addr(pt_offset, phys_addr);
-    add_page_table_ref(table_index);
-    tlb::flush(VirtAddr::new(virt_addr as u64));
+    let entry = pt.get_entry(pt_offset).unwrap();
+    if entry.physical_address() == phys_addr {
+        pt.map_addr(pt_offset, phys_addr)
+            .expect("failed to map page");
+        return true;
+    }
+
+    let replaced_mapping = entry.present();
+    pt.map_addr(pt_offset, phys_addr)
+        .expect("failed to map page");
+
+    if !replaced_mapping {
+        add_page_table_ref(table_index);
+    }
+
+    if tlb_reload_required {
+        tlb::flush_all();
+    } else {
+        tlb::flush(VirtAddr::new(virt_addr as u64));
+    }
 
     return true;
 }
@@ -472,7 +543,7 @@ pub fn unmap_virtual_address(virt_addr: usize) {
     let table_index = PageHierarchyIndex::from_vaddr(virt_addr);
     if let Some(table) = table_index.get_table() {
         let pt_offset = (virt_addr >> 12) & 0x1FF;
-        table[pt_offset].set_present(false);
+        table.unmap_entry(pt_offset).expect("failed to unmap page");
 
         remove_page_table_ref(table_index);
         tlb::flush(VirtAddr::new(virt_addr as u64));
@@ -490,16 +561,16 @@ pub fn get_mapping(virt_addr: usize) -> Option<PageTableEntry> {
     let pt_idx: usize = (virt_addr >> 12) & 0x1FF;
 
     let pml4t = PageTable::get_pml4t();
-    if pml4t[pml4_idx].present() {
+    if pml4t.get_entry(pml4_idx).unwrap().present() {
         let pdpt = unsafe { PageTable::get_pdpt(pml4_idx) };
 
-        if pdpt[pdp_idx].present() {
+        if pdpt.get_entry(pdp_idx).unwrap().present() {
             let pd = unsafe { PageTable::get_pd(pml4_idx, pdp_idx) };
 
-            if pd[pd_idx].present() {
+            if pd.get_entry(pd_idx).unwrap().present() {
                 let pt = unsafe { PageTable::get_pt(pml4_idx, pdp_idx, pd_idx) };
 
-                return Some(pt[pt_idx]);
+                return pt.get_entry(pt_idx).ok();
             }
         }
     }
@@ -515,17 +586,21 @@ pub fn remap_boot_identity_paging() {
      * space into the higher half as we can.
      */
     for i in 0..n_remapped_pdpts {
-        let from_ent = pml4t[i];
+        let from_ent = pml4t.get_entry(i).unwrap();
 
         if from_ent.present() {
-            pml4t[i + PHYSICAL_MAP_PML4_IDX] = from_ent;
-            pml4t[i].set_present(false);
+            pml4t
+                .set_entry(i + PHYSICAL_MAP_PML4_IDX, from_ent)
+                .expect("failed to copy PML4T mapping");
+
+            pml4t.unmap_entry(i).expect("failed to unmap old entry");
         }
     }
 
     tlb::flush_all();
 }
 
+#[allow(unused_must_use)]
 pub fn reserve_bootstrap_physical_pages() {
     unsafe {
         let mut metadata_tree = get_paging_metadata();

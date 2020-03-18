@@ -7,6 +7,9 @@
 #![feature(alloc_error_handler)]
 #![feature(const_in_array_repeat_expressions)]
 #![feature(asm)]
+#![feature(try_trait)]
+#![feature(option_unwrap_none)]
+#![feature(option_expect_none)]
 #![test_runner(crate::test_runner::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -184,6 +187,8 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     unsafe {
         devices::pit::set_oneshot(2330);
     }
+
+    acpica::initialize().expect("could not initialize ACPICA");
 
     #[cfg(test)]
     test_main();

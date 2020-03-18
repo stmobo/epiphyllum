@@ -16,6 +16,7 @@
             "-nostdlib",
             "-Wl,--nmagic",
             "-Wl,-zmax-page-size=4096",
+            "-Wl,--no-relax",
             "-mcmodel=large",
             "-static",
             "-m64"
@@ -33,4 +34,3 @@
     "position-independent-executables": false,
     "eliminate-frame-pointer": false
 }
-

@@ -165,6 +165,8 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     println!("Heap virtual memory allocator initialized.");
 
+    acpica::initialize().expect("could not initialize ACPICA");
+
     let lapic = devices::pic::initialize();
     println!("Local APIC initialized.");
 
@@ -187,8 +189,6 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     unsafe {
         devices::pit::set_oneshot(2330);
     }
-
-    acpica::initialize().expect("could not initialize ACPICA");
 
     #[cfg(test)]
     test_main();

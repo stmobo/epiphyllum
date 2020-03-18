@@ -1,3 +1,5 @@
+use alloc::string::String;
+use core::mem;
 use core::ptr;
 
 pub mod bindings {
@@ -200,14 +202,16 @@ pub mod bindings {
     }
 }
 
+pub mod madt;
+
 #[allow(non_snake_case)]
 pub mod os_services;
 
-type AcpiResult<T> = Result<T, bindings::AcpiError>;
+use bindings::*;
+
+type AcpiResult<T> = Result<T, AcpiError>;
 
 pub fn initialize() -> AcpiResult<()> {
-    use bindings::*;
-
     println!("Initializing ACPICA...");
 
     unsafe {
@@ -228,4 +232,36 @@ pub fn initialize() -> AcpiResult<()> {
     println!("ACPICA initialized.");
 
     Ok(())
+}
+
+fn c_char_slice_to_str<'a>(sl: &'a [cty::c_char]) -> &'a str {
+    unsafe {
+        let p = (sl.as_ptr() as usize) as *const u8;
+        let s2: &'a [u8] = &*ptr::slice_from_raw_parts(p, sl.len());
+
+        core::str::from_utf8(s2).unwrap()
+    }
+}
+
+fn get_table(signature: &[u8], instance: u32) -> AcpiResult<usize> {
+    if signature.len() != 4 {
+        return Err(AcpiError::AE_BAD_PARAMETER);
+    }
+
+    unsafe {
+        let mut raw_header: *mut ACPI_TABLE_HEADER = ptr::null_mut();
+        let sig_ptr: *const u8 = signature.as_ptr();
+
+        AcpiStatus::from(AcpiGetTable(
+            mem::transmute(sig_ptr),
+            instance,
+            &mut raw_header,
+        ))?;
+
+        if raw_header == ptr::null_mut() {
+            return Err(AcpiError::AE_NOT_FOUND);
+        }
+
+        Ok(raw_header as usize)
+    }
 }

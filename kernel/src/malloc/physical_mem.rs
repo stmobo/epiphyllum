@@ -10,6 +10,8 @@ use core::cmp::Ordering;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
+use super::AllocationError;
+
 const BUDDY_ALLOC_MAX_SIZE: usize = 0x1000usize << 8; // bytes
 const BUDDY_ALLOC_ALIGN_MASK: usize = !(BUDDY_ALLOC_MAX_SIZE - 1);
 
@@ -520,7 +522,11 @@ impl PhysicalMemoryRange {
     /// Allocate a specific range of addresses within this PhysicalMemoryRange.
     ///
     /// Buffers allocated at specific addresses must not cross megabyte boundaries!
-    pub fn allocate_at(&mut self, range_start: usize, range_end: usize) -> Option<usize> {
+    pub fn allocate_at(
+        &mut self,
+        range_start: usize,
+        range_end: usize,
+    ) -> Result<usize, AllocationError> {
         let allocators_start =
             self.range_start + ((range_start - self.range_start) & BUDDY_ALLOC_ALIGN_MASK);
         let order = BuddyAllocator::round_allocation_size(range_end - range_start);
@@ -537,7 +543,7 @@ impl PhysicalMemoryRange {
 
                 self.usage_list_sift_down(idx);
 
-                return ret;
+                return ret.ok_or(AllocationError::NoFreeMemory);
             }
         }
 
@@ -562,7 +568,7 @@ impl PhysicalMemoryRange {
         }
 
         if intersect_range.is_none() {
-            return None;
+            return Err(AllocationError::InvalidAllocation);
         }
 
         let range = self.free.swap_remove(intersect_range.unwrap());
@@ -584,10 +590,10 @@ impl PhysicalMemoryRange {
         let ret = wrapper.allocate_at(range_start, order);
         self.add_allocator(wrapper);
 
-        return ret;
+        return ret.ok_or(AllocationError::NoFreeMemory);
     }
 
-    pub fn allocate(&mut self, size: usize) -> Option<usize> {
+    pub fn allocate(&mut self, size: usize) -> Result<usize, AllocationError> {
         let order = BuddyAllocator::round_allocation_size(size);
 
         if let Some(wrapper) = self.allocator_usage_list.get(0) {
@@ -598,7 +604,7 @@ impl PhysicalMemoryRange {
                 drop(wrapper);
 
                 self.usage_list_sift_down(idx);
-                return Some(addr);
+                return Ok(addr);
             }
         }
 
@@ -621,10 +627,10 @@ impl PhysicalMemoryRange {
             let ret = wrapper.allocate(order);
             self.add_allocator(wrapper);
 
-            return ret;
+            return ret.ok_or(AllocationError::NoFreeMemory);
         }
 
-        None
+        Err(AllocationError::NoFreeMemory)
     }
 
     pub fn deallocate(&mut self, addr: usize, size: usize) {
@@ -656,24 +662,24 @@ impl PhysicalMemoryAllocator {
         self.ranges.push(PhysicalMemoryRange::new(addr, len));
     }
 
-    pub fn allocate(&mut self, size: usize) -> Option<usize> {
+    pub fn allocate(&mut self, size: usize) -> Result<usize, AllocationError> {
         for r in self.ranges.iter_mut() {
-            if let Some(addr) = r.allocate(size) {
-                return Some(addr);
+            if let Ok(addr) = r.allocate(size) {
+                return Ok(addr);
             }
         }
 
-        None
+        Err(AllocationError::NoFreeMemory)
     }
 
-    pub fn allocate_at(&mut self, addr: usize, size: usize) -> Option<usize> {
+    pub fn allocate_at(&mut self, addr: usize, size: usize) -> Result<usize, AllocationError> {
         for r in self.ranges.iter_mut() {
             if r.range_start <= addr && r.range_end >= (addr + size) {
                 return r.allocate_at(addr, addr + size);
             }
         }
 
-        None
+        Err(AllocationError::ReservedMemory)
     }
 
     pub fn deallocate(&mut self, addr: usize, size: usize) {
@@ -696,7 +702,7 @@ pub unsafe fn register(addr: usize, len: usize) {
 /// Allocate a given amount of physical memory in bytes.
 ///
 /// The given size must be a multiple of the page size!
-pub unsafe fn allocate(size: usize) -> Option<usize> {
+pub unsafe fn allocate(size: usize) -> Result<usize, AllocationError> {
     let mut l = KERNEL_PHYS_ALLOC.lock();
     l.allocate(size)
 }
@@ -705,7 +711,7 @@ pub unsafe fn allocate(size: usize) -> Option<usize> {
 ///
 /// The given size must be a multiple of the page size, and the allocated
 /// buffer must not cross a megabyte boundary.
-pub unsafe fn allocate_at(addr: usize, size: usize) -> Option<usize> {
+pub unsafe fn allocate_at(addr: usize, size: usize) -> Result<usize, AllocationError> {
     let mut l = KERNEL_PHYS_ALLOC.lock();
     l.allocate_at(addr, size)
 }
@@ -731,7 +737,7 @@ pub struct PhysicalMemory {
 }
 
 impl PhysicalMemory {
-    pub fn new(size: usize) -> Option<PhysicalMemory> {
+    pub fn new(size: usize) -> Result<PhysicalMemory, AllocationError> {
         let alloc_sz = paging::round_to_next_page(size);
 
         unsafe {
@@ -742,7 +748,7 @@ impl PhysicalMemory {
         }
     }
 
-    pub fn new_at(addr: usize, size: usize) -> Option<PhysicalMemory> {
+    pub fn new_at(addr: usize, size: usize) -> Result<PhysicalMemory, AllocationError> {
         let addr = paging::round_to_prev_page(addr);
         let alloc_sz = paging::round_to_next_page(size);
 

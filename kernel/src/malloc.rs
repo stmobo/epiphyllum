@@ -12,6 +12,13 @@ use small_zone_alloc::KERNEL_SMA;
 pub use crate::paging::KERNEL_HEAP_BASE;
 pub use physical_mem::PhysicalMemory;
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum AllocationError {
+    ReservedMemory,
+    NoFreeMemory,
+    InvalidAllocation,
+}
+
 pub struct KernelHeapAllocator {
     sma_ready: bool,
     // vm_alloc_ready: bool,
@@ -126,7 +133,7 @@ pub mod heap_pages {
         let vaddr = virtual_mem::allocate(alloc_sz);
         let paddr = physical_mem::allocate(alloc_sz);
 
-        if vaddr.is_some() && paddr.is_some() {
+        if vaddr.is_some() && paddr.is_ok() {
             let mut success = true;
             let vaddr = vaddr.unwrap();
             let paddr = paddr.unwrap();
@@ -153,7 +160,7 @@ pub mod heap_pages {
             virtual_mem::deallocate(vaddr.unwrap(), alloc_sz);
         }
 
-        if paddr.is_some() {
+        if paddr.is_ok() {
             physical_mem::deallocate(paddr.unwrap(), alloc_sz);
         }
 

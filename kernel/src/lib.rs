@@ -30,6 +30,7 @@ pub mod malloc;
 pub mod multiboot;
 pub mod paging;
 pub mod stack_trace;
+pub mod timer;
 
 #[cfg(test)]
 pub mod test_runner;

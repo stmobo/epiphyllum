@@ -5,18 +5,14 @@ use super::pic::local_apic::LocalAPIC;
 use crate::asm::ports;
 use crate::interrupts;
 
-use core::ptr;
-use alloc::boxed::Box;
-use core::sync::atomic::{AtomicU64, AtomicPtr, AtomicBool, Ordering};
+use crate::timer;
+use crate::timer::TICKS_PER_SECOND;
 
 const CH0_ADDR: u16 = 0x40;
 const COMMAND_ADDR: u16 = 0x43;
 
-static mut PIT_ISR_ID: u64 = 0; // Used only during initialization
-
 /* Number of APIC timer ticks in (1/8192) of a second. */
 static mut APIC_RATE_CONSTANT: u64 = 0;
-static CUR_TICK_COUNT = AtomicU64::new(0);
 
 pub fn get_apic_rate_constant() -> u64 {
     unsafe { APIC_RATE_CONSTANT }
@@ -52,7 +48,7 @@ pub fn calibrate_apic_timer() {
 
     unsafe {
         /* 1193182 Hz / 145 = 8192 Hz */
-        pit_set_oneshot(145);
+        pit_set_oneshot((1193182 / TICKS_PER_SECOND) as u16);
         lapic.set_timer_ticks(0xFFFF_FFFF);
     }
 
@@ -66,7 +62,32 @@ pub fn calibrate_apic_timer() {
     interrupts::unregister_handler(0x20, pit_isr_id);
 
     println!(
-        "timer: APIC timer constant is {} ticks per 0.00012207 sec",
+        "timer: APIC timer constant is {} ticks per kernel tick",
         get_apic_rate_constant()
     );
+
+    interrupts::register_handler(0x30, timer_interrupt)
+        .expect("could not register LAPIC timer interrupt");
+}
+
+pub fn set_lapic_oneshot(kernel_ticks: u64) {
+    let lapic = LocalAPIC::new();
+
+    lapic
+        .configure_timer(local_apic::TimerMode::OneShot, 1, 0x30)
+        .unwrap();
+
+    let lapic_ticks = kernel_ticks * get_apic_rate_constant();
+    lapic.set_timer_ticks(lapic_ticks as u32);
+}
+
+pub fn clear_lapic() {
+    let lapic = LocalAPIC::new();
+    lapic.disable_timer();
+}
+
+fn timer_interrupt() -> interrupts::InterruptHandlerStatus {
+    timer::update_timers();
+
+    interrupts::InterruptHandlerStatus::Handled
 }

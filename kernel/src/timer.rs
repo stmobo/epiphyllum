@@ -3,14 +3,14 @@ use alloc::sync::Arc;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
-pub const TICKS_PER_SECOND: u64 = 8192;
+pub const TICKS_PER_SECOND: u64 = 4096;
 
 static TIMER_LIST: TimerList = TimerList {
     head: AtomicPtr::new(ptr::null_mut()),
 };
 
 static KERNEL_TICKS: AtomicU64 = AtomicU64::new(0);
-static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(0);
+static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(u64::max_value());
 
 pub fn get_kernel_ticks() -> u64 {
     KERNEL_TICKS.load(Ordering::Relaxed)
@@ -41,7 +41,7 @@ impl TimerList {
         /* Only one thread should be running this at any time! */
         let cur_head = self.head.load(Ordering::Acquire);
 
-        let mut next_deadline: u64 = cur_time;
+        let mut next_deadline: u64 = u64::max_value();
 
         unsafe {
             if cur_head != ptr::null_mut() {
@@ -55,11 +55,7 @@ impl TimerList {
                     let next_node = next_ptr.load(Ordering::Acquire);
 
                     let timer: &Timer = &(*cur).timer;
-                    let timer_deadline = timer.deadline.load(Ordering::Relaxed);
-
-                    if timer_deadline > next_deadline {
-                        next_deadline = timer_deadline;
-                    }
+                    let mut timer_deadline = timer.deadline.load(Ordering::Relaxed);
 
                     let skip = timer.skip.load(Ordering::Relaxed);
                     if skip || timer_deadline <= cur_time {
@@ -78,6 +74,7 @@ impl TimerList {
                         timer.fired.store(true, Ordering::Release);
                         if let Some(period) = timer.period {
                             timer.deadline.fetch_add(period, Ordering::Release);
+                            timer_deadline = timer.deadline.load(Ordering::Relaxed);
                         }
 
                         drop(timer);
@@ -91,16 +88,16 @@ impl TimerList {
                         prev_node = cur;
                     }
 
+                    if timer_deadline > cur_time && timer_deadline < next_deadline {
+                        next_deadline = timer_deadline;
+                    }
+
                     cur = next_node;
                 }
 
                 /* Process cur_head. */
                 let timer: &Timer = &(*cur_head).timer;
-                let timer_deadline = timer.deadline.load(Ordering::Relaxed);
-                if timer_deadline > next_deadline {
-                    next_deadline = timer_deadline;
-                }
-
+                let mut timer_deadline = timer.deadline.load(Ordering::Relaxed);
                 let skip = timer.skip.load(Ordering::Relaxed);
                 if skip || timer_deadline <= cur_time {
                     let unlink = skip || timer.period.is_none();
@@ -138,6 +135,7 @@ impl TimerList {
                     timer.fired.store(true, Ordering::Release);
                     if let Some(period) = timer.period {
                         timer.deadline.fetch_add(period, Ordering::Release);
+                        timer_deadline = timer.deadline.load(Ordering::Relaxed);
                     }
 
                     drop(timer);
@@ -146,14 +144,14 @@ impl TimerList {
                         drop(b);
                     }
                 }
+
+                if timer_deadline > cur_time && timer_deadline < next_deadline {
+                    next_deadline = timer_deadline;
+                }
             }
         }
 
-        if next_deadline > cur_time {
-            next_deadline
-        } else {
-            cur_time
-        }
+        next_deadline
     }
 }
 
@@ -213,17 +211,17 @@ pub fn update_timers() {
     let last_time = KERNEL_TICKS.load(Ordering::Acquire);
     let mut cur_time = NEXT_DEADLINE.load(Ordering::Acquire);
 
-    if cur_time < last_time {
+    if cur_time < last_time || cur_time == u64::max_value() {
         return;
     }
 
     KERNEL_TICKS.store(cur_time, Ordering::Release);
 
-    // next_time <= last_time indicates there is no next deadline
+    // next_time == u64::max_value() indicates there is no next deadline
     let mut next_time: u64 = TIMER_LIST.sweep(cur_time);
     loop {
         if NEXT_DEADLINE.compare_and_swap(cur_time, next_time, Ordering::Release) == cur_time {
-            if next_time >= last_time {
+            if next_time < u64::max_value() {
                 reschedule_timer_interrupt(Some(next_time));
             } else {
                 reschedule_timer_interrupt(None);
@@ -269,4 +267,12 @@ where
     }
 
     timer
+}
+
+pub fn schedule_timer_relative<T>(callback: T, deadline: u64, period: Option<u64>) -> Arc<Timer>
+where
+    T: Fn() + Send + Sync + 'static,
+{
+    let cur_time = KERNEL_TICKS.load(Ordering::Relaxed);
+    schedule_timer(callback, cur_time + deadline, period)
 }

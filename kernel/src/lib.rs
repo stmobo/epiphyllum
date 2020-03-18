@@ -176,8 +176,33 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     devices::timer::calibrate_apic_timer();
 
+    use core::sync::atomic::{AtomicU64, Ordering};
+    let ctr = AtomicU64::new(0);
+    timer::schedule_timer_relative(
+        move || {
+            let i = ctr.fetch_add(1, Ordering::Relaxed);
+            println!("tickA {}", i);
+        },
+        4096,
+        Some(4096),
+    );
+
+    let ctr2 = AtomicU64::new(0);
+    timer::schedule_timer_relative(
+        move || {
+            let i = ctr2.fetch_add(1, Ordering::Relaxed);
+            println!("tickB {}", i);
+        },
+        8192,
+        Some(8192),
+    );
+
     #[cfg(test)]
     test_main();
 
-    loop {}
+    loop {
+        unsafe {
+            asm!("hlt" :::: "volatile");
+        }
+    }
 }

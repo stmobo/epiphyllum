@@ -11,7 +11,9 @@ use crate::timer::TICKS_PER_SECOND;
 const CH0_ADDR: u16 = 0x40;
 const COMMAND_ADDR: u16 = 0x43;
 
-/* Number of APIC timer ticks in (1/8192) of a second. */
+const LAPIC_TIMER_DIVISOR: u8 = 16;
+
+/* Number of APIC timer ticks per kernel tick. */
 static mut APIC_RATE_CONSTANT: u64 = 0;
 
 pub fn get_apic_rate_constant() -> u64 {
@@ -30,7 +32,7 @@ pub fn calibrate_apic_timer() {
     println!("timer: calibrating APIC timer against PIT...");
 
     lapic
-        .configure_timer(local_apic::TimerMode::OneShot, 1, 0x30)
+        .configure_timer(local_apic::TimerMode::OneShot, LAPIC_TIMER_DIVISOR, 0x30)
         .unwrap();
 
     let pit_isr_id =
@@ -39,7 +41,7 @@ pub fn calibrate_apic_timer() {
             let ticks = lapic.get_timer_ticks() as u64;
 
             unsafe {
-                APIC_RATE_CONSTANT = 0xFFFF_FFFF - ticks;
+                APIC_RATE_CONSTANT = (0xFFFF_FFFF - ticks) / (LAPIC_TIMER_DIVISOR as u64);
             }
 
             interrupts::InterruptHandlerStatus::Handled
@@ -71,14 +73,15 @@ pub fn calibrate_apic_timer() {
 }
 
 pub fn set_lapic_oneshot(kernel_ticks: u64) {
+    use core::convert::TryInto;
     let lapic = LocalAPIC::new();
 
     lapic
-        .configure_timer(local_apic::TimerMode::OneShot, 1, 0x30)
+        .configure_timer(local_apic::TimerMode::OneShot, LAPIC_TIMER_DIVISOR, 0x30)
         .unwrap();
 
     let lapic_ticks = kernel_ticks * get_apic_rate_constant();
-    lapic.set_timer_ticks(lapic_ticks as u32);
+    lapic.set_timer_ticks(lapic_ticks.try_into().unwrap());
 }
 
 pub fn clear_lapic() {

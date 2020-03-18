@@ -1,6 +1,6 @@
 use super::InterruptFrame;
 
-pub fn handle_exception(frame: &mut InterruptFrame) {
+pub fn unhandled_exception(frame: &mut InterruptFrame) {
     match frame.interrupt_no {
         0 => divide_error(frame),
         1 => debug_exception(frame),
@@ -30,15 +30,18 @@ pub fn handle_exception(frame: &mut InterruptFrame) {
 }
 
 fn divide_error(frame: &InterruptFrame) {
-    panic!("divide-by-zero (#DE) at {:#016x}", frame.rip);
+    panic!(
+        "unhandled divide-by-zero error (#DE) at {:#016x}",
+        frame.rip
+    );
 }
 
 fn debug_exception(frame: &InterruptFrame) {
-    println!("debug interrupt at {:#016x}?", frame.rip);
+    println!("unhandled debug interrupt at {:#016x}?", frame.rip);
 }
 
 fn nmi(frame: &InterruptFrame) {
-    panic!("NMI at {:#016x}", frame.rip);
+    panic!("unhandled NMI at {:#016x}", frame.rip);
 }
 
 fn breakpoint(frame: &InterruptFrame) {
@@ -46,65 +49,89 @@ fn breakpoint(frame: &InterruptFrame) {
 }
 
 fn overflow_error(frame: &InterruptFrame) {
-    panic!("overflow exception (#OF) at {:#016x}", frame.rip);
+    panic!("unhandled overflow exception (#OF) at {:#016x}", frame.rip);
 }
 
 fn bound_range_exceeded(frame: &InterruptFrame) {
-    panic!("bound range exceeded (#BR) at {:#016x}", frame.rip);
+    panic!(
+        "unhandled bound range exceeded error(#BR) at {:#016x}",
+        frame.rip
+    );
 }
 
 fn invalid_instruction_error(frame: &InterruptFrame) {
-    panic!("invalid instruction (#UD) at {:#016x}", frame.rip);
+    panic!("unhandled invalid instruction (#UD) at {:#016x}", frame.rip);
 }
 
 fn device_not_available_error(frame: &InterruptFrame) {
-    panic!("device not available (#NM) at {:#016x}", frame.rip);
+    panic!(
+        "unhandled device not available error(#NM) at {:#016x}",
+        frame.rip
+    );
 }
 
 fn double_fault_error(frame: &InterruptFrame) -> ! {
-    panic!("double fault (#DF) error");
+    panic!("unhandled double fault (#DF) error");
 }
 
 fn invalid_tss_error(frame: &InterruptFrame) {
-    panic!("invalid TSS error (#TS) at {:#016x}", frame.rip);
+    panic!("unhandled invalid TSS error (#TS) at {:#016x}", frame.rip);
 }
 
 fn segment_not_present_error(frame: &InterruptFrame) {
-    panic!("segment not present error (#NP) at {:#016x}", frame.rip);
+    panic!(
+        "unhandled segment not present error (#NP) at {:#016x}",
+        frame.rip
+    );
 }
 
 fn stack_segment_fault(frame: &InterruptFrame) {
-    panic!("stack segment fault (#SS) at {:#016x}", frame.rip);
+    panic!("unhandled stack segment fault (#SS) at {:#016x}", frame.rip);
 }
 
 fn protection_fault(frame: &InterruptFrame) {
-    panic!("general protection fault (#GP) at {:#016x}", frame.rip,);
+    panic!(
+        "unhandled general protection fault (#GP) at {:#016x}",
+        frame.rip,
+    );
 }
 
 fn page_fault(frame: &InterruptFrame) {
-    panic!("unhandled page fault (#PG) at {:#016x}", frame.rip);
+    panic!(
+        "unhandled page fault (#PG) at {:#016x}, code {:#08x}",
+        frame.rip, frame.error_code
+    );
 }
 
 fn fp_fault(frame: &InterruptFrame) {
-    panic!("x87 floating point error (#MF) at {:#016x}", frame.rip);
+    panic!(
+        "unhandled x87 floating point error (#MF) at {:#016x}",
+        frame.rip
+    );
 }
 
 fn alignment_check(frame: &InterruptFrame) {
-    panic!("alignment check error (#AC) at {:#016x}", frame.rip);
+    panic!(
+        "unhandled alignment check error (#AC) at {:#016x}",
+        frame.rip
+    );
 }
 
 fn machine_check(frame: &InterruptFrame) -> ! {
-    panic!("machine check error (#MC) at {:#016x}", frame.rip);
+    panic!("unhandled machine check error (#MC) at {:#016x}", frame.rip);
 }
 
 fn simd_error(frame: &InterruptFrame) {
-    panic!("SIMD FP error (#XF) at {:#016x}", frame.rip);
+    panic!("unhandled SIMD FP error (#XF) at {:#016x}", frame.rip);
 }
 
 fn virtualization_error(frame: &InterruptFrame) {
-    panic!("virtualization error (#VE) at {:#016x}", frame.rip);
+    panic!(
+        "unhandled virtualization error (#VE) at {:#016x}",
+        frame.rip
+    );
 }
 
 fn security_exception(frame: &InterruptFrame) {
-    panic!("security exception (#SX) at {:#016x}", frame.rip);
+    panic!("unhandled security exception (#SX) at {:#016x}", frame.rip);
 }

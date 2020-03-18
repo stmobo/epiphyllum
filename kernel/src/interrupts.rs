@@ -2,7 +2,7 @@ mod exceptions;
 mod handler;
 mod idt;
 
-pub use handler::{register_handler, InterruptHandlerStatus};
+pub use handler::{register_handler, unregister_handler, InterruptHandlerStatus};
 pub use idt::{claim_idt_page, initialize_idt};
 
 #[repr(C)]
@@ -38,11 +38,7 @@ pub struct InterruptFrame {
 
 #[no_mangle]
 pub extern "C" fn kernel_entry(mut frame: InterruptFrame) -> *mut InterruptFrame {
-    if frame.interrupt_no < 32 {
-        exceptions::handle_exception(&mut frame);
-    } else {
-        handler::handle_interrupt(&mut frame);
-    }
+    handler::handle_interrupt(&mut frame);
 
     return &mut frame;
 }

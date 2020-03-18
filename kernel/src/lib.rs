@@ -168,27 +168,12 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     acpica::initialize().expect("could not initialize ACPICA");
 
     let lapic = devices::pic::initialize();
-    println!("Local APIC initialized.");
 
     unsafe {
         asm::interrupts::set_if(true);
     }
 
-    interrupts::register_handler(0x20, || -> interrupts::InterruptHandlerStatus {
-        println!("handled interrupt 0x20");
-        interrupts::InterruptHandlerStatus::Handled
-    })
-    .unwrap();
-
-    lapic
-        .configure_timer(devices::pic::local_apic::TimerMode::OneShot, 1, 0x20)
-        .unwrap();
-
-    lapic.set_timer_ticks(0xFFFF);
-
-    unsafe {
-        devices::pit::set_oneshot(2330);
-    }
+    devices::timer::calibrate_apic_timer();
 
     #[cfg(test)]
     test_main();

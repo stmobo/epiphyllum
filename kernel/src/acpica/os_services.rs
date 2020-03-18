@@ -46,7 +46,7 @@ fn do_rsdp_search(start_addr: usize, end_addr: usize) -> Option<usize> {
         }
 
         if is_match {
-            println!("found RSDP at {:#08x}", phys_addr);
+            println!("acpi: found RSDP at {:#08x}", phys_addr);
             return Some(phys_addr);
         }
 

@@ -1,6 +1,6 @@
 pub mod pic;
-pub mod pit;
 pub mod serial;
+pub mod timer;
 pub mod vga;
 
 pub use serial::DEFAULT_SERIAL;

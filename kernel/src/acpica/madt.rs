@@ -5,6 +5,7 @@ use core::ptr;
 use spin::Once;
 
 /// ACPI Multiple APIC Description Table
+#[derive(Debug, Clone)]
 pub struct MADT {
     pub local_apic_addr: u64,
     pub legacy_pic_installed: bool,
@@ -46,6 +47,82 @@ impl MADT {
                 };
 
                 entries = entries.next_entry();
+            }
+
+            println!("acpi: MADT configuration:");
+            println!("  Local APIC at {:#016x}", madt.local_apic_addr);
+            if madt.legacy_pic_installed {
+                println!("  Legacy PIC is installed");
+            } else {
+                println!("  Legacy PIC is not installed");
+            }
+
+            println!("  Processors:");
+            for processor in madt.processors.iter() {
+                let status: &'static str;
+                if processor.enabled {
+                    status = "Enabled";
+                } else if processor.online_capable {
+                    status = "Waiting";
+                } else {
+                    status = "Disabled";
+                }
+
+                println!(
+                    "    Processor #{}: APIC #{}, {}",
+                    processor.processor_id, processor.apic_id, status
+                )
+            }
+
+            println!("  I/O APICs:");
+            for apic in madt.io_apics.iter() {
+                println!(
+                    "    APIC #{}: IRQ base {}, config address {:#08x}",
+                    apic.apic_id, apic.gsi_base, apic.address
+                )
+            }
+
+            println!("  IRQ Overrides:");
+            for irq in madt.irqs.iter() {
+                let active_mode = match irq.active_low {
+                    true => "active low",
+                    false => "active high",
+                };
+
+                let trigger_mode = match irq.level_triggered {
+                    true => "level-triggered",
+                    false => "edge-triggered",
+                };
+
+                println!(
+                    "    Interrupt #{} <=> IRQ {} ({}, {})",
+                    irq.gsi, irq.irq_src, active_mode, trigger_mode
+                );
+            }
+
+            println!("  Non-Maskable Interrupts:");
+            for nmi in madt.nmis.iter() {
+                let active_mode = match nmi.active_low {
+                    true => "active low",
+                    false => "active high",
+                };
+
+                let trigger_mode = match nmi.level_triggered {
+                    true => "level-triggered",
+                    false => "edge-triggered",
+                };
+
+                if nmi.processor_id == 0xFF {
+                    println!(
+                        "    All processors: NMI connected to LINT {} ({}, {})",
+                        nmi.local_int, active_mode, trigger_mode
+                    );
+                } else {
+                    println!(
+                        "    Processor {}: NMI connected to LINT {} ({}, {})",
+                        nmi.processor_id, nmi.local_int, active_mode, trigger_mode
+                    );
+                }
             }
 
             madt
@@ -137,6 +214,7 @@ impl Entry {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct LocalAPICEntry {
     pub processor_id: u8,
     pub apic_id: u8,
@@ -144,12 +222,14 @@ pub struct LocalAPICEntry {
     pub online_capable: bool,
 }
 
+#[derive(Debug, Clone)]
 pub struct IOAPICEntry {
     pub apic_id: u8,
     pub address: u32,
     pub gsi_base: u32,
 }
 
+#[derive(Debug, Clone)]
 pub struct InterruptSourceOverride {
     pub bus_src: u8,
     pub irq_src: u8,
@@ -158,6 +238,7 @@ pub struct InterruptSourceOverride {
     pub level_triggered: bool,
 }
 
+#[derive(Debug, Clone)]
 pub struct NonMaskableInterrupt {
     pub processor_id: u8,
     pub active_low: bool,
@@ -165,6 +246,7 @@ pub struct NonMaskableInterrupt {
     pub local_int: u8,
 }
 
+#[derive(Debug, Clone)]
 pub struct LAPICAddressOverride {
     pub address: u64,
 }

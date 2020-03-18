@@ -1,15 +1,19 @@
 //! Intel 8529A-compatible and APIC support.
 
+use crate::acpica::madt::MADT;
 use crate::asm::{msr, ports};
 use crate::paging;
 
+use alloc::vec::Vec;
 use core::ptr;
 use spin::{Mutex, MutexGuard, Once};
 
 static LAPIC_BASE: Once<usize> = Once::new();
-static DEFAULT_IOAPIC: Once<Mutex<io_apic::IOAPIC>> = Once::new();
+static IO_APICS: Once<Vec<(u8, Mutex<io_apic::IOAPIC>)>> = Once::new();
 const PIC1: u16 = 0x0020;
 const PIC2: u16 = 0x00A0;
+
+const ISA_IRQ_BASE: u8 = 0x20;
 
 fn initialize_8529() {
     unsafe {
@@ -78,6 +82,47 @@ pub mod local_apic {
             LocalAPIC {
                 base: base_addr as *mut u32,
             }
+        }
+
+        pub fn processor_id(&self) -> u8 {
+            let apic_id = self.id();
+            let madt = MADT::get();
+
+            for cpu in madt.processors.iter() {
+                if cpu.apic_id == apic_id {
+                    return cpu.processor_id;
+                }
+            }
+
+            panic!("local APIC {} not found in MADT", apic_id);
+        }
+
+        pub fn initialize_nmis(&self) {
+            let cpu_id = self.processor_id();
+            let madt = MADT::get();
+
+            for nmi in madt.nmis.iter() {
+                if nmi.processor_id != 0xFF && nmi.processor_id != cpu_id {
+                    continue;
+                }
+
+                let write_reg: WritableRegisters;
+                if nmi.local_int == 0 {
+                    write_reg = WritableRegisters::LINT0;
+                } else if nmi.local_int == 1 {
+                    write_reg = WritableRegisters::LINT1;
+                } else {
+                    println!(
+                        "lapic: unsupported local interrupt line {} in MADT",
+                        nmi.local_int
+                    );
+                    continue;
+                }
+
+                self.write_register(write_reg, 0b100_0000_0000);
+            }
+
+            println!("lapic: configured NMI for CPU {}", cpu_id);
         }
 
         fn read_register(&self, register: ReadableRegisters) -> u32 {
@@ -157,6 +202,10 @@ pub mod local_apic {
             self.write_register(WritableRegisters::TimerInitialCount, ticks);
         }
 
+        pub fn get_timer_ticks(&self) -> u32 {
+            self.read_register(ReadableRegisters::TimerCurrentCount)
+        }
+
         pub fn configure_timer(
             &self,
             mode: TimerMode,
@@ -185,6 +234,10 @@ pub mod local_apic {
             self.write_register(WritableRegisters::TimerLVT, lvt);
 
             Ok(())
+        }
+
+        pub fn disable_timer(&self) {
+            self.write_register(WritableRegisters::TimerLVT, (1 << 16) | 0x30);
         }
     }
 
@@ -253,11 +306,12 @@ pub mod local_apic {
 
 pub mod io_apic {
     use super::*;
+    use crate::acpica::madt::IOAPICEntry;
 
     #[derive(Debug, Copy, Clone)]
-    #[repr(transparent)]
     pub struct IOAPIC {
         base_addr: *mut u32,
+        irq_base: u8,
     }
 
     impl IOAPIC {
@@ -271,17 +325,75 @@ pub mod io_apic {
             ptr::write_volatile(self.base_addr.offset(4), value);
         }
 
-        pub fn default() -> MutexGuard<'static, IOAPIC> {
-            DEFAULT_IOAPIC
-                .call_once(|| {
-                    let vaddr = paging::offset_direct_map(0xFEC00000u64);
-                    paging::map_virtual_address(vaddr, 0xFEC00000);
+        fn initialize(&mut self, ent: &IOAPICEntry) {
+            println!("ioapic: initializing IOAPIC {}", self.id());
+            println!(
+                "ioapic: version {:#02x} / {} redirection entries",
+                self.apic_version(),
+                self.max_redirection_entries() + 1
+            );
 
-                    Mutex::new(IOAPIC {
-                        base_addr: vaddr as *mut u32,
-                    })
-                })
-                .lock()
+            let madt = MADT::get();
+            let min_irq = self.irq_base;
+            let max_irq = self.irq_base + self.max_redirection_entries();
+
+            for irq in madt.irqs.iter() {
+                let gsi = irq.gsi as u8;
+
+                if gsi >= min_irq && gsi < max_irq {
+                    let idx = gsi - min_irq;
+                    let mut entry = RedirectionEntry::new();
+
+                    entry.set_vector(ISA_IRQ_BASE + irq.irq_src);
+                    entry.set_pin_polarity(irq.active_low);
+                    entry.set_trigger_mode(irq.level_triggered);
+                    entry.set_masked(false);
+                    entry.set_destination_apic(0);
+
+                    self.set_redirection_entry(idx, entry).unwrap();
+                }
+            }
+        }
+
+        fn initialize_list() -> Vec<(u8, Mutex<IOAPIC>)> {
+            let madt = MADT::get();
+            let mut ret = Vec::new();
+
+            for io_apic in madt.io_apics.iter() {
+                let paddr = io_apic.address as usize;
+
+                let vaddr = paging::offset_direct_map(paddr);
+                paging::map_virtual_address(vaddr, paddr);
+
+                let mut s = IOAPIC {
+                    base_addr: vaddr as *mut u32,
+                    irq_base: io_apic.gsi_base as u8,
+                };
+
+                s.initialize(io_apic);
+                ret.push((io_apic.apic_id, Mutex::new(s)));
+            }
+
+            ret
+        }
+
+        pub fn initialize_all() {
+            IO_APICS.call_once(IOAPIC::initialize_list);
+        }
+
+        pub fn get(id: u8) -> Option<MutexGuard<'static, IOAPIC>> {
+            let apics_list = IO_APICS.call_once(IOAPIC::initialize_list);
+            for (apic_id, apic_mutex) in apics_list.iter() {
+                if *apic_id == id {
+                    return Some(apic_mutex.lock());
+                }
+            }
+
+            None
+        }
+
+        pub fn irq_base(&self) -> u8 {
+            self.irq_base
         }
 
         pub fn id(&self) -> u8 {
@@ -412,26 +524,13 @@ pub fn initialize() -> local_apic::LocalAPIC {
 
     let lapic = local_apic::LocalAPIC::new();
     lapic.enable_apic();
+    lapic.initialize_nmis();
 
-    let mut iapic = io_apic::IOAPIC::default();
-    println!("ioapic: initializing IOAPIC {}", iapic.id());
-    println!(
-        "ioapic: version {:#02x} / {} redirection entries",
-        iapic.apic_version(),
-        iapic.max_redirection_entries() + 1
-    );
+    println!("Local APIC initialized.");
 
-    for i in 0..(iapic.max_redirection_entries() + 1) {
-        let cur_entry = iapic.get_redirection_entry(i).unwrap();
-        let mut entry = io_apic::RedirectionEntry::new();
+    io_apic::IOAPIC::initialize_all();
 
-        entry.set_vector(0x30 + i);
-        entry.set_pin_polarity(cur_entry.pin_polarity());
-        entry.set_trigger_mode(cur_entry.trigger_mode());
-        entry.set_destination_apic(lapic.id());
-
-        iapic.set_redirection_entry(i, entry).unwrap();
-    }
+    println!("I/O APICs initialized.");
 
     lapic
 }

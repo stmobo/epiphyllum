@@ -178,7 +178,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     use core::sync::atomic::{AtomicU64, Ordering};
     let ctr = AtomicU64::new(0);
-    timer::schedule_timer_relative(
+    timer::schedule_timer(
         move || {
             let i = ctr.fetch_add(1, Ordering::Relaxed);
             println!("tickA {}", i);
@@ -188,7 +188,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     );
 
     let ctr2 = AtomicU64::new(0);
-    timer::schedule_timer_relative(
+    timer::schedule_timer(
         move || {
             let i = ctr2.fetch_add(1, Ordering::Relaxed);
             println!("tickB {}", i);

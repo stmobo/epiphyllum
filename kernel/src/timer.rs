@@ -9,6 +9,7 @@ pub const TICKS_PER_SECOND: u64 = 4096;
 
 static TIMER_LIST: TimerList = TimerList {
     head: AtomicPtr::new(ptr::null_mut()),
+    cleanup: AtomicPtr::new(ptr::null_mut()),
 };
 
 static KERNEL_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -21,6 +22,7 @@ pub fn get_kernel_ticks() -> u64 {
 #[derive(Debug)]
 struct TimerList {
     head: AtomicPtr<TimerListNode>,
+    cleanup: AtomicPtr<TimerListNode>,
 }
 
 impl TimerList {
@@ -39,6 +41,36 @@ impl TimerList {
         }
     }
 
+    /// Free all memory used by cleanup list nodes.
+    ///
+    /// This needs to run *outside* interrupt context!
+    fn free_cleanup_list(&self) {
+        let mut cur: *mut TimerListNode = self.cleanup.load(Ordering::Acquire);
+        while cur != ptr::null_mut() {
+            unsafe {
+                let b: Box<TimerListNode> = Box::from_raw(cur);
+                cur = b.next.load(Ordering::Acquire);
+
+                drop(b);
+            }
+        }
+    }
+
+    /// Moves a timer list node into the "cleanup" list.
+    fn move_to_cleanup(&self, node: *mut TimerListNode) {
+        /* Should only be called from sweep() */
+        unsafe {
+            let prev_cleanup_head = self.cleanup.load(Ordering::Acquire);
+
+            (*node).next.store(prev_cleanup_head, Ordering::Relaxed);
+            (*node).timer.dead.store(true, Ordering::Release);
+
+            self.cleanup.store(node, Ordering::Release);
+        }
+    }
+
+    /// Update all timers in this list, running their callbacks if necessary.
+    ///
     /// dt: ticks since last sweep
     fn sweep(&self, dt: u64) -> u64 {
         /* Only one thread should be running this at any time! */
@@ -58,11 +90,12 @@ impl TimerList {
 
                     let timer: &Timer = &(*cur).timer;
                     let mut cur_deadline = timer.deadline.fetch_sub(dt, Ordering::AcqRel);
+                    let period = timer.period.load(Ordering::Relaxed);
                     let mut timer_unlinked = false;
 
                     let skip = timer.skip.load(Ordering::Relaxed);
                     if skip || cur_deadline <= dt {
-                        let unlink = skip || timer.period.is_none();
+                        let unlink = skip || period == 0;
                         if unlink {
                             /* This node needs to be unlinked.
                              * We don't have to use CAS here since nothing else concurrently
@@ -74,8 +107,9 @@ impl TimerList {
                         if !skip {
                             (timer.callback)();
                         }
-                        timer.fired.store(true, Ordering::Release);
-                        if let Some(period) = timer.period {
+
+                        timer.fire_count.fetch_add(1, Ordering::Release);
+                        if period > 0 {
                             timer.deadline.store(period, Ordering::Release);
                             cur_deadline = period;
                         }
@@ -83,8 +117,7 @@ impl TimerList {
                         drop(timer);
                         if unlink {
                             /* Clean up node storage */
-                            let b: Box<TimerListNode> = Box::from_raw(cur);
-                            drop(b);
+                            self.move_to_cleanup(cur);
                             timer_unlinked = true;
                         }
                     } else {
@@ -100,12 +133,13 @@ impl TimerList {
 
                 /* Process cur_head. */
                 let timer: &Timer = &(*cur_head).timer;
+                let period = timer.period.load(Ordering::Relaxed);
                 let mut cur_deadline = timer.deadline.fetch_sub(dt, Ordering::AcqRel);
                 let mut timer_unlinked = false;
                 let skip = timer.skip.load(Ordering::Relaxed);
 
                 if skip || cur_deadline <= dt {
-                    let unlink = skip || timer.period.is_none();
+                    let unlink = skip || period == 0;
 
                     if unlink {
                         /* Need to unlink cur_head. */
@@ -133,16 +167,15 @@ impl TimerList {
                         (timer.callback)();
                     }
 
-                    timer.fired.store(true, Ordering::Release);
-                    if let Some(period) = timer.period {
+                    timer.fire_count.fetch_add(1, Ordering::Release);
+                    if period > 0 {
                         timer.deadline.store(period, Ordering::Release);
                         cur_deadline = period;
                     }
 
                     drop(timer);
                     if unlink {
-                        let b: Box<TimerListNode> = Box::from_raw(cur_head);
-                        drop(b);
+                        self.move_to_cleanup(cur_head);
                         timer_unlinked = true;
                     }
                 }
@@ -174,9 +207,10 @@ impl TimerListNode {
 pub struct Timer {
     callback: Box<dyn Fn() + Send + Sync + 'static>,
     deadline: AtomicU64,
-    period: Option<u64>,
+    period: AtomicU64,
+    fire_count: AtomicU64,
     skip: AtomicBool,
-    fired: AtomicBool,
+    dead: AtomicBool,
 }
 
 impl Timer {
@@ -187,10 +221,30 @@ impl Timer {
         Timer {
             callback: Box::new(callback),
             deadline: AtomicU64::new(deadline),
-            period,
+            period: AtomicU64::new(period.unwrap_or(0)),
+            fire_count: AtomicU64::new(0),
             skip: AtomicBool::new(false),
-            fired: AtomicBool::new(false),
+            dead: AtomicBool::new(false),
         }
+    }
+
+    /// Prevent this timer from firing in the future.
+    pub fn cancel(&self) {
+        self.skip.store(true, Ordering::Relaxed);
+    }
+
+    /// Get the number of times this timer has been triggered.
+    pub fn times_fired(&self) -> u64 {
+        self.fire_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns `true` if this timer has fired at least once before.
+    pub fn triggered(&self) -> bool {
+        self.fire_count.load(Ordering::Relaxed) > 0
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.dead.load(Ordering::Acquire)
     }
 }
 

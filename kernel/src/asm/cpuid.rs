@@ -1,74 +1,76 @@
-fn cpuid(in_eax: u32) -> (u32, u32, u32, u32) {
-    let eax: u32;
-    let ebx: u32;
-    let ecx: u32;
-    let edx: u32;
+use spin::Once;
 
-    unsafe {
-        asm!("cpuid" : "={eax}"(eax), "={ebx}"(ebx), "={ecx}"(ecx), "={edx}"(edx) : "0"(in_eax) :: "volatile");
-    }
+static CPUID_INFO: Once<CpuIdInfo> = Once::new();
 
-    (eax, ebx, ecx, edx)
+pub struct CpuIdInfo {
+    basic_eax: u32,
+    basic_ebx: u32,
+    feature_flags: [u32; 4],
 }
 
-#[derive(Debug, Clone)]
-pub struct BasicProcessorInfo {
-    eax: u32,
-    ebx: u32,
-    ecx: u32,
-    edx: u32,
-}
+impl CpuIdInfo {
+    pub fn get() -> &'static CpuIdInfo {
+        CPUID_INFO.call_once(|| {
+            let (basic_eax, basic_ebx, basic_ecx, basic_edx) = cpuid(1);
+            let (_, _, extended_ecx, extended_edx) = cpuid(0x8000_0001);
 
-impl BasicProcessorInfo {
-    pub fn new() -> BasicProcessorInfo {
-        let (eax, ebx, ecx, edx) = cpuid(1);
-        BasicProcessorInfo { eax, ebx, ecx, edx }
+            CpuIdInfo {
+                basic_eax,
+                basic_ebx,
+                feature_flags: [basic_edx, basic_ecx, extended_edx, extended_ecx],
+            }
+        })
     }
 
     pub fn stepping(&self) -> u8 {
-        (self.eax & 0x0F) as u8
+        (self.basic_eax & 0x0F) as u8
     }
 
     pub fn model(&self) -> u8 {
-        let family_id = (self.eax >> 8) & 0x0F;
+        let family_id = (self.basic_eax >> 8) & 0x0F;
         if family_id == 6 || family_id == 15 {
-            let ext_model = (self.eax >> 12) & 0xF0;
-            (ext_model | ((self.eax >> 4) & 0x0F)) as u8
+            let ext_model = (self.basic_eax >> 12) & 0xF0;
+            (ext_model | ((self.basic_eax >> 4) & 0x0F)) as u8
         } else {
-            ((self.eax >> 4) & 0x0F) as u8
+            ((self.basic_eax >> 4) & 0x0F) as u8
         }
     }
 
     pub fn family_id(&self) -> u16 {
-        let f1 = (self.eax >> 8) & 0x0F;
+        let f1 = (self.basic_eax >> 8) & 0x0F;
         if f1 == 15 {
-            (((self.eax >> 20) & 0xFF) + 15) as u16
+            (((self.basic_eax >> 20) & 0xFF) + 15) as u16
         } else {
             f1 as u16
         }
     }
 
     pub fn lapic_id(&self) -> u8 {
-        ((self.ebx >> 24) & 0xFF) as u8
+        ((self.basic_ebx >> 24) & 0xFF) as u8
     }
 
     pub fn check_feature(&self, feature: FeatureFlags) -> bool {
         let feature_bit = feature as u32;
-        if feature_bit < 32 {
-            return (self.edx & (1 << feature_bit)) != 0;
-        } else if feature_bit < 64 {
-            return (self.ecx & (1 << (feature_bit - 32))) != 0;
-        }
+        let reg_idx = (feature_bit / 32) as usize;
+        let reg_bit = feature_bit % 32;
 
-        false
+        (self.feature_flags[reg_idx] & (1 << reg_bit)) != 0
     }
+}
+
+pub fn get() -> &'static CpuIdInfo {
+    CpuIdInfo::get()
+}
+
+pub fn check_feature(feature: FeatureFlags) -> bool {
+    CpuIdInfo::get().check_feature(feature)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u32)]
 #[allow(non_camel_case_types)]
 pub enum FeatureFlags {
-    /* EDX feature flags: */
+    /* Basic EDX feature flags (0-31) */
     FPU = 0,     /* on-chip x87 FPU */
     VME = 1,     /* virtual 8086 extensions */
     DE = 2,      /* Debug extensions */
@@ -100,7 +102,7 @@ pub enum FeatureFlags {
     IA64 = 30,   /* IA64 emulation flag */
     PBE = 31,    /* Pending Break Enable wakeup capability */
 
-    /* ECX feature flags */
+    /* Basic ECX feature flags (32-63) */
     SSE3 = 32,         /* SSE3 instructions */
     PCLMULQDQ = 33,    /* PCLMULQDQ instructions */
     DTES64 = 34,       /* 64-bit Debug Store */
@@ -132,4 +134,27 @@ pub enum FeatureFlags {
     F16C = 61,         /* Half-precision floating point */
     RDRND = 62,        /* on-chip RNG */
     HYPERVISOR = 63,   /* Hypervisor present */
+
+    /* Extended EDX feature flags (64 - 95) */
+    SYSCALL = 75,   /* SYSCALL / SYSRET instructions (EDX, bit 11) */
+    NX = 84,        /* No-Execute bit (EDX, bit 20) */
+    GB_PAGES = 90,  /* Gibibyte page support (EDX, bit 26) */
+    RDTSCP = 91,    /* RDTSCP instruction (EDX, bit 27) */
+    LONG_MODE = 93, /* Long mode support (EDX, bit 29) */
+
+    /* Extended ECX feature flags (96 - 127) */
+    LAHF = 96, /* LAHF / SAHF instructions (ECX, bit 0) */
+}
+
+fn cpuid(in_eax: u32) -> (u32, u32, u32, u32) {
+    let eax: u32;
+    let ebx: u32;
+    let ecx: u32;
+    let edx: u32;
+
+    unsafe {
+        asm!("cpuid" : "={eax}"(eax), "={ebx}"(ebx), "={ecx}"(ecx), "={edx}"(edx) : "0"(in_eax) :: "volatile");
+    }
+
+    (eax, ebx, ecx, edx)
 }

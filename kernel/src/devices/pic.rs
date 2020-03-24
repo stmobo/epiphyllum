@@ -302,6 +302,18 @@ pub mod local_apic {
         TimerInitialCount = 0x380,
         TimerDivideConfig = 0x3E0,
     }
+
+    pub fn initialize() -> LocalAPIC {
+        initialize_8529();
+
+        let lapic = local_apic::LocalAPIC::new();
+        lapic.enable_apic();
+        lapic.initialize_nmis();
+
+        println!("Local APIC initialized.");
+
+        lapic
+    }
 }
 
 pub mod io_apic {
@@ -517,20 +529,9 @@ pub mod io_apic {
             self.data = (self.data & 0x00FF_FFFF_FFFF_FFFF) | ((destination as u64) << 56);
         }
     }
-}
 
-pub fn initialize() -> local_apic::LocalAPIC {
-    initialize_8529();
-
-    let lapic = local_apic::LocalAPIC::new();
-    lapic.enable_apic();
-    lapic.initialize_nmis();
-
-    println!("Local APIC initialized.");
-
-    io_apic::IOAPIC::initialize_all();
-
-    println!("I/O APICs initialized.");
-
-    lapic
+    pub fn initialize() {
+        io_apic::IOAPIC::initialize_all();
+        println!("I/O APICs initialized.");
+    }
 }

@@ -197,6 +197,7 @@ pub unsafe fn force_unlock() {
     DEFAULT_DISPLAY.force_unlock();
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,3 +243,4 @@ mod tests {
         assert_display_char_eq(&mut d, 0, 3, b' ');
     }
 }
+*/

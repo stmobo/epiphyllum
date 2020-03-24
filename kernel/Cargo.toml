@@ -32,14 +32,13 @@ x86_64 = "^0.9"
 cstr_core = "^0.1"
 cty = "^0.2"
 
+[target.x86_64-epiphyllum.dependencies]
+compiler_builtins = { version="*", features = ["mem"] }
+
 [dependencies.num_enum]
 version = "^0.4"
 default-features = false
 features = []
-
-[dependencies.compiler_builtins]
-version = "*"
-features = ["mem"]
 
 [dependencies.lazy_static]
 version = "^1.0"

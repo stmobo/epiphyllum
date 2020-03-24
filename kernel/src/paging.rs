@@ -1,5 +1,4 @@
 use core::convert::TryInto;
-use core::ops;
 use x86_64::instructions::tlb;
 use x86_64::VirtAddr;
 

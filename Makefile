@@ -10,6 +10,9 @@ bootloader:
 kernel: 
 	cd kernel && RUST_TARGET_PATH=`pwd` xargo +nightly -Zfeatures=all build --target x86_64-epiphyllum
 
+kernel-test: 
+	cd kernel && cargo +nightly -Zfeatures=all test --target x86_64-unknown-linux-gnu
+
 iso: bootloader kernel grub.cfg
 	mkdir -p target/iso/boot/grub
 	cp grub.cfg target/iso/boot/grub

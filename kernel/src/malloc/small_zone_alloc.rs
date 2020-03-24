@@ -4,13 +4,18 @@ use core::ptr;
 use crate::paging::PAGE_MASK;
 
 use lazy_static::lazy_static;
-use spin::Mutex;
+use spin::{Mutex, MutexGuard, Once};
 
-lazy_static! {
-    pub static ref KERNEL_SMA: Mutex<SmallZoneAllocator> = Mutex::new(SmallZoneAllocator {
-        heads: [ptr::null_mut(); 7],
-        free_list: ptr::null_mut()
-    });
+static KERNEL_SMA: Once<Mutex<SmallZoneAllocator>> = Once::new();
+
+pub unsafe fn initialize(init_addr: usize, n_pages: usize) {
+    KERNEL_SMA.call_once(|| Mutex::new(SmallZoneAllocator::new(init_addr, n_pages)));
+}
+
+pub fn get_small_allocator() -> Option<MutexGuard<'static, SmallZoneAllocator>> {
+    KERNEL_SMA
+        .wait()
+        .map(|sma: &Mutex<SmallZoneAllocator>| sma.lock())
 }
 
 /// Used for allocations of size 8 - 512.

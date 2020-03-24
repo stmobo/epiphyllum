@@ -1,7 +1,6 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![feature(panic_info_message)]
 #![feature(rustc_private)]
-#![feature(custom_test_frameworks)]
 #![feature(abi_x86_interrupt)]
 #![feature(maybe_uninit_ref)]
 #![feature(alloc_error_handler)]
@@ -10,12 +9,11 @@
 #![feature(try_trait)]
 #![feature(option_unwrap_none)]
 #![feature(option_expect_none)]
-#![test_runner(crate::test_runner::test_runner)]
-#![reexport_test_harness_main = "test_main"]
 
 #[macro_use]
 extern crate alloc;
 
+#[cfg(not(test))]
 extern crate compiler_builtins;
 
 #[macro_use]
@@ -26,14 +24,12 @@ pub mod avl_tree;
 pub mod devices;
 pub mod gdt;
 pub mod interrupts;
+pub mod lock;
 pub mod malloc;
 pub mod multiboot;
 pub mod paging;
 pub mod stack_trace;
 pub mod timer;
-
-#[cfg(test)]
-pub mod test_runner;
 
 use core::panic::PanicInfo;
 use x86_64::structures::idt::InterruptDescriptorTable;
@@ -48,6 +44,7 @@ pub struct KernelLoaderInfo {
     heap_pages: u64,
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 #[allow(unused_must_use)]
 fn panic(info: &PanicInfo) -> ! {
@@ -75,9 +72,6 @@ fn panic(info: &PanicInfo) -> ! {
     for frame in stack_trace::trace_stack() {
         println!("    {:#016x}", frame.frame_ip);
     }
-
-    #[cfg(test)]
-    test_runner::exit_qemu(test_runner::TestExitCode::Failure);
 
     loop {}
 }
@@ -124,7 +118,10 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
             malloc::KERNEL_HEAP_BASE
         );
 
-        malloc::initialize_small_heap(malloc::KERNEL_HEAP_BASE, boot_info.heap_pages as usize);
+        malloc::small_zone_alloc::initialize(
+            malloc::KERNEL_HEAP_BASE,
+            boot_info.heap_pages as usize,
+        );
     }
 
     if let Some(mmap) = mb.get_memory_info() {
@@ -168,37 +165,14 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     acpica::initialize().expect("could not initialize ACPICA");
 
-    let lapic = devices::pic::initialize();
+    let lapic = devices::local_apic::initialize();
+    devices::io_apic::initialize();
 
     unsafe {
         asm::interrupts::set_if(true);
     }
 
     devices::timer::calibrate_apic_timer();
-
-    use core::sync::atomic::{AtomicU64, Ordering};
-    let ctr = AtomicU64::new(0);
-    timer::schedule_timer(
-        move || {
-            let i = ctr.fetch_add(1, Ordering::Relaxed);
-            println!("tickA {}", i);
-        },
-        4096,
-        Some(4096),
-    );
-
-    let ctr2 = AtomicU64::new(0);
-    timer::schedule_timer(
-        move || {
-            let i = ctr2.fetch_add(1, Ordering::Relaxed);
-            println!("tickB {}", i);
-        },
-        8192,
-        Some(8192),
-    );
-
-    #[cfg(test)]
-    test_main();
 
     loop {
         unsafe {

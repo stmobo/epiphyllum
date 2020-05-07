@@ -6,7 +6,9 @@
 #![feature(alloc_error_handler)]
 #![feature(const_in_array_repeat_expressions)]
 #![feature(asm)]
+#![feature(llvm_asm)]
 #![feature(try_trait)]
+#![feature(arbitrary_self_types)]
 #![feature(option_unwrap_none)]
 #![feature(option_expect_none)]
 
@@ -165,7 +167,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     acpica::initialize().expect("could not initialize ACPICA");
 
-    let lapic = devices::local_apic::initialize();
+    devices::local_apic::initialize();
     devices::io_apic::initialize();
 
     unsafe {
@@ -176,7 +178,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     loop {
         unsafe {
-            asm!("hlt" :::: "volatile");
+            llvm_asm!("hlt" :::: "volatile");
         }
     }
 }

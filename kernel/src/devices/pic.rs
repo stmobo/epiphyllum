@@ -318,7 +318,6 @@ pub mod local_apic {
 
 pub mod io_apic {
     use super::*;
-    use crate::acpica::madt::IOAPICEntry;
 
     #[derive(Debug, Copy, Clone)]
     pub struct IOAPIC {
@@ -337,7 +336,7 @@ pub mod io_apic {
             ptr::write_volatile(self.base_addr.offset(4), value);
         }
 
-        fn initialize(&mut self, ent: &IOAPICEntry) {
+        fn initialize(&mut self) {
             println!("ioapic: initializing IOAPIC {}", self.id());
             println!(
                 "ioapic: version {:#02x} / {} redirection entries",
@@ -382,7 +381,7 @@ pub mod io_apic {
                     irq_base: io_apic.gsi_base as u8,
                 };
 
-                s.initialize(io_apic);
+                s.initialize();
                 ret.push((io_apic.apic_id, Mutex::new(s)));
             }
 

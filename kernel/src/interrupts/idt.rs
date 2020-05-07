@@ -23,18 +23,6 @@ struct IDTDescriptor {
 }
 
 impl IDTEntry {
-    const fn new() -> IDTEntry {
-        IDTEntry {
-            offset_1: 0,
-            selector: 0,
-            ist: 0,
-            type_attr: 0,
-            offset_2: 0,
-            offset_3: 0,
-            zero: 0,
-        }
-    }
-
     fn set_address(&mut self, address: usize, present: bool) {
         self.offset_1 = (address & 0xFFFF) as u16;
         self.offset_2 = ((address >> 16) & 0xFFFF) as u16;
@@ -66,7 +54,7 @@ fn load_idt(idt_addr: usize) {
             offset: idt_addr as u64,
         };
 
-        asm!("lidt [$0]" :: "r"(&descriptor) :: "volatile", "intel");
+        llvm_asm!("lidt [$0]" :: "r"(&descriptor) :: "volatile", "intel");
     }
 }
 

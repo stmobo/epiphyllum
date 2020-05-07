@@ -153,7 +153,7 @@ fn cpuid(in_eax: u32) -> (u32, u32, u32, u32) {
     let edx: u32;
 
     unsafe {
-        asm!("cpuid" : "={eax}"(eax), "={ebx}"(ebx), "={ecx}"(ecx), "={edx}"(edx) : "0"(in_eax) :: "volatile");
+        llvm_asm!("cpuid" : "={eax}"(eax), "={ebx}"(ebx), "={ecx}"(ecx), "={edx}"(edx) : "0"(in_eax) :: "volatile");
     }
 
     (eax, ebx, ecx, edx)

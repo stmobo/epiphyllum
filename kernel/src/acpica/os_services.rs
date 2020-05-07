@@ -221,9 +221,7 @@ pub extern "C" fn AcpiOsReadable(Pointer: *mut cty::c_void, Length: ACPI_SIZE) -
 
     for i in 0..n_pages {
         let address = start + (0x1000 * i);
-        if let Some(entry) = paging::get_mapping(address) {
-            continue;
-        } else {
+        if paging::get_mapping(address).is_none() {
             return false as BOOLEAN;
         }
     }
@@ -601,8 +599,8 @@ pub extern "C" fn AcpiOsDeleteSemaphore(Handle: *mut cty::c_void) -> ACPI_STATUS
 #[no_mangle]
 pub extern "C" fn AcpiOsWaitSemaphore(
     Handle: *mut cty::c_void,
-    Units: UINT32,
-    Timeout: UINT16,
+    _Units: UINT32,
+    _Timeout: UINT16,
 ) -> ACPI_STATUS {
     if Handle == ptr::null_mut() {
         return AcpiError::AE_BAD_PARAMETER.into();

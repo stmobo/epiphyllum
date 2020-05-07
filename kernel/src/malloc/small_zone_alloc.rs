@@ -3,7 +3,6 @@ use core::ptr;
 
 use crate::paging::PAGE_MASK;
 
-use lazy_static::lazy_static;
 use spin::{Mutex, MutexGuard, Once};
 
 static KERNEL_SMA: Once<Mutex<SmallZoneAllocator>> = Once::new();
@@ -341,3 +340,6 @@ impl SmallZoneAllocator {
 }
 
 unsafe impl Send for SmallZoneAllocator {}
+
+#[cfg(test)]
+pub mod tests {}

@@ -70,7 +70,7 @@ fn device_not_available_error(frame: &InterruptFrame) {
     );
 }
 
-fn double_fault_error(frame: &InterruptFrame) -> ! {
+fn double_fault_error(_frame: &InterruptFrame) -> ! {
     panic!("unhandled double fault (#DF) error");
 }
 

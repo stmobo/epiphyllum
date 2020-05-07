@@ -1,5 +1,8 @@
+cargo-features = ["resolver"]
+
 [workspace]
 members = ["bootloader", "kernel"]
+resolver = "2"
 
 [profile.dev]
 panic = "abort"

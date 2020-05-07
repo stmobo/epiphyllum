@@ -18,8 +18,8 @@ impl StackFrameIterator {
             let mut frame_ip: usize;
             let mut frame_bp: usize;
 
-            asm!("mov $0, [rbp]" : "=r"(frame_bp) ::: "intel");
-            asm!("mov $0, [rbp+8]" : "=r"(frame_ip) ::: "intel");
+            llvm_asm!("mov $0, [rbp]" : "=r"(frame_bp) ::: "intel");
+            llvm_asm!("mov $0, [rbp+8]" : "=r"(frame_ip) ::: "intel");
 
             StackFrameIterator {
                 cur_frame: StackFrame { frame_ip, frame_bp },

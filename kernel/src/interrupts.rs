@@ -6,7 +6,6 @@ mod idt;
 pub use handler::{register_handler, unregister_handler, InterruptHandlerStatus};
 pub use idt::{claim_idt_page, initialize_idt};
 
-use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static INTERRUPT_CONTEXT_FLAG: AtomicBool = AtomicBool::new(false);

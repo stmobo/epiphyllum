@@ -1,4 +1,3 @@
-use alloc::string::String;
 use core::mem;
 use core::ptr;
 
@@ -232,15 +231,6 @@ pub fn initialize() -> AcpiResult<()> {
     println!("ACPICA initialized.");
 
     Ok(())
-}
-
-fn c_char_slice_to_str<'a>(sl: &'a [cty::c_char]) -> &'a str {
-    unsafe {
-        let p = (sl.as_ptr() as usize) as *const u8;
-        let s2: &'a [u8] = &*ptr::slice_from_raw_parts(p, sl.len());
-
-        core::str::from_utf8(s2).unwrap()
-    }
 }
 
 fn get_table(signature: &[u8], instance: u32) -> AcpiResult<usize> {

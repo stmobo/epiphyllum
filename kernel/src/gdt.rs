@@ -80,6 +80,6 @@ pub fn initialize_gdt() {
             offset: gdt_addr as u64,
         };
 
-        asm!("lgdt [$0]" :: "r"(&descriptor) :: "volatile", "intel");
+        llvm_asm!("lgdt [$0]" :: "r"(&descriptor) :: "volatile", "intel");
     }
 }

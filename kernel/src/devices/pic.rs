@@ -2,14 +2,15 @@
 
 use crate::acpica::madt::MADT;
 use crate::asm::{msr, ports};
+use crate::lock::{NoIRQSpinlock, NoIRQSpinlockGuard};
 use crate::paging;
 
 use alloc_crate::vec::Vec;
 use core::ptr;
-use spin::{Mutex, MutexGuard, Once};
+use spin::Once;
 
 static LAPIC_BASE: Once<usize> = Once::new();
-static IO_APICS: Once<Vec<(u8, Mutex<io_apic::IOAPIC>)>> = Once::new();
+static IO_APICS: Once<Vec<(u8, NoIRQSpinlock<io_apic::IOAPIC>)>> = Once::new();
 const PIC1: u16 = 0x0020;
 const PIC2: u16 = 0x00A0;
 
@@ -366,7 +367,7 @@ pub mod io_apic {
             }
         }
 
-        fn initialize_list() -> Vec<(u8, Mutex<IOAPIC>)> {
+        fn initialize_list() -> Vec<(u8, NoIRQSpinlock<IOAPIC>)> {
             let madt = MADT::get();
             let mut ret = Vec::new();
 
@@ -382,7 +383,7 @@ pub mod io_apic {
                 };
 
                 s.initialize();
-                ret.push((io_apic.apic_id, Mutex::new(s)));
+                ret.push((io_apic.apic_id, NoIRQSpinlock::new(s)));
             }
 
             ret
@@ -392,11 +393,11 @@ pub mod io_apic {
             IO_APICS.call_once(IOAPIC::initialize_list);
         }
 
-        pub fn get(id: u8) -> Option<MutexGuard<'static, IOAPIC>> {
+        pub fn get(id: u8) -> Option<NoIRQSpinlockGuard<'static, IOAPIC>> {
             let apics_list = IO_APICS.call_once(IOAPIC::initialize_list);
-            for (apic_id, apic_mutex) in apics_list.iter() {
+            for (apic_id, apic_lock) in apics_list.iter() {
                 if *apic_id == id {
-                    return Some(apic_mutex.lock());
+                    return Some(apic_lock.lock());
                 }
             }
 

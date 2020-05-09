@@ -73,7 +73,7 @@ pub mod local_apic {
                 if !paging::map_virtual_address(vaddr, base_phys_addr) {
                     panic!("lapic: could not map LAPIC base address into virtual memory");
                 } else {
-                    println!("LAPIC base address: {:#016x}", base_phys_addr);
+                    println!("lapic: LAPIC base address is {:#016x}", base_phys_addr);
                 }
 
                 vaddr
@@ -310,7 +310,7 @@ pub mod local_apic {
         lapic.enable_apic();
         lapic.initialize_nmis();
 
-        println!("Local APIC initialized.");
+        println!("lapic: local APIC initialized");
 
         lapic
     }
@@ -531,6 +531,6 @@ pub mod io_apic {
 
     pub fn initialize() {
         io_apic::IOAPIC::initialize_all();
-        println!("I/O APICs initialized.");
+        println!("ioapic: I/O APICs initialized");
     }
 }

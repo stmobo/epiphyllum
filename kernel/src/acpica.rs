@@ -228,7 +228,7 @@ pub fn initialize() -> AcpiResult<()> {
             .expect("AcpiInitializeObjects");
     }
 
-    println!("ACPICA initialized.");
+    println!("acpica: initialization complete");
 
     Ok(())
 }

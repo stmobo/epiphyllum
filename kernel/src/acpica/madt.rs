@@ -1,5 +1,5 @@
 use super::bindings::*;
-use alloc::vec::Vec;
+use alloc_crate::vec::Vec;
 use core::ptr;
 
 use spin::Once;

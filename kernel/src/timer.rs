@@ -1,5 +1,5 @@
-use alloc::boxed::Box;
-use alloc::sync::Arc;
+use alloc_crate::boxed::Box;
+use alloc_crate::sync::Arc;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 

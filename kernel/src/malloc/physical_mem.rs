@@ -1,11 +1,12 @@
-use crate::avl_tree::AVLTree;
 use crate::paging;
 use crate::paging::PAGE_MASK;
+use crate::structures::AVLTree;
 
-use alloc::rc::Rc;
-use alloc::vec::Vec;
+use alloc_crate::rc::Rc;
+use alloc_crate::vec::Vec;
 use core::cell::{Ref, RefCell, RefMut};
 use core::cmp::Ordering;
+use core::ops::Bound;
 
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -434,7 +435,7 @@ pub struct PhysicalMemoryRange {
     range_start: usize,
     range_end: usize,
     free: Vec<FreeMemoryRange>,
-    allocator_tree: AVLTree<BuddyAllocatorWrapper, usize>, /* Organized by memory range address */
+    allocator_tree: AVLTree<usize, BuddyAllocatorWrapper>, /* Organized by memory range address */
     allocator_usage_list: Vec<BuddyAllocatorWrapper>,      /* Sorted by free space amount. */
 }
 
@@ -451,7 +452,7 @@ impl PhysicalMemoryRange {
             range_start: addr,
             range_end: addr + len,
             free: vec![FreeMemoryRange::new(addr, addr + len)],
-            allocator_tree: AVLTree::<BuddyAllocatorWrapper, usize>::new(),
+            allocator_tree: AVLTree::<usize, BuddyAllocatorWrapper>::new(),
             allocator_usage_list: Vec::new(),
         };
 
@@ -465,7 +466,9 @@ impl PhysicalMemoryRange {
         self.allocator_usage_list.push(wrapper.clone());
         self.usage_list_sift_up(idx);
 
-        self.allocator_tree.insert(wrapper.start_address(), wrapper);
+        self.allocator_tree
+            .insert(wrapper.start_address(), wrapper)
+            .expect("could not add allocator for physical memory range");
     }
 
     fn usage_list_sift_up(&mut self, idx: usize) {
@@ -529,11 +532,12 @@ impl PhysicalMemoryRange {
     ) -> Result<usize, AllocationError> {
         let allocators_start =
             self.range_start + ((range_start - self.range_start) & BUDDY_ALLOC_ALIGN_MASK);
+
         let order = BuddyAllocator::round_allocation_size(range_end - range_start);
 
-        if let Some(node) = self
+        if let Some((_, node)) = self
             .allocator_tree
-            .search_interval(range_start, BuddyAllocatorWrapper::get_range)
+            .upper_bound_mut(Bound::Included(&range_start))
         {
             let (start_address, end_address) = node.get_range();
             if start_address <= range_start && end_address >= range_end {
@@ -543,7 +547,7 @@ impl PhysicalMemoryRange {
 
                 self.usage_list_sift_down(idx);
 
-                return ret.ok_or(AllocationError::NoFreeMemory);
+                return ret.ok_or(AllocationError::NoFreePhysicalMemory);
             }
         }
 
@@ -590,7 +594,7 @@ impl PhysicalMemoryRange {
         let ret = wrapper.allocate_at(range_start, order);
         self.add_allocator(wrapper);
 
-        return ret.ok_or(AllocationError::NoFreeMemory);
+        return ret.ok_or(AllocationError::NoFreePhysicalMemory);
     }
 
     pub fn allocate(&mut self, size: usize) -> Result<usize, AllocationError> {
@@ -627,10 +631,10 @@ impl PhysicalMemoryRange {
             let ret = wrapper.allocate(order);
             self.add_allocator(wrapper);
 
-            return ret.ok_or(AllocationError::NoFreeMemory);
+            return ret.ok_or(AllocationError::NoFreePhysicalMemory);
         }
 
-        Err(AllocationError::NoFreeMemory)
+        Err(AllocationError::NoFreePhysicalMemory)
     }
 
     pub fn deallocate(&mut self, addr: usize, size: usize) {
@@ -639,10 +643,7 @@ impl PhysicalMemoryRange {
         }
 
         let order = BuddyAllocator::round_allocation_size(size);
-        if let Some(wrapper) = self
-            .allocator_tree
-            .search_interval(addr, BuddyAllocatorWrapper::get_range)
-        {
+        if let Some((_, wrapper)) = self.allocator_tree.upper_bound_mut(Bound::Included(&addr)) {
             wrapper.deallocate(addr, order);
             let idx = wrapper.usage_list_idx();
 
@@ -669,7 +670,7 @@ impl PhysicalMemoryAllocator {
             }
         }
 
-        Err(AllocationError::NoFreeMemory)
+        Err(AllocationError::NoFreePhysicalMemory)
     }
 
     pub fn allocate_at(&mut self, addr: usize, size: usize) -> Result<usize, AllocationError> {
@@ -684,7 +685,11 @@ impl PhysicalMemoryAllocator {
 
     pub fn deallocate(&mut self, addr: usize, size: usize) {
         for r in self.ranges.iter_mut() {
-            if addr >= r.range_start && addr <= r.range_end {
+            if addr >= r.range_start && addr < r.range_end {
+                println!(
+                    "{:#016x} - {:#016x} - {:#016x}",
+                    r.range_start, addr, r.range_end
+                );
                 r.deallocate(addr, size);
             }
         }

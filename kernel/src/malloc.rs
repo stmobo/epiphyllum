@@ -1,4 +1,4 @@
-use alloc::alloc::{GlobalAlloc, Layout};
+use alloc_crate::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 
 pub mod large_zone_alloc;
@@ -12,8 +12,10 @@ pub use physical_mem::PhysicalMemory;
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AllocationError {
     ReservedMemory,
-    NoFreeMemory,
+    NoFreeVirtualMemory,
+    NoFreePhysicalMemory,
     InvalidAllocation,
+    CouldNotMapAddress,
 }
 
 #[cfg(not(test))]
@@ -23,7 +25,7 @@ pub mod global_allocator {
     pub struct KernelHeapAllocator {}
 
     #[cfg_attr(not(test), global_allocator)]
-    static mut KERNEL_ALLOCATOR: KernelHeapAllocator = KernelHeapAllocator {};
+    pub static mut KERNEL_ALLOCATOR: KernelHeapAllocator = KernelHeapAllocator {};
 
     impl KernelHeapAllocator {
         fn get_layout_alloc_size(layout: Layout) -> usize {
@@ -61,7 +63,7 @@ pub mod global_allocator {
                 let addr = l.allocate(order);
                 drop(l);
                 addr as *mut u8
-            } else if layout.size() <= 7160 {
+            } else if layout.size() < 7160 {
                 /* Redirect to large-zone allocator. */
                 large_zone_alloc::allocate(layout).map_or(ptr::null_mut(), |addr| addr as *mut u8)
             } else {
@@ -69,6 +71,7 @@ pub mod global_allocator {
                 if layout.align() > 0x1000 {
                     return ptr::null_mut();
                 }
+
                 heap_pages::allocate(layout.size()).map_or(ptr::null_mut(), |addr| addr as *mut u8)
             }
         }
@@ -84,8 +87,8 @@ pub mod global_allocator {
                 }
 
                 let mut l = l.unwrap();
-                l.deallocate(ptr as usize);
-            } else if layout.size() <= 7160 {
+                l.deallocate(addr);
+            } else if layout.size() < 7160 {
                 large_zone_alloc::deallocate(addr, layout);
             } else {
                 heap_pages::deallocate(addr, layout.size());
@@ -105,6 +108,7 @@ pub mod global_allocator {
 pub mod heap_pages {
     use super::physical_mem;
     use super::virtual_mem;
+    use super::AllocationError;
     use crate::paging;
 
     /// Allocates virtual memory pages from the kernel heap and maps them to
@@ -113,45 +117,38 @@ pub mod heap_pages {
     ///
     /// The size of the memory request is in bytes; if the size is not already a
     /// multiple of the page size, it will be rounded up accordingly.
-    pub unsafe fn allocate(size: usize) -> Option<usize> {
+    pub unsafe fn allocate(size: usize) -> Result<usize, AllocationError> {
         let alloc_sz = paging::round_to_next_page(size);
         let n_pages = alloc_sz / 0x1000;
 
+        let paddr = physical_mem::allocate(alloc_sz)?;
         let vaddr = virtual_mem::allocate(alloc_sz);
-        let paddr = physical_mem::allocate(alloc_sz);
 
-        if vaddr.is_some() && paddr.is_ok() {
-            let mut success = true;
-            let vaddr = vaddr.unwrap();
-            let paddr = paddr.unwrap();
+        if vaddr.is_err() {
+            physical_mem::deallocate(paddr, alloc_sz);
+            return vaddr;
+        }
 
+        let vaddr = vaddr.unwrap();
+        let mut status = Ok(vaddr);
+
+        for i in 0..n_pages {
+            if !paging::map_virtual_address(vaddr + (0x1000 * i), paddr + (0x1000 * i)) {
+                status = Err(AllocationError::CouldNotMapAddress);
+                break;
+            }
+        }
+
+        if status.is_err() {
+            /* Something was unsuccessful. Clean up everything. */
             for i in 0..n_pages {
-                if !paging::map_virtual_address(vaddr + (0x1000 * i), paddr + (0x1000 * i)) {
-                    success = false;
-                    break;
-                }
+                paging::unmap_virtual_address(vaddr + (0x1000 * i));
             }
-
-            if success {
-                return Some(vaddr);
-            } else {
-                /* Clean up mappings. */
-                for i in 0..n_pages {
-                    paging::unmap_virtual_address(vaddr + (0x1000 * i));
-                }
-            }
+            virtual_mem::deallocate(vaddr, alloc_sz);
+            physical_mem::deallocate(paddr, alloc_sz);
         }
 
-        /* Something was unsuccessful. Deallocate everything. */
-        if vaddr.is_some() {
-            virtual_mem::deallocate(vaddr.unwrap(), alloc_sz);
-        }
-
-        if paddr.is_ok() {
-            physical_mem::deallocate(paddr.unwrap(), alloc_sz);
-        }
-
-        None
+        status
     }
 
     /// Deallocates virtual and physical memory previously acquired by a call to

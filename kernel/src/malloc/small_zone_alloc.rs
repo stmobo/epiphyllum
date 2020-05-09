@@ -7,16 +7,6 @@ use spin::{Mutex, MutexGuard, Once};
 
 static KERNEL_SMA: Once<Mutex<SmallZoneAllocator>> = Once::new();
 
-pub unsafe fn initialize(init_addr: usize, n_pages: usize) {
-    KERNEL_SMA.call_once(|| Mutex::new(SmallZoneAllocator::new(init_addr, n_pages)));
-}
-
-pub fn get_small_allocator() -> Option<MutexGuard<'static, SmallZoneAllocator>> {
-    KERNEL_SMA
-        .wait()
-        .map(|sma: &Mutex<SmallZoneAllocator>| sma.lock())
-}
-
 /// Used for allocations of size 8 - 512.
 /// This is designed to fit specifically within 1 page, and should _always_
 /// be aligned to a page boundary.
@@ -216,6 +206,7 @@ impl SmallZone {
 pub struct SmallZoneAllocator {
     heads: [*mut SmallZone; 7],
     free_list: *mut SmallZone,
+    free_len: usize,
 }
 
 impl SmallZoneAllocator {
@@ -224,6 +215,7 @@ impl SmallZoneAllocator {
         let mut zone = SmallZoneAllocator {
             heads: [ptr::null_mut(); 7],
             free_list: ptr::null_mut(),
+            free_len: 0,
         };
 
         zone.add_free_pages(init_addr, n_pages);
@@ -255,6 +247,7 @@ impl SmallZoneAllocator {
         }
 
         self.free_list = init_addr as *mut SmallZone;
+        self.free_len += n_pages;
     }
 
     /// Pop a page off the free list and make it available for allocations
@@ -264,7 +257,7 @@ impl SmallZoneAllocator {
         let mut p = self.free_list;
 
         if p == ptr::null_mut() {
-            if let Some(vaddr) = heap_pages::allocate(0x1000) {
+            if let Ok(vaddr) = heap_pages::allocate(0x1000) {
                 self.add_free_pages(vaddr, 1);
                 p = self.free_list;
             }
@@ -340,6 +333,21 @@ impl SmallZoneAllocator {
 }
 
 unsafe impl Send for SmallZoneAllocator {}
+
+pub unsafe fn initialize(init_addr: usize, n_pages: usize) {
+    KERNEL_SMA.call_once(|| Mutex::new(SmallZoneAllocator::new(init_addr, n_pages)));
+}
+
+pub fn get_small_allocator() -> Option<MutexGuard<'static, SmallZoneAllocator>> {
+    KERNEL_SMA
+        .wait()
+        .map(|sma: &Mutex<SmallZoneAllocator>| sma.lock())
+}
+
+pub unsafe fn add_pages(addr: usize, n_pages: usize) {
+    let mut allocator = get_small_allocator().unwrap();
+    allocator.add_free_pages(addr, n_pages);
+}
 
 #[cfg(test)]
 pub mod tests {}

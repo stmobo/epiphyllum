@@ -1,5 +1,5 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc_crate::boxed::Box;
+use alloc_crate::vec::Vec;
 use core::mem::MaybeUninit;
 use lazy_static::lazy_static;
 use spin::RwLock;
@@ -104,7 +104,6 @@ pub fn handle_interrupt(frame: &mut InterruptFrame) {
         return;
     }
 
-    let lapic = local_apic::LocalAPIC::new();
     let mut found_handler = false;
     let lock = INTERRUPT_VECTORS[frame.interrupt_no as usize].read();
 
@@ -125,6 +124,7 @@ pub fn handle_interrupt(frame: &mut InterruptFrame) {
         println!("spurious interrupt {:#2x}", frame.interrupt_no);
     }
 
+    let lapic = local_apic::LocalAPIC::new();
     if frame.interrupt_no >= 32 && lapic.has_irqs_in_service() {
         lapic.send_eoi();
     }

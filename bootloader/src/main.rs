@@ -213,7 +213,7 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
     let higher_half_heap_base = 0xFFFF_C080_0000_0000;
     let n_heap_pages = 64;
     let heap_phys = pf_allocator.allocate(n_heap_pages);
-    for i in 0..n_stack_pages {
+    for i in 0..(n_heap_pages as usize) {
         let paddr = heap_phys + (i * 0x1000);
         let vaddr = higher_half_heap_base + (i * 0x1000);
 

@@ -13,7 +13,7 @@
 #![feature(option_expect_none)]
 
 #[macro_use]
-extern crate alloc;
+extern crate alloc as alloc_crate;
 
 #[cfg(not(test))]
 extern crate compiler_builtins;
@@ -22,7 +22,6 @@ extern crate compiler_builtins;
 pub mod print;
 pub mod acpica;
 pub mod asm;
-pub mod avl_tree;
 pub mod devices;
 pub mod gdt;
 pub mod interrupts;
@@ -31,6 +30,7 @@ pub mod malloc;
 pub mod multiboot;
 pub mod paging;
 pub mod stack_trace;
+pub mod structures;
 pub mod timer;
 
 use core::panic::PanicInfo;
@@ -114,16 +114,22 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     }
 
     unsafe {
+        let lza_pages = boot_info.heap_pages / 2;
+        let sma_pages = boot_info.heap_pages / 2;
+        //let crit_pages = boot_info.heap_pages - (lza_pages + sma_pages);
+
+        let sma_start = malloc::KERNEL_HEAP_BASE;
+        let lza_start = sma_start + ((sma_pages as usize) * 0x1000);
+        //let crit_start = lza_start + ((lza_pages as usize) * 0x1000);
+
         println!(
-            "Initializing kernel heap: {} pages at {:#016x}",
-            boot_info.heap_pages,
-            malloc::KERNEL_HEAP_BASE
+            "Initializing kernel heap:\n    - SMA: {} pages at {:#016x}\n    - LZA: {} pages at {:#016x}",
+            sma_pages, sma_start, lza_pages, lza_start
         );
 
-        malloc::small_zone_alloc::initialize(
-            malloc::KERNEL_HEAP_BASE,
-            boot_info.heap_pages as usize,
-        );
+        malloc::small_zone_alloc::initialize(sma_start, sma_pages as usize);
+        malloc::large_zone_alloc::initialize(lza_start, lza_pages as usize);
+        //malloc::critical_pages::initialize(crit_start, crit_pages as usize);
     }
 
     if let Some(mmap) = mb.get_memory_info() {
@@ -155,15 +161,34 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     }
 
     interrupts::claim_idt_page(idt_phys_addr);
+    println!("IDT pages initialized.");
+
     paging::reserve_bootstrap_physical_pages();
 
     println!("Physical memory allocator initialized.");
+
+    //let alloc_init_lock = unsafe { malloc::global_allocator::KERNEL_ALLOCATOR.get_alloc_mutex() };
 
     unsafe {
         malloc::virtual_mem::initialize(boot_info.heap_pages);
     }
 
     println!("Heap virtual memory allocator initialized.");
+
+    const EXTRA_PAGES: usize = 512;
+    unsafe {
+        for _ in 0..(EXTRA_PAGES / 128) {
+            let sma_alloc = malloc::heap_pages::allocate(128 * 0x1000)
+                .expect("Could not allocate extra space for SMA");
+            let lza_alloc = malloc::heap_pages::allocate(128 * 0x1000)
+                .expect("Could not allocate extra space for LZA");
+
+            malloc::small_zone_alloc::add_pages(sma_alloc, 128);
+            malloc::large_zone_alloc::add_pages(lza_alloc, 128);
+        }
+
+        println!("SMA/LZA bootstrap complete.");
+    }
 
     acpica::initialize().expect("could not initialize ACPICA");
 

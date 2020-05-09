@@ -4,7 +4,7 @@ use crate::acpica::madt::MADT;
 use crate::asm::{msr, ports};
 use crate::paging;
 
-use alloc::vec::Vec;
+use alloc_crate::vec::Vec;
 use core::ptr;
 use spin::{Mutex, MutexGuard, Once};
 

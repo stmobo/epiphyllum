@@ -5,8 +5,8 @@ use x86_64::VirtAddr;
 use lazy_static::lazy_static;
 use spin::{Mutex, MutexGuard};
 
-use crate::avl_tree::AVLTree;
 use crate::malloc::physical_mem;
+use crate::structures::AVLTree;
 
 pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
 
@@ -30,7 +30,7 @@ const PHYSICAL_MAP_PML4_IDX: usize = 0b100_000_010;
 const HIGHER_HALF_PML4_IDX: usize = 0b100_000_000;
 
 lazy_static! {
-    pub static ref PAGING_METADATA: Mutex<AVLTree<PageTableMetadata, PageHierarchyIndex>> =
+    pub static ref PAGING_METADATA: Mutex<AVLTree<PageHierarchyIndex, PageTableMetadata>> =
         Mutex::new(AVLTree::new());
 }
 
@@ -53,7 +53,7 @@ pub fn round_to_prev_page<T: Into<usize>>(value: T) -> usize {
     v & PAGE_MASK
 }
 
-fn get_paging_metadata() -> MutexGuard<'static, AVLTree<PageTableMetadata, PageHierarchyIndex>> {
+fn get_paging_metadata() -> MutexGuard<'static, AVLTree<PageHierarchyIndex, PageTableMetadata>> {
     PAGING_METADATA.lock()
 }
 
@@ -385,10 +385,12 @@ fn add_page_table_ref(index: PageHierarchyIndex) {
     }
 
     let mut metadata_tree = get_paging_metadata();
-    if let Some(mut node) = metadata_tree.search_mut(index) {
+    if let Some(mut node) = metadata_tree.get_mut(&index) {
         node.ref_count += 1;
     } else {
-        metadata_tree.insert(index, PageTableMetadata { ref_count: 1 });
+        metadata_tree
+            .insert(index, PageTableMetadata { ref_count: 1 })
+            .expect("could not add page table metadata to tree");
 
         if let Some(parent) = index.parent() {
             if parent != PageHierarchyIndex::PML4T {
@@ -407,13 +409,13 @@ fn remove_page_table_ref(index: PageHierarchyIndex) {
     let mut metadata_tree = get_paging_metadata();
     let mut should_delete = false;
 
-    if let Some(mut node) = metadata_tree.search_mut(index) {
+    if let Some(mut node) = metadata_tree.get_mut(&index) {
         node.ref_count -= 1;
         should_delete = node.ref_count == 0;
     }
 
     if should_delete {
-        metadata_tree.delete(index);
+        metadata_tree.remove(&index);
         let parent = index.parent().unwrap();
         let table = index.get_table().unwrap();
         let parent_table = parent.get_table().unwrap();

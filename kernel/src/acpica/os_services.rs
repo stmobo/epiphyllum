@@ -2,9 +2,9 @@ use super::bindings::*;
 use crate::malloc::{physical_mem, virtual_mem};
 use crate::paging;
 
-use alloc::alloc::Layout;
-use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc_crate::alloc::Layout;
+use alloc_crate::boxed::Box;
+use alloc_crate::collections::BTreeMap;
 use core::mem;
 use core::ptr;
 use spin::{Mutex, MutexGuard, Once};
@@ -118,7 +118,7 @@ pub extern "C" fn AcpiOsMapMemory(
     let n_pages = alloc_sz / 0x1000;
 
     let vaddr = virtual_mem::allocate(alloc_sz);
-    if vaddr.is_none() {
+    if vaddr.is_err() {
         return ptr::null_mut();
     }
 
@@ -258,7 +258,7 @@ fn get_acpi_alloc_map() -> MutexGuard<'static, BTreeMap<usize, Layout>> {
 
 #[no_mangle]
 pub extern "C" fn AcpiOsAllocate(Size: ACPI_SIZE) -> *mut cty::c_void {
-    use alloc::alloc::alloc;
+    use alloc_crate::alloc::alloc;
 
     let layout = Layout::from_size_align(Size as usize, 8).expect("could not create layout");
     let ret: *mut cty::c_void = unsafe { mem::transmute(alloc(layout)) };
@@ -272,7 +272,7 @@ pub extern "C" fn AcpiOsAllocate(Size: ACPI_SIZE) -> *mut cty::c_void {
 
 #[no_mangle]
 pub extern "C" fn AcpiOsFree(Memory: *mut cty::c_void) {
-    use alloc::alloc::dealloc;
+    use alloc_crate::alloc::dealloc;
 
     if Memory != ptr::null_mut() {
         let addr = Memory as usize;

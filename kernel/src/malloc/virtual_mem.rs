@@ -1,10 +1,9 @@
-use crate::avl_tree::AVLTree;
-use crate::paging::{is_page_aligned, round_to_next_page, round_to_prev_page};
+use alloc_crate::vec::Vec;
+use core::ops::Bound;
 
-use alloc::rc::Rc;
-use alloc::vec::Vec;
-use core::cell::{Ref, RefCell, RefMut};
-use core::cmp::Ordering;
+use super::AllocationError;
+use crate::paging::{is_page_aligned, round_to_next_page, round_to_prev_page};
+use crate::structures::AVLTree;
 
 use lazy_static::lazy_static;
 use spin::{Mutex, MutexGuard};
@@ -18,7 +17,7 @@ lazy_static! {
 struct VirtualMemoryRange {
     start: usize,
     end: usize,
-    free_list_index: Option<usize>,
+    free: bool,
 }
 
 impl VirtualMemoryRange {
@@ -30,87 +29,43 @@ impl VirtualMemoryRange {
             );
         }
 
+        if end < start {
+            panic!(
+                "attempt to create invalid virtual memory range ({:#016x} < {:#016x})",
+                end, start
+            );
+        }
+
         VirtualMemoryRange {
             start: start,
             end: end,
-            free_list_index: None,
+            free: false,
         }
     }
 
     fn size(&self) -> usize {
         return self.end - self.start;
     }
-
-    fn is_free(&self) -> bool {
-        self.free_list_index.is_some()
-    }
 }
 
-#[derive(Debug, Clone)]
-#[repr(transparent)]
-struct RangeWrapper {
-    range: Rc<RefCell<VirtualMemoryRange>>,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FreeListEntry {
+    address: usize,
+    size: usize,
 }
 
-impl RangeWrapper {
-    fn borrow(&self) -> Ref<'_, VirtualMemoryRange> {
-        self.range.borrow()
-    }
-
-    fn borrow_mut(&self) -> RefMut<'_, VirtualMemoryRange> {
-        self.range.borrow_mut()
-    }
-
-    fn new(range: VirtualMemoryRange) -> RangeWrapper {
-        RangeWrapper {
-            range: Rc::new(RefCell::new(range)),
+impl FreeListEntry {
+    fn new(range: &VirtualMemoryRange) -> FreeListEntry {
+        FreeListEntry {
+            address: range.start,
+            size: range.size(),
         }
-    }
-
-    fn start(&self) -> usize {
-        let b = self.range.borrow();
-        b.start
-    }
-}
-
-impl PartialEq for RangeWrapper {
-    fn eq(&self, rhs: &RangeWrapper) -> bool {
-        let r = rhs.borrow();
-        let s = self.borrow();
-
-        r.size() == s.size()
-    }
-}
-
-impl Eq for RangeWrapper {}
-
-impl PartialOrd for RangeWrapper {
-    fn partial_cmp(&self, rhs: &RangeWrapper) -> Option<Ordering> {
-        let r = rhs.borrow();
-        let s = self.borrow();
-
-        let s1 = s.size();
-        let s2 = r.size();
-
-        Some(s1.cmp(&s2))
-    }
-}
-
-impl Ord for RangeWrapper {
-    fn cmp(&self, rhs: &RangeWrapper) -> Ordering {
-        let r = rhs.borrow();
-        let s = self.borrow();
-
-        let s1 = s.size();
-        let s2 = r.size();
-
-        s1.cmp(&s2)
     }
 }
 
 struct VirtualMemoryAllocator {
-    regions: AVLTree<RangeWrapper, usize>, /* indexed by address */
-    free: Vec<RangeWrapper>,
+    regions: AVLTree<usize, VirtualMemoryRange>, /* indexed by address */
+    free: Vec<FreeListEntry>,
 }
 
 impl VirtualMemoryAllocator {
@@ -121,279 +76,172 @@ impl VirtualMemoryAllocator {
         }
     }
 
-    fn add_range(&mut self, range: RangeWrapper, free: bool) {
-        self.regions.insert(range.start(), range.clone());
+    /// Adds a region to the region tree and to the free list (if necessary).
+    /// The caller is responsible for re-sorting the list afterwards!
+    fn add_range(&mut self, mut range: VirtualMemoryRange, free: bool) {
         if free {
-            let mut b = range.borrow_mut();
-            b.free_list_index = Some(self.free.len());
-            drop(b);
-
-            self.free.push(range);
-            self.free_list_sift_up(self.free.len() - 1);
+            self.free.push(FreeListEntry::new(&range));
         }
+
+        range.free = free;
+        self.regions
+            .insert(range.start, range)
+            .expect("could not add allocator for virtual memory range");
     }
 
-    fn remove_free_list_entry(&mut self, idx: usize) -> RangeWrapper {
-        let range = self.free.swap_remove(idx);
-        for ent in self.free.iter_mut().skip(idx) {
-            let mut b = ent.borrow_mut();
-            let list_idx = b.free_list_index.as_mut().unwrap();
-            *list_idx -= 1;
-        }
-        self.free_list_sift_down(idx);
+    /// Remove an entry from the free list.
+    /// The caller is responsible for re-sorting the list afterwards!
+    fn remove_free_list_entry(&mut self, range: &VirtualMemoryRange) {
+        let entry = FreeListEntry::new(range);
+        let idx = self
+            .free
+            .binary_search(&entry)
+            .expect("could not find memory range in free list");
 
-        range
-    }
-
-    fn free_list_sift_up(&mut self, idx: usize) {
-        use core::mem::swap;
-        if idx == 0 {
-            return;
-        }
-
-        let parent_idx = (idx - 1) >> 1;
-        let parent = &self.free[parent_idx];
-        let child = &self.free[idx];
-
-        if *child > *parent {
-            swap(
-                &mut child.borrow_mut().free_list_index,
-                &mut parent.borrow_mut().free_list_index,
-            );
-
-            drop(child);
-            drop(parent);
-
-            self.free.swap(parent_idx, idx);
-
-            return self.free_list_sift_up(parent_idx);
-        }
-    }
-
-    fn free_list_sift_down(&mut self, idx: usize) {
-        use core::mem::swap;
-        if idx >= self.free.len() {
-            return;
-        }
-
-        let mut swap_idx = idx;
-
-        if let Some(c1) = self.free.get((idx << 1) + 1) {
-            if (*c1) > self.free[swap_idx] {
-                swap_idx = (idx << 1) + 1;
-            }
-        }
-
-        if let Some(c2) = self.free.get((idx << 1) + 2) {
-            if (*c2) > self.free[swap_idx] {
-                swap_idx = (idx << 1) + 2;
-            }
-        }
-
-        if swap_idx != idx {
-            self.free.swap(idx, swap_idx);
-
-            let mut cur = self.free[idx].borrow_mut();
-            let mut larger = self.free[swap_idx].borrow_mut();
-
-            swap(&mut cur.free_list_index, &mut larger.free_list_index);
-            drop(cur);
-            drop(larger);
-
-            return self.free_list_sift_down(swap_idx);
-        }
+        self.free.swap_remove(idx);
     }
 
     pub fn register_memory(&mut self, start: usize, end: usize) {
         let start = round_to_next_page(start);
         let end = round_to_prev_page(end);
-        self.add_range(RangeWrapper::new(VirtualMemoryRange::new(start, end)), true);
+        self.add_range(VirtualMemoryRange::new(start, end), true);
+        self.free.sort_unstable();
     }
 
-    pub fn allocate(&mut self, size: usize) -> Option<usize> {
+    pub fn allocate(&mut self, size: usize) -> Result<usize, AllocationError> {
         let alloc_sz = round_to_next_page(size);
 
-        if let Some(wrapper) = self.free.get(0) {
-            let range = wrapper.borrow();
-            if range.size() < alloc_sz {
-                return None;
-            }
-        } else {
-            return None;
+        if self.free.len() == 0 || self.free[0].size < size {
+            return Err(AllocationError::NoFreeVirtualMemory);
         }
 
-        /* Pull the free region with the largest size off the list. */
-        let wrapper = self.remove_free_list_entry(0);
-        let mut range = wrapper.borrow_mut();
+        /* Pull the free region with the largest size off the list, and
+         * get its region entry.
+         */
+        let free_ent = self.free.swap_remove(0);
+        let mut range = self
+            .regions
+            .get_mut(&free_ent.address)
+            .expect("free list / region tree mismatch");
 
-        /* We're going to be updating this range's key, so remove it from the tree. */
-        self.regions.delete(range.start);
+        /* Mark this region as in-use. */
+        range.free = false;
 
-        /* Add a new region for the allocation. */
+        /* If there's more than a page's worth of free space at the end of
+         * this region, add it back as a new region.
+         */
         let alloc_start = range.start;
-        let alloc_end = alloc_start + alloc_sz;
-        self.add_range(
-            RangeWrapper::new(VirtualMemoryRange::new(alloc_start, alloc_end)),
-            false,
-        );
-
-        /* If some of the free region still remains, add it back. */
-        if range.end > alloc_end && range.end - alloc_end >= 0x1000 {
-            range.start = alloc_end;
+        let alloc_end = range.start + alloc_sz;
+        if range.size() - alloc_sz >= 0x1000 {
+            let new_range = VirtualMemoryRange::new(alloc_end, range.end);
+            range.end = alloc_end;
             drop(range);
 
-            self.add_range(wrapper, true);
+            self.add_range(new_range, true);
         }
 
-        Some(alloc_start)
+        self.free.sort_unstable();
+
+        Ok(alloc_start)
     }
 
-    pub fn allocate_at(&mut self, start: usize, end: usize) -> Option<usize> {
+    pub fn allocate_at(&mut self, start: usize, end: usize) -> Result<usize, AllocationError> {
         let start = round_to_prev_page(start);
         let end = round_to_next_page(end);
 
         let alloc_sz = end - start;
         if alloc_sz < 0x1000 {
-            return None;
+            return Err(AllocationError::InvalidAllocation);
         }
 
         /* Do preliminary checks. */
-        let key: usize;
-        let free_list_index: usize;
-        {
-            let opt = self.regions.search_interval(start, |r| {
-                let b = r.borrow();
-                (b.start, b.end)
-            });
-
-            if opt.is_none() {
-                return None;
-            }
-
-            let wrapper = opt.unwrap();
-            let b = wrapper.borrow();
-            if !b.is_free() || b.end < end {
-                return None;
-            }
-
-            key = b.start;
-            free_list_index = b.free_list_index.unwrap();
+        let opt = self.regions.upper_bound(Bound::Included(&start));
+        if opt.is_none() {
+            return Err(AllocationError::ReservedMemory);
         }
 
-        /* Remove the region from the tree and free list, since we're modifying all of its addresses */
-        let wrapper = self.regions.delete(key).unwrap();
-        self.remove_free_list_entry(free_list_index);
-        let mut range = wrapper.borrow_mut();
+        let (key, range) = opt.unwrap();
+        if !range.free || range.end < end {
+            return Err(AllocationError::ReservedMemory);
+        }
+
+        let key = *key;
+        let mut range = self.regions.remove(&key).unwrap();
+
+        /* Remove the region from the free list and mark it as in use. */
+        self.remove_free_list_entry(&range);
+        range.free = false;
 
         if range.start < start && start - range.start >= 0x1000 {
             /* There's extra free space at the start of the region; re-add it */
-            self.add_range(
-                RangeWrapper::new(VirtualMemoryRange::new(range.start, start)),
-                true,
-            );
-
+            self.add_range(VirtualMemoryRange::new(range.start, start), true);
             range.start = start;
         }
 
         if range.end > end && range.end - end >= 0x1000 {
             /* Same thing, but with extra space at the end of the region */
-            self.add_range(
-                RangeWrapper::new(VirtualMemoryRange::new(end, range.end)),
-                true,
-            );
-
+            self.add_range(VirtualMemoryRange::new(end, range.end), true);
             range.end = end;
         }
 
         /* Add the allocated region itself. */
-        drop(range);
-        self.add_range(wrapper, false);
+        self.add_range(range, false);
+        self.free.sort_unstable();
 
-        Some(start)
+        Ok(start)
     }
 
     pub fn deallocate(&mut self, start: usize, size: usize) {
         let alloc_sz = round_to_next_page(size);
         let end = start + alloc_sz;
 
-        let opt = self.regions.delete(start);
+        /*
+         * We might modify the start address for the found range when
+         * coalescing blocks together, so go ahead and remove the node from the
+         * tree.
+         */
+        let opt = self.regions.remove(&start);
         if opt.is_none() {
             panic!(
-                "Attempt to free unallocated virtual memory range {:#016} - {:#016}",
+                "Attempt to free unallocated virtual memory range {:#016x} - {:#016x}",
                 start, end
             );
         }
 
-        let wrapper: RangeWrapper = opt.unwrap();
-        if wrapper.borrow().is_free() {
+        let mut range = opt.unwrap();
+        if range.free {
             panic!(
-                "Attempt to double-free virtual memory range {:#016} - {:#016}",
+                "Attempt to double-free virtual memory range {:#016x} - {:#016x}",
                 start, end
             );
         }
-        let mut freed_region = wrapper.borrow_mut();
 
         /* Determine if adjacent regions are free; if so, we can merge them. */
-        let merge_prev: Option<usize>;
-        if let Some((_, prev)) = self.regions.predecessor(start) {
-            let b = prev.borrow();
-            if b.is_free() && b.end == start {
-                merge_prev = b.free_list_index;
+        if let Some((key, next)) = self.regions.lower_bound(Bound::Excluded(&start)) {
+            /* Remove next range: */
+            if next.free && next.start == end {
+                let key = *key;
+                drop(next);
+
+                let next = self.regions.remove(&key).unwrap();
+                range.end = next.end;
+                self.remove_free_list_entry(&next);
+            }
+        }
+
+        if let Some((_, prev)) = self.regions.upper_bound_mut(Bound::Excluded(&start)) {
+            /* Remove middle range: */
+            if prev.free && prev.end == range.start {
+                prev.end = range.end;
             } else {
-                merge_prev = None;
+                self.add_range(range, true);
             }
         } else {
-            merge_prev = None;
+            /* Insert middle range back into region tree / free list: */
+            self.add_range(range, true);
         }
 
-        let mut merge_next: Option<usize>;
-        if let Some((_, next)) = self.regions.successor(start) {
-            let b = next.borrow();
-            if b.is_free() && b.start == end {
-                merge_next = b.free_list_index;
-            } else {
-                merge_next = None;
-            }
-        } else {
-            merge_next = None;
-        }
-
-        if merge_prev.is_some() && merge_next.is_some() {
-            println!("{:#016x}", self.free[merge_next.unwrap()].borrow().start);
-            println!("{:#016x}", self.free[merge_prev.unwrap()].borrow().start);
-            assert_ne!(merge_next, merge_prev);
-        }
-
-        if let Some(idx) = merge_prev {
-            /* Take the entry off the free list first. */
-            let merge_wrapper = self.remove_free_list_entry(idx);
-            let prev_range = merge_wrapper.borrow().clone();
-
-            /* Merge the region boundaries. */
-            freed_region.start = prev_range.start;
-            self.regions.delete(prev_range.start);
-
-            /* Taking this entry off the free list decremented all deeper indices by 1. */
-            if merge_next.is_some() {
-                let r = merge_next.as_mut().unwrap();
-                if *r >= idx {
-                    *r -= 1;
-                }
-            }
-        }
-
-        if let Some(idx) = merge_next {
-            /* Same deal as before. */
-            let merge_wrapper = self.remove_free_list_entry(idx);
-            let next_range = merge_wrapper.borrow().clone();
-
-            freed_region.end = next_range.end;
-            self.regions.delete(next_range.start);
-        }
-
-        /* Add the new range back into the list. */
-        drop(freed_region);
-        self.add_range(wrapper, true);
+        self.free.sort_unstable();
     }
 }
 
@@ -412,7 +260,8 @@ pub unsafe fn initialize(boot_heap_pages: u64) {
     let mut cur_addr = KERNEL_HEAP_BASE;
 
     for _ in 0..(boot_heap_pages as usize) {
-        l.allocate_at(cur_addr, cur_addr + 0x1000);
+        l.allocate_at(cur_addr, cur_addr + 0x1000)
+            .expect("could not initialize bootstrap pages");
 
         cur_addr += 0x1000;
     }
@@ -422,7 +271,7 @@ pub unsafe fn initialize(boot_heap_pages: u64) {
 ///
 /// The size of the memory request is in bytes; if the size is not already a
 /// multiple of the page size, it will be rounded up accordingly.
-pub fn allocate(size: usize) -> Option<usize> {
+pub fn allocate(size: usize) -> Result<usize, AllocationError> {
     kernel_heap_allocator().allocate(size)
 }
 
@@ -430,7 +279,7 @@ pub fn allocate(size: usize) -> Option<usize> {
 ///
 /// The given `start` and `end` addresses, if not already page-aligned, will
 /// be rounded down and up (respectively) to align them to page boundaries.
-pub fn allocate_at(start: usize, end: usize) -> Option<usize> {
+pub fn allocate_at(start: usize, end: usize) -> Result<usize, AllocationError> {
     kernel_heap_allocator().allocate_at(start, end)
 }
 

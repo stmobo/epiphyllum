@@ -1,4 +1,4 @@
-use alloc::alloc::Layout;
+use alloc_crate::alloc::Layout;
 use core::cmp::Ordering;
 use core::mem;
 use core::ptr;
@@ -6,7 +6,7 @@ use core::ptr;
 use crate::paging::round_to_prev_page;
 
 use lazy_static::lazy_static;
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 
 lazy_static! {
     static ref KERNEL_LZA: Mutex<LargeZoneAllocator> = Mutex::new(LargeZoneAllocator::new());
@@ -24,7 +24,6 @@ pub struct LargeZone {
     free_bytes: u16,
     n_blocks: u8,
     next_zone: *mut LargeZone,
-    prev_zone: *mut LargeZone,
     blocks: [AllocationBlock; 16],
 }
 
@@ -35,7 +34,6 @@ impl LargeZone {
         let mut zone = LargeZone {
             header: ZONE_HEADER,
             free_bytes: 8192 - (mem::size_of::<LargeZone>() as u16),
-            prev_zone: ptr::null_mut(),
             next_zone,
             n_blocks: 1,
             blocks: [AllocationBlock::empty(); 16],
@@ -51,11 +49,6 @@ impl LargeZone {
     unsafe fn init_at(addr: usize, next_zone: *mut LargeZone) -> *mut LargeZone {
         let p = addr as *mut LargeZone;
         ptr::write(p, LargeZone::new(addr, next_zone));
-
-        if next_zone != ptr::null_mut() {
-            (*next_zone).prev_zone = p;
-        }
-
         p
     }
 
@@ -138,7 +131,7 @@ impl LargeZone {
         let mut block_idx: isize = -1;
         for i in 0..self.n_blocks {
             let block: &AllocationBlock = &self.blocks[i as usize];
-            if block.addr <= addr && (block.addr + (block.size as usize)) >= addr {
+            if block.addr <= addr && (block.addr + (block.size as usize)) > addr {
                 if block.free {
                     panic!("attempted double free of allocation at {:#016x}", addr);
                 }
@@ -263,7 +256,7 @@ impl LargeZoneAllocator {
             }
 
             /* Make a new zone to allocate from */
-            if let Some(vaddr) = heap_pages::allocate(0x2000) {
+            if let Ok(vaddr) = heap_pages::allocate(0x2000) {
                 self.zone_list = LargeZone::init_at(vaddr, self.zone_list);
                 return (*self.zone_list).allocate(layout);
             }
@@ -278,10 +271,33 @@ impl LargeZoneAllocator {
             (*zone).deallocate(addr, layout);
         }
     }
+
+    unsafe fn add_pages(&mut self, addr: usize, n_pages: usize) {
+        if n_pages % 2 != 0 {
+            panic!("number of pages not divisible by 2");
+        }
+
+        for i in 0..(n_pages / 2) {
+            let vaddr = addr + (i * 0x2000);
+            self.zone_list = LargeZone::init_at(vaddr, self.zone_list);
+        }
+    }
 }
 
 unsafe impl Send for LargeZoneAllocator {}
 unsafe impl Sync for LargeZoneAllocator {}
+
+pub unsafe fn initialize(init_addr: usize, n_pages: usize) {
+    if n_pages % 2 == 1 {
+        panic!("number of pages for LZA init must be divisible by 2");
+    }
+
+    let mut lock: MutexGuard<'_, LargeZoneAllocator> = KERNEL_LZA.lock();
+    for i in 0..(n_pages / 2) {
+        let addr = init_addr + (i * 0x2000);
+        lock.zone_list = LargeZone::init_at(addr, lock.zone_list);
+    }
+}
 
 pub fn allocate(layout: Layout) -> Option<usize> {
     KERNEL_LZA.lock().allocate(layout)
@@ -289,4 +305,8 @@ pub fn allocate(layout: Layout) -> Option<usize> {
 
 pub unsafe fn deallocate(addr: usize, layout: Layout) {
     KERNEL_LZA.lock().deallocate(addr, layout)
+}
+
+pub unsafe fn add_pages(addr: usize, n_pages: usize) {
+    KERNEL_LZA.lock().add_pages(addr, n_pages);
 }

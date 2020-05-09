@@ -1,8 +1,9 @@
 use crate::asm::interrupts;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
-use spin::{Mutex, MutexGuard};
+use spin::{Mutex, MutexGuard, Once};
 
+/// A spinlock / mutex that also disables interrupts when taken.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct NoIRQSpinlock<T: ?Sized> {
@@ -89,5 +90,50 @@ impl<'a, T: ?Sized> Deref for NoIRQSpinlockGuard<'a, T> {
 impl<'a, T: ?Sized> DerefMut for NoIRQSpinlockGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         (*self.guard).deref_mut()
+    }
+}
+
+/// A wrapper around the common Once<NoIRQSpinlock<T>> pattern.
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct LockedGlobal<T> {
+    data: Once<NoIRQSpinlock<T>>,
+}
+
+impl<T> LockedGlobal<T> {
+    pub const fn new() -> LockedGlobal<T> {
+        LockedGlobal { data: Once::new() }
+    }
+
+    pub fn init<'a, F>(&'a self, init: F) -> &'a NoIRQSpinlock<T>
+    where
+        F: FnOnce() -> T,
+    {
+        self.data.call_once(|| NoIRQSpinlock::new(init()))
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.data.wait().is_some()
+    }
+
+    fn get(&self) -> &NoIRQSpinlock<T> {
+        // panic if data is not initialized yet
+        if let Some(lock) = self.data.wait() {
+            lock
+        } else {
+            panic!("attempted to access global before initialization");
+        }
+    }
+
+    pub fn lock(&self) -> NoIRQSpinlockGuard<'_, T> {
+        self.get().lock()
+    }
+
+    pub fn try_lock(&self) -> Option<NoIRQSpinlockGuard<'_, T>> {
+        self.get().try_lock()
+    }
+
+    pub unsafe fn force_unlock(&self) {
+        self.get().force_unlock()
     }
 }

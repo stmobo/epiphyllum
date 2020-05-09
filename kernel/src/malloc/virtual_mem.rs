@@ -2,16 +2,11 @@ use alloc_crate::vec::Vec;
 use core::ops::Bound;
 
 use super::AllocationError;
+use crate::lock::LockedGlobal;
 use crate::paging::{is_page_aligned, round_to_next_page, round_to_prev_page};
 use crate::structures::AVLTree;
 
-use lazy_static::lazy_static;
-use spin::{Mutex, MutexGuard};
-
-lazy_static! {
-    static ref KERNEL_HEAP_VMEM_ALLOC: Mutex<VirtualMemoryAllocator> =
-        Mutex::new(VirtualMemoryAllocator::new());
-}
+static KERNEL_VMA: LockedGlobal<VirtualMemoryAllocator> = LockedGlobal::new();
 
 #[derive(Debug, Clone)]
 struct VirtualMemoryRange {
@@ -248,13 +243,9 @@ impl VirtualMemoryAllocator {
 unsafe impl Send for VirtualMemoryAllocator {}
 unsafe impl Sync for VirtualMemoryAllocator {}
 
-fn kernel_heap_allocator() -> MutexGuard<'static, VirtualMemoryAllocator> {
-    KERNEL_HEAP_VMEM_ALLOC.lock()
-}
-
 pub unsafe fn initialize(boot_heap_pages: u64) {
     use crate::paging::{KERNEL_BASE, KERNEL_HEAP_BASE};
-    let mut l = kernel_heap_allocator();
+    let mut l = KERNEL_VMA.init(|| VirtualMemoryAllocator::new()).lock();
 
     l.register_memory(KERNEL_HEAP_BASE, KERNEL_BASE);
     let mut cur_addr = KERNEL_HEAP_BASE;
@@ -272,7 +263,7 @@ pub unsafe fn initialize(boot_heap_pages: u64) {
 /// The size of the memory request is in bytes; if the size is not already a
 /// multiple of the page size, it will be rounded up accordingly.
 pub fn allocate(size: usize) -> Result<usize, AllocationError> {
-    kernel_heap_allocator().allocate(size)
+    KERNEL_VMA.lock().allocate(size)
 }
 
 /// Allocate a specific address range from the kernel heap space.
@@ -280,7 +271,7 @@ pub fn allocate(size: usize) -> Result<usize, AllocationError> {
 /// The given `start` and `end` addresses, if not already page-aligned, will
 /// be rounded down and up (respectively) to align them to page boundaries.
 pub fn allocate_at(start: usize, end: usize) -> Result<usize, AllocationError> {
-    kernel_heap_allocator().allocate_at(start, end)
+    KERNEL_VMA.lock().allocate_at(start, end)
 }
 
 /// Deallocate virtual memory pages from the kernel heap.
@@ -288,5 +279,5 @@ pub fn allocate_at(start: usize, end: usize) -> Result<usize, AllocationError> {
 /// The allocation memory address and size must match a previous call
 /// to [allocate_kernel_heap_pages] or []
 pub fn deallocate(addr: usize, size: usize) {
-    kernel_heap_allocator().deallocate(addr, size);
+    KERNEL_VMA.lock().deallocate(addr, size);
 }

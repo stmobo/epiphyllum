@@ -3,14 +3,11 @@ use core::cmp::Ordering;
 use core::mem;
 use core::ptr;
 
+use super::AllocationError;
+use crate::lock::LockedGlobal;
 use crate::paging::round_to_prev_page;
 
-use lazy_static::lazy_static;
-use spin::{Mutex, MutexGuard};
-
-lazy_static! {
-    static ref KERNEL_LZA: Mutex<LargeZoneAllocator> = Mutex::new(LargeZoneAllocator::new());
-}
+static KERNEL_LZA: LockedGlobal<LargeZoneAllocator> = LockedGlobal::new();
 
 /// Memory allocator for allocations that are > 512 bytes (the threshold for
 /// small-zone allocation) and < 7160 (= 8192 - 512) bytes (the threshold for
@@ -71,7 +68,7 @@ impl LargeZone {
         ptr::null_mut()
     }
 
-    fn allocate(&mut self, layout: Layout) -> Option<usize> {
+    fn allocate(&mut self, layout: Layout) -> Result<usize, AllocationError> {
         let align_mask = layout.align() - 1;
 
         let blk_count = self.n_blocks;
@@ -120,11 +117,11 @@ impl LargeZone {
                 let (s1, _) = self.blocks.split_at_mut(self.n_blocks as usize);
                 s1.sort_unstable();
 
-                return Some(effective_addr);
+                return Ok(effective_addr);
             }
         }
 
-        None
+        Err(AllocationError::NoFreeVirtualMemory)
     }
 
     fn deallocate(&mut self, addr: usize, _layout: Layout) {
@@ -238,7 +235,7 @@ impl LargeZoneAllocator {
         }
     }
 
-    fn allocate(&mut self, layout: Layout) -> Option<usize> {
+    fn allocate(&mut self, layout: Layout) -> Result<usize, AllocationError> {
         use super::heap_pages;
 
         let mut cur = self.zone_list;
@@ -247,8 +244,8 @@ impl LargeZoneAllocator {
         unsafe {
             while cur != ptr::null_mut() {
                 if ((*cur).free_bytes as usize) >= sz {
-                    if let Some(addr) = (*cur).allocate(layout) {
-                        return Some(addr);
+                    if let Ok(addr) = (*cur).allocate(layout) {
+                        return Ok(addr);
                     }
                 }
 
@@ -262,7 +259,7 @@ impl LargeZoneAllocator {
             }
         }
 
-        None
+        Err(AllocationError::NoFreeVirtualMemory)
     }
 
     unsafe fn deallocate(&mut self, addr: usize, layout: Layout) {
@@ -292,14 +289,14 @@ pub unsafe fn initialize(init_addr: usize, n_pages: usize) {
         panic!("number of pages for LZA init must be divisible by 2");
     }
 
-    let mut lock: MutexGuard<'_, LargeZoneAllocator> = KERNEL_LZA.lock();
+    let mut lock = KERNEL_LZA.init(|| LargeZoneAllocator::new()).lock();
     for i in 0..(n_pages / 2) {
         let addr = init_addr + (i * 0x2000);
         lock.zone_list = LargeZone::init_at(addr, lock.zone_list);
     }
 }
 
-pub fn allocate(layout: Layout) -> Option<usize> {
+pub fn allocate(layout: Layout) -> Result<usize, AllocationError> {
     KERNEL_LZA.lock().allocate(layout)
 }
 

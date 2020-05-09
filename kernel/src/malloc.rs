@@ -27,67 +27,49 @@ pub mod global_allocator {
     #[cfg_attr(not(test), global_allocator)]
     pub static mut KERNEL_ALLOCATOR: KernelHeapAllocator = KernelHeapAllocator {};
 
-    impl KernelHeapAllocator {
-        fn get_layout_alloc_size(layout: Layout) -> usize {
-            let mut min_block_sz: usize = layout.align();
-            if layout.size() > layout.align() {
-                min_block_sz = layout.size();
-            }
-            if !min_block_sz.is_power_of_two() {
-                min_block_sz.next_power_of_two()
+    fn enforce_min_layout_size(layout: Layout) -> Layout {
+        if layout.size() < 8 {
+            if layout.align() < 8 {
+                return Layout::from_size_align(8, 8).unwrap();
             } else {
-                min_block_sz
+                return Layout::from_size_align(8, layout.align()).unwrap();
             }
         }
+
+        layout
     }
 
     unsafe impl GlobalAlloc for KernelHeapAllocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let min_block_sz: usize = KernelHeapAllocator::get_layout_alloc_size(layout);
-            if min_block_sz <= 512 {
+            let layout = enforce_min_layout_size(layout);
+
+            let res: Result<usize, AllocationError>;
+            if small_zone_alloc::is_valid_sma_block(layout) {
                 /* Use small-zone allocator. */
-                let mut order = 6;
-                for i in 0..7 {
-                    if min_block_sz == (1usize << (i + 3)) {
-                        order = i;
-                        break;
-                    }
-                }
-
-                let l = small_zone_alloc::get_small_allocator();
-                if l.is_none() {
-                    return ptr::null_mut();
-                }
-
-                let mut l = l.unwrap();
-                let addr = l.allocate(order);
-                drop(l);
-                addr as *mut u8
+                res = small_zone_alloc::allocate(layout);
             } else if layout.size() < 7160 {
                 /* Redirect to large-zone allocator. */
-                large_zone_alloc::allocate(layout).map_or(ptr::null_mut(), |addr| addr as *mut u8)
-            } else {
+                res = large_zone_alloc::allocate(layout);
+            } else if layout.size() > 7160 {
                 /* Redirect to page allocator. */
                 if layout.align() > 0x1000 {
                     return ptr::null_mut();
                 }
-
-                heap_pages::allocate(layout.size()).map_or(ptr::null_mut(), |addr| addr as *mut u8)
+                res = heap_pages::allocate(layout.size());
+            } else {
+                return ptr::null_mut();
             }
+
+            res.map_or(ptr::null_mut(), |addr| addr as *mut u8)
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            let min_block_sz: usize = KernelHeapAllocator::get_layout_alloc_size(layout);
+            let layout = enforce_min_layout_size(layout);
             let addr = ptr as usize;
-            if min_block_sz <= 512 {
-                /* Block was from the small-zone allocator. */
-                let l = small_zone_alloc::get_small_allocator();
-                if l.is_none() {
-                    panic!("attempted to deallocate before small-zone allocator initialized")
-                }
 
-                let mut l = l.unwrap();
-                l.deallocate(addr);
+            if small_zone_alloc::is_valid_sma_block(layout) {
+                /* Block was from the small-zone allocator. */
+                small_zone_alloc::deallocate(addr);
             } else if layout.size() < 7160 {
                 large_zone_alloc::deallocate(addr, layout);
             } else {

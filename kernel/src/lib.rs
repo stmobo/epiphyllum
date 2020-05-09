@@ -13,6 +13,7 @@
 #![feature(option_expect_none)]
 #![feature(new_uninit)]
 #![feature(maybe_uninit_extra)]
+#![feature(alloc_layout_extra)]
 
 #[macro_use]
 extern crate alloc as alloc_crate;
@@ -118,11 +119,9 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     unsafe {
         let lza_pages = boot_info.heap_pages / 2;
         let sma_pages = boot_info.heap_pages / 2;
-        //let crit_pages = boot_info.heap_pages - (lza_pages + sma_pages);
 
         let sma_start = malloc::KERNEL_HEAP_BASE;
         let lza_start = sma_start + ((sma_pages as usize) * 0x1000);
-        //let crit_start = lza_start + ((lza_pages as usize) * 0x1000);
 
         println!(
             "Initializing kernel heap:\n    - SMA: {} pages at {:#016x}\n    - LZA: {} pages at {:#016x}",
@@ -131,9 +130,9 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
         malloc::small_zone_alloc::initialize(sma_start, sma_pages as usize);
         malloc::large_zone_alloc::initialize(lza_start, lza_pages as usize);
-        //malloc::critical_pages::initialize(crit_start, crit_pages as usize);
     }
 
+    malloc::physical_mem::initialize();
     if let Some(mmap) = mb.get_memory_info() {
         println!("Memory map:");
         for m in mmap {
@@ -163,13 +162,8 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     }
 
     interrupts::claim_idt_page(idt_phys_addr);
-    println!("IDT pages initialized.");
-
     paging::reserve_bootstrap_physical_pages();
-
     println!("Physical memory allocator initialized.");
-
-    //let alloc_init_lock = unsafe { malloc::global_allocator::KERNEL_ALLOCATOR.get_alloc_mutex() };
 
     unsafe {
         malloc::virtual_mem::initialize(boot_info.heap_pages);

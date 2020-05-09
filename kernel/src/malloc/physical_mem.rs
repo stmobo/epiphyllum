@@ -8,18 +8,14 @@ use core::cell::{Ref, RefCell, RefMut};
 use core::cmp::Ordering;
 use core::ops::Bound;
 
-use lazy_static::lazy_static;
-use spin::Mutex;
+use crate::lock::LockedGlobal;
 
 use super::AllocationError;
 
 const BUDDY_ALLOC_MAX_SIZE: usize = 0x1000usize << 8; // bytes
 const BUDDY_ALLOC_ALIGN_MASK: usize = !(BUDDY_ALLOC_MAX_SIZE - 1);
 
-lazy_static! {
-    pub static ref KERNEL_PHYS_ALLOC: Mutex<PhysicalMemoryAllocator> =
-        Mutex::new(PhysicalMemoryAllocator { ranges: Vec::new() });
-}
+static KERNEL_PMA: LockedGlobal<PhysicalMemoryAllocator> = LockedGlobal::new();
 
 #[derive(Debug, Clone)]
 pub struct BuddyAllocator {
@@ -659,6 +655,10 @@ pub struct PhysicalMemoryAllocator {
 }
 
 impl PhysicalMemoryAllocator {
+    pub fn new() -> PhysicalMemoryAllocator {
+        PhysicalMemoryAllocator { ranges: Vec::new() }
+    }
+
     pub unsafe fn register_range(&mut self, addr: usize, len: usize) {
         self.ranges.push(PhysicalMemoryRange::new(addr, len));
     }
@@ -698,18 +698,20 @@ impl PhysicalMemoryAllocator {
 
 unsafe impl Send for PhysicalMemoryAllocator {}
 
+pub fn initialize() {
+    KERNEL_PMA.init(|| PhysicalMemoryAllocator::new());
+}
+
 /// Register a range of physical memory with the allocator.
 pub unsafe fn register(addr: usize, len: usize) {
-    let mut l = KERNEL_PHYS_ALLOC.lock();
-    l.register_range(addr, len);
+    KERNEL_PMA.lock().register_range(addr, len);
 }
 
 /// Allocate a given amount of physical memory in bytes.
 ///
 /// The given size must be a multiple of the page size!
 pub unsafe fn allocate(size: usize) -> Result<usize, AllocationError> {
-    let mut l = KERNEL_PHYS_ALLOC.lock();
-    l.allocate(size)
+    KERNEL_PMA.lock().allocate(size)
 }
 
 /// Allocate a given amount of physical memory in bytes at a specific address.
@@ -717,8 +719,7 @@ pub unsafe fn allocate(size: usize) -> Result<usize, AllocationError> {
 /// The given size must be a multiple of the page size, and the allocated
 /// buffer must not cross a megabyte boundary.
 pub unsafe fn allocate_at(addr: usize, size: usize) -> Result<usize, AllocationError> {
-    let mut l = KERNEL_PHYS_ALLOC.lock();
-    l.allocate_at(addr, size)
+    KERNEL_PMA.lock().allocate_at(addr, size)
 }
 
 /// Deallocate a previously-allocated physical memory range.
@@ -726,8 +727,7 @@ pub unsafe fn allocate_at(addr: usize, size: usize) -> Result<usize, AllocationE
 /// The size passed to this function must be the same size as
 /// passed to the original allocation call!
 pub unsafe fn deallocate(addr: usize, size: usize) {
-    let mut l = KERNEL_PHYS_ALLOC.lock();
-    l.deallocate(addr, size);
+    KERNEL_PMA.lock().deallocate(addr, size);
 }
 
 /// Represents an owned, allocated block of physical memory.

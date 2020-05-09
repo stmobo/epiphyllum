@@ -1,11 +1,12 @@
+use alloc_crate::alloc::Layout;
 use core::mem;
 use core::ptr;
 
+use super::AllocationError;
+use crate::lock::LockedGlobal;
 use crate::paging::PAGE_MASK;
 
-use spin::{Mutex, MutexGuard, Once};
-
-static KERNEL_SMA: Once<Mutex<SmallZoneAllocator>> = Once::new();
+static KERNEL_SMA: LockedGlobal<SmallZoneAllocator> = LockedGlobal::new();
 
 /// Used for allocations of size 8 - 512.
 /// This is designed to fit specifically within 1 page, and should _always_
@@ -160,18 +161,18 @@ impl SmallZone {
         self.count == self.get_max_count()
     }
 
-    unsafe fn allocate(&mut self) -> usize {
-        if cfg!(debug_assertions) && self.count == 0 {
-            panic!(
-                "requested allocation from empty zone at {:#016x}",
-                self.self_addr()
-            );
+    unsafe fn allocate(&mut self) -> Result<usize, AllocationError> {
+        if self.count == 0 {
+            return Err(AllocationError::NoFreeVirtualMemory);
         }
 
-        let slot = self.find_open_slot().unwrap();
-        self.count -= 1;
-        self.set_bitmap(slot, true);
-        self.get_slot_address(slot)
+        if let Some(slot) = self.find_open_slot() {
+            self.count -= 1;
+            self.set_bitmap(slot, true);
+            Ok(self.get_slot_address(slot))
+        } else {
+            Err(AllocationError::NoFreeVirtualMemory)
+        }
     }
 
     unsafe fn deallocate(&mut self, address: usize) {
@@ -252,7 +253,10 @@ impl SmallZoneAllocator {
 
     /// Pop a page off the free list and make it available for allocations
     /// of the specified order.
-    unsafe fn init_new_zone_page(&mut self, order: usize) -> *mut SmallZone {
+    unsafe fn init_new_zone_page(
+        &mut self,
+        order: usize,
+    ) -> Result<*mut SmallZone, AllocationError> {
         use super::heap_pages;
         let mut p = self.free_list;
 
@@ -263,7 +267,7 @@ impl SmallZoneAllocator {
             }
 
             if p == ptr::null_mut() {
-                panic!("no free pages left for heap allocations");
+                return Err(AllocationError::NoFreeVirtualMemory);
             }
         }
 
@@ -275,7 +279,7 @@ impl SmallZoneAllocator {
         (*p).next = prev_head;
         (*p).reinitialize(order as u32);
 
-        p
+        Ok(p)
     }
 
     unsafe fn release_zone_page(&mut self, zone: *mut SmallZone) {
@@ -301,7 +305,7 @@ impl SmallZoneAllocator {
     }
 
     /// Allocate a chunk of memory from this allocator.
-    pub unsafe fn allocate(&mut self, order: usize) -> usize {
+    pub unsafe fn allocate(&mut self, order: usize) -> Result<usize, AllocationError> {
         let mut p = self.heads[order];
 
         while p != ptr::null_mut() && (*p).full() {
@@ -310,7 +314,7 @@ impl SmallZoneAllocator {
 
         if p == ptr::null_mut() {
             /* No free zones found, get a new one. */
-            p = self.init_new_zone_page(order);
+            p = self.init_new_zone_page(order)?;
         }
 
         (*p).allocate()
@@ -335,18 +339,31 @@ impl SmallZoneAllocator {
 unsafe impl Send for SmallZoneAllocator {}
 
 pub unsafe fn initialize(init_addr: usize, n_pages: usize) {
-    KERNEL_SMA.call_once(|| Mutex::new(SmallZoneAllocator::new(init_addr, n_pages)));
-}
-
-pub fn get_small_allocator() -> Option<MutexGuard<'static, SmallZoneAllocator>> {
-    KERNEL_SMA
-        .wait()
-        .map(|sma: &Mutex<SmallZoneAllocator>| sma.lock())
+    KERNEL_SMA.init(|| SmallZoneAllocator::new(init_addr, n_pages));
 }
 
 pub unsafe fn add_pages(addr: usize, n_pages: usize) {
-    let mut allocator = get_small_allocator().unwrap();
-    allocator.add_free_pages(addr, n_pages);
+    KERNEL_SMA.lock().add_free_pages(addr, n_pages)
+}
+
+pub fn is_valid_sma_block(layout: Layout) -> bool {
+    let sz = layout.size().next_power_of_two();
+    (sz >= 8) && (sz <= 512)
+}
+
+pub unsafe fn allocate(layout: Layout) -> Result<usize, AllocationError> {
+    if !is_valid_sma_block(layout) {
+        return Err(AllocationError::InvalidAllocation);
+    }
+
+    let sz = layout.size().next_power_of_two();
+    KERNEL_SMA
+        .lock()
+        .allocate((sz.trailing_zeros() - 3) as usize)
+}
+
+pub unsafe fn deallocate(addr: usize) {
+    KERNEL_SMA.lock().deallocate(addr);
 }
 
 #[cfg(test)]

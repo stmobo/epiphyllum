@@ -575,6 +575,25 @@ pub extern "C" fn AcpiOsAcquireLock(Handle: *mut cty::c_void, _Timeout: UINT16) 
 }
 
 #[no_mangle]
+pub extern "C" fn AcpiOsReleaseLock(Handle: *mut cty::c_void) {
+    use crate::asm::interrupts;
+
+    if Handle == ptr::null_mut() {
+        return;
+    }
+
+    let b: *mut Mutex<bool> = (Handle as usize) as *mut Mutex<bool>;
+    unsafe {
+        (*b).force_unlock();
+        let l = (*b).lock();
+        let iflag = *l;
+        drop(l);
+
+        interrupts::set_if(iflag);
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn AcpiOsCreateSemaphore(
     _MaxUnits: UINT32,
     _InitialUnits: UINT32,
@@ -615,25 +634,6 @@ pub extern "C" fn AcpiOsSignalSemaphore(Handle: *mut cty::c_void, _Units: UINT32
     }
 
     AE_OK
-}
-
-#[no_mangle]
-pub extern "C" fn AcpiOsReleaseLock(Handle: *mut cty::c_void) {
-    use crate::asm::interrupts;
-
-    if Handle == ptr::null_mut() {
-        return;
-    }
-
-    let b: *mut Mutex<bool> = (Handle as usize) as *mut Mutex<bool>;
-    unsafe {
-        (*b).force_unlock();
-        let l = (*b).lock();
-        let iflag = *l;
-        drop(l);
-
-        interrupts::set_if(iflag);
-    }
 }
 
 #[no_mangle]

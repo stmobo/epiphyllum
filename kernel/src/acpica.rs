@@ -211,7 +211,10 @@ use bindings::*;
 type AcpiResult<T> = Result<T, AcpiError>;
 
 pub fn initialize() -> AcpiResult<()> {
-    println!("Initializing ACPICA...");
+    println!("acpica: initializing ACPI...");
+
+    os_services::init_alloc_map();
+    os_services::init_isr_map();
 
     unsafe {
         AcpiStatus::from(AcpiInitializeSubsystem()).expect("AcpiInitializeSubsystem");

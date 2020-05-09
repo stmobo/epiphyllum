@@ -1,4 +1,5 @@
 use super::bindings::*;
+use crate::lock::LockedGlobal;
 use crate::malloc::{physical_mem, virtual_mem};
 use crate::paging;
 
@@ -249,11 +250,9 @@ pub extern "C" fn AcpiOsWritable(Pointer: *mut cty::c_void, Length: ACPI_SIZE) -
     true as BOOLEAN
 }
 
-static ACPI_ALLOC_MAP: Once<Mutex<BTreeMap<usize, Layout>>> = Once::new();
-fn get_acpi_alloc_map() -> MutexGuard<'static, BTreeMap<usize, Layout>> {
-    ACPI_ALLOC_MAP
-        .call_once(|| Mutex::new(BTreeMap::new()))
-        .lock()
+static ACPI_ALLOC_MAP: LockedGlobal<BTreeMap<usize, Layout>> = LockedGlobal::new();
+pub fn init_alloc_map() {
+    ACPI_ALLOC_MAP.init(|| BTreeMap::new());
 }
 
 #[no_mangle]
@@ -264,7 +263,8 @@ pub extern "C" fn AcpiOsAllocate(Size: ACPI_SIZE) -> *mut cty::c_void {
     let ret: *mut cty::c_void = unsafe { mem::transmute(alloc(layout)) };
 
     if ret != ptr::null_mut() {
-        get_acpi_alloc_map().insert(ret as usize, layout);
+        let mut map = ACPI_ALLOC_MAP.lock();
+        map.insert(ret as usize, layout);
     }
 
     ret
@@ -276,9 +276,11 @@ pub extern "C" fn AcpiOsFree(Memory: *mut cty::c_void) {
 
     if Memory != ptr::null_mut() {
         let addr = Memory as usize;
-        if let Some(layout) = get_acpi_alloc_map().get(&addr) {
+        let map = ACPI_ALLOC_MAP.lock();
+        if let Some(layout) = map.get(&addr) {
             unsafe {
-                dealloc(mem::transmute(Memory), *layout);
+                let ptr = addr as *mut u8;
+                dealloc(ptr, *layout);
             }
         }
     }
@@ -662,11 +664,9 @@ pub extern "C" fn AcpiOsGetTimer() -> UINT64 {
     0
 }
 
-static ACPI_ISR_MAP: Once<Mutex<BTreeMap<usize, u64>>> = Once::new();
-fn get_acpi_isr_map() -> MutexGuard<'static, BTreeMap<usize, u64>> {
-    ACPI_ISR_MAP
-        .call_once(|| Mutex::new(BTreeMap::new()))
-        .lock()
+static ACPI_ISR_MAP: LockedGlobal<BTreeMap<usize, u64>> = LockedGlobal::new();
+pub fn init_isr_map() {
+    ACPI_ISR_MAP.init(|| BTreeMap::new());
 }
 
 #[no_mangle]
@@ -698,7 +698,8 @@ pub extern "C" fn AcpiOsInstallInterruptHandler(
     )
     .unwrap();
 
-    get_acpi_isr_map().insert(isr as usize, isr_id);
+    let mut map = ACPI_ISR_MAP.lock();
+    map.insert(isr as usize, isr_id);
 
     0
 }
@@ -715,8 +716,13 @@ pub extern "C" fn AcpiOsRemoveInterruptHandler(
     }
 
     let isr = ServiceRoutine.unwrap() as usize;
-    if let Some(isr_id) = get_acpi_isr_map().get(&isr) {
-        interrupts::unregister_handler(InterruptNumber as u8, *isr_id);
+    let mut map = ACPI_ISR_MAP.lock();
+
+    if let Some(isr_id) = map.get(&isr) {
+        let isr_id = *isr_id;
+        interrupts::unregister_handler(InterruptNumber as u8, isr_id);
+        map.remove(&isr);
+
         return AE_OK;
     } else {
         return AcpiError::AE_NOT_EXIST.into();

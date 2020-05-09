@@ -11,6 +11,8 @@
 #![feature(arbitrary_self_types)]
 #![feature(option_unwrap_none)]
 #![feature(option_expect_none)]
+#![feature(new_uninit)]
+#![feature(maybe_uninit_extra)]
 
 #[macro_use]
 extern crate alloc as alloc_crate;

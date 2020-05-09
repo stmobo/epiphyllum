@@ -6,7 +6,6 @@ use crate::asm::ports;
 use crate::interrupts;
 use crate::interrupts::InterruptHandlerStatus;
 use crate::lock::NoIRQSpinlock;
-use crate::timer;
 use crate::timer::TICKS_PER_SECOND;
 
 use alloc_crate::sync::Arc;
@@ -172,9 +171,6 @@ pub fn calibrate_apic_timer() {
         "timer: APIC timer constant is {} ticks per kernel tick",
         avg
     );
-
-    interrupts::register_handler(0x30, timer_interrupt)
-        .expect("could not register LAPIC timer interrupt");
 }
 
 pub fn set_lapic_oneshot(kernel_ticks: u64) {
@@ -192,10 +188,4 @@ pub fn set_lapic_oneshot(kernel_ticks: u64) {
 pub fn clear_lapic() {
     let lapic = LocalAPIC::new();
     lapic.disable_timer();
-}
-
-fn timer_interrupt() -> interrupts::InterruptHandlerStatus {
-    timer::update_timers();
-
-    interrupts::InterruptHandlerStatus::Handled
 }

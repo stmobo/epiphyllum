@@ -3,8 +3,8 @@ use x86_64::instructions::tlb;
 use x86_64::VirtAddr;
 
 use lazy_static::lazy_static;
-use spin::{Mutex, MutexGuard};
 
+use crate::lock::LockedGlobal;
 use crate::malloc::physical_mem;
 use crate::structures::AVLTree;
 
@@ -29,10 +29,8 @@ const KERNEL_HEAP_PML4_IDX: usize = 0b110_000_001;
 const PHYSICAL_MAP_PML4_IDX: usize = 0b100_000_010;
 const HIGHER_HALF_PML4_IDX: usize = 0b100_000_000;
 
-lazy_static! {
-    pub static ref PAGING_METADATA: Mutex<AVLTree<PageHierarchyIndex, PageTableMetadata>> =
-        Mutex::new(AVLTree::new());
-}
+static PAGING_METADATA: LockedGlobal<AVLTree<PageHierarchyIndex, PageTableMetadata>> =
+    LockedGlobal::new();
 
 pub fn is_page_aligned<T: Into<usize>>(value: T) -> bool {
     let v: usize = value.into();
@@ -53,8 +51,8 @@ pub fn round_to_prev_page<T: Into<usize>>(value: T) -> usize {
     v & PAGE_MASK
 }
 
-fn get_paging_metadata() -> MutexGuard<'static, AVLTree<PageHierarchyIndex, PageTableMetadata>> {
-    PAGING_METADATA.lock()
+pub fn init_paging_metadata() {
+    PAGING_METADATA.init(|| AVLTree::new());
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -384,7 +382,7 @@ fn add_page_table_ref(index: PageHierarchyIndex) {
         return;
     }
 
-    let mut metadata_tree = get_paging_metadata();
+    let mut metadata_tree = PAGING_METADATA.lock();
     if let Some(mut node) = metadata_tree.get_mut(&index) {
         node.ref_count += 1;
     } else {
@@ -406,7 +404,7 @@ fn remove_page_table_ref(index: PageHierarchyIndex) {
         return;
     }
 
-    let mut metadata_tree = get_paging_metadata();
+    let mut metadata_tree = PAGING_METADATA.lock();
     let mut should_delete = false;
 
     if let Some(mut node) = metadata_tree.get_mut(&index) {
@@ -604,7 +602,7 @@ pub fn remap_boot_identity_paging() {
 #[allow(unused_must_use)]
 pub fn reserve_bootstrap_physical_pages() {
     unsafe {
-        let mut metadata_tree = get_paging_metadata();
+        let mut metadata_tree = PAGING_METADATA.lock();
 
         let pml4t = PageTable::get_pml4t();
         let mut pml4t_rc = 0;

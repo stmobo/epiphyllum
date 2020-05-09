@@ -70,7 +70,7 @@ impl CalibrationData {
         InterruptHandlerStatus::Handled
     }
 
-    pub fn new() -> Arc<NoIRQSpinlock<CalibrationData>> {
+    fn new() -> Arc<NoIRQSpinlock<CalibrationData>> {
         /* Set up the LAPIC timer ISR first since it doesn't depend on
          * anything else.
          */
@@ -112,17 +112,20 @@ impl CalibrationData {
         ret
     }
 
-    pub fn done(&self) -> bool {
+    fn done(&self) -> bool {
         self.cur_trial >= CALIBRATION_TRIALS
     }
 
-    pub fn average(&self) -> i64 {
+    fn average(&self) -> i64 {
         self.cur_avg
     }
-}
 
-impl Drop for CalibrationData {
-    fn drop(&mut self) {
+    /*
+     * This is necessary because the ISR registered in new() hangs on to an
+     * Arc pointing to the calibration data.
+     * We need to unregister the ISRs in order to get them to drop their refs.
+     */
+    fn unregister_handlers(&self) {
         interrupts::unregister_handler(0x20, self.pit_isr_id);
         interrupts::unregister_handler(0x30, self.lapic_isr_id);
     }
@@ -161,6 +164,7 @@ pub fn calibrate_apic_timer() {
     }
 
     let data = calibrator.lock();
+    data.unregister_handlers();
     let avg = data.average() as u64;
     APIC_RATE_CONSTANT.store(avg, Ordering::Relaxed);
 

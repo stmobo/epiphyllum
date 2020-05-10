@@ -1,6 +1,7 @@
 .global external_isr_start
 .global exceptions_start
 .global kernel_entry
+.global switch_context
 
 .code64
 
@@ -64,6 +65,15 @@ enter_kernel:
 
     LOAD_REGISTERS
 
+    add $16, %rsp
+    iretq
+
+
+switch_context:
+    mov %rdi, %rsp
+    
+    LOAD_REGISTERS
+    
     add $16, %rsp
     iretq
 

@@ -8,6 +8,8 @@ pub use idt::{claim_idt_page, initialize_idt};
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::task;
+
 static INTERRUPT_CONTEXT_FLAG: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
@@ -64,7 +66,7 @@ pub struct InterruptFrame {
 }
 
 impl InterruptFrame {
-    pub fn new(start_addr: usize, rsp: u64, init_arg: u64) -> InterruptFrame {
+    pub fn new(start_addr: usize, rsp: usize, init_arg: u64) -> InterruptFrame {
         InterruptFrame {
             gpr: GeneralRegisterState::new(init_arg),
             interrupt_no: 0,
@@ -72,7 +74,7 @@ impl InterruptFrame {
             rip: start_addr as u64,
             cs: 0x08,
             rflags: (1 << 9),
-            rsp,
+            rsp: rsp as u64,
             ss: 0x10,
         }
     }
@@ -86,20 +88,10 @@ pub fn in_interrupt_context() -> bool {
 pub extern "C" fn kernel_entry(mut frame: InterruptFrame) -> *mut InterruptFrame {
     INTERRUPT_CONTEXT_FLAG.store(true, Ordering::Relaxed);
 
+    task::set_next_context(&mut frame);
     handler::handle_interrupt(&mut frame);
 
     INTERRUPT_CONTEXT_FLAG.store(false, Ordering::Relaxed);
 
-    &mut frame
-    /*
-    unsafe {
-        let cur_task = task::get_current_task();
-        if cur_task != ptr::null_mut() && (*cur_task).get_context() != ptr::null_mut() {
-            (*cur_task).get_context()
-        } else {
-            &mut frame
-        }
-    }
-
-    */
+    task::get_next_context()
 }

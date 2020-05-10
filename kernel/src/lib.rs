@@ -34,6 +34,7 @@ pub mod multiboot;
 pub mod paging;
 pub mod stack_trace;
 pub mod structures;
+pub mod task;
 pub mod timer;
 
 use core::panic::PanicInfo;
@@ -191,6 +192,18 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     devices::local_apic::initialize();
     devices::io_apic::initialize();
+
+    task::initialize();
+
+    let h = task::Task::new(kernel_stage2_main, 10).expect("could not spawn initial task");
+    h.make_next_task();
+    unsafe {
+        task::switch_to_task();
+    }
+}
+
+fn kernel_stage2_main(arg: u64) -> ! {
+    println!("init: arg = {}", arg);
 
     unsafe {
         asm::interrupts::set_if(true);

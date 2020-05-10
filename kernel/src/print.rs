@@ -18,10 +18,10 @@ macro_rules! println {
 pub fn _do_blocking_print(args: fmt::Arguments) {
     use fmt::Write;
 
-    serial::DEFAULT_SERIAL.lock().write_fmt(args).unwrap();
+    serial::get_default_serial().write_fmt(args).unwrap();
 
     #[cfg(not(test))]
-    vga::DEFAULT_DISPLAY.lock().write_fmt(args).unwrap();
+    vga::get_default_vga().write_fmt(args).unwrap();
 }
 
 pub unsafe fn break_print_locks() {

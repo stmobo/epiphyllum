@@ -84,10 +84,6 @@ fn panic(info: &PanicInfo) -> ! {
 pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     paging::remap_boot_identity_paging();
 
-    let mut l = devices::DEFAULT_DISPLAY.lock();
-    l.clear();
-    drop(l);
-
     println!("Epiphyllum kernel starting...");
     println!("Boot info structure address: {:#016x}", boot_info as usize);
 

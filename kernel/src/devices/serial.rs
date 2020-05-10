@@ -1,16 +1,20 @@
 use core::fmt;
 
-use lazy_static::lazy_static;
-use spin::Mutex;
+use crate::lock::{LockedGlobal, NoIRQSpinlockGuard};
+
 use x86_64::instructions::port::Port;
 
 const DEFAULT_LCR_SETTINGS: u8 = 0x03; // 8N1
-lazy_static! {
-    pub static ref DEFAULT_SERIAL: Mutex<SerialPort> = Mutex::new(SerialPort::new(0x3F8));
-}
+static DEFAULT_SERIAL: LockedGlobal<SerialPort> = LockedGlobal::new();
 
 pub unsafe fn force_unlock() {
-    DEFAULT_SERIAL.force_unlock();
+    DEFAULT_SERIAL
+        .init(|| SerialPort::new(0x3F8))
+        .force_unlock();
+}
+
+pub fn get_default_serial() -> NoIRQSpinlockGuard<'static, SerialPort> {
+    DEFAULT_SERIAL.init(|| SerialPort::new(0x3F8)).lock()
 }
 
 pub struct SerialPort {

@@ -1,18 +1,14 @@
 use core::fmt;
 use core::ptr;
 
-use lazy_static::lazy_static;
-use spin::Mutex;
-
+use crate::lock::{LockedGlobal, NoIRQSpinlockGuard};
 use crate::paging;
 
 const SCREEN_WIDTH: u64 = 80;
 const SCREEN_HEIGHT: u64 = 25;
 const DEFAULT_COLOR: Color = Color(0x0F);
 
-lazy_static! {
-    pub static ref DEFAULT_DISPLAY: Mutex<VGATextMode> = Mutex::new(VGATextMode::new(0xB8000));
-}
+static DEFAULT_VGA: LockedGlobal<VGATextMode> = LockedGlobal::new();
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 #[repr(u8)]
@@ -190,11 +186,17 @@ impl fmt::Write for VGATextMode {
     }
 }
 
+pub fn get_default_vga() -> NoIRQSpinlockGuard<'static, VGATextMode> {
+    DEFAULT_VGA.init(|| VGATextMode::new(0xB8000)).lock()
+}
+
 /// Forcibly take the lock for the default VGA display.
 ///
 /// Note that this is horrifically unsafe.
 pub unsafe fn force_unlock() {
-    DEFAULT_DISPLAY.force_unlock();
+    DEFAULT_VGA
+        .init(|| VGATextMode::new(0xB8000))
+        .force_unlock();
 }
 
 /*

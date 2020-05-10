@@ -6,7 +6,7 @@ use crate::asm::ports;
 use crate::interrupts;
 use crate::interrupts::InterruptHandlerStatus;
 use crate::lock::NoIRQSpinlock;
-use crate::timer::TICKS_PER_SECOND;
+use crate::timer::{update_timers, TICKS_PER_SECOND};
 
 use alloc_crate::sync::Arc;
 use core::sync::atomic::{spin_loop_hint, AtomicU64, Ordering};
@@ -31,15 +31,16 @@ impl CalibrationData {
         if self.done() {
             return;
         }
-
         let lapic = LocalAPIC::new();
-        let ticks = lapic.get_timer_ticks() as i64;
 
-        if self.apic_timer_active && ticks > 500 {
-            /* We should have valid data for this trial. */
-            let elapsed = 0xFFFF_FFFF - ticks;
+        if self.apic_timer_active {
+            lapic.disable_timer();
+            let ticks = lapic.get_timer_ticks() as i64;
 
-            if elapsed < 50000 {
+            if ticks > 500 {
+                /* We should have valid data for this trial. */
+                let elapsed = 0xFFFF_FFFF - ticks;
+
                 let avg_term = (elapsed - self.cur_avg) / (self.cur_trial + 1);
                 self.cur_avg += avg_term;
                 self.cur_trial += 1;
@@ -51,13 +52,15 @@ impl CalibrationData {
                     unsafe {
                         ports::outb(COMMAND_ADDR, 0b00_11_000_0);
                     }
-                    lapic.disable_timer();
                     return;
                 }
             }
         }
 
         /* The LAPIC timer needs to be (re)started for another trial. */
+        lapic
+            .configure_timer(local_apic::TimerMode::OneShot, LAPIC_TIMER_DIVISOR, 0x30)
+            .unwrap();
         lapic.set_timer_ticks(0xFFFF_FFFF);
         self.apic_timer_active = true;
     }
@@ -103,6 +106,8 @@ impl CalibrationData {
         /* Set up the PIT timer in mode 2 (rate generator). */
         unsafe {
             let count = (1193182 / TICKS_PER_SECOND) as u16;
+            println!("timer: PIT divisor = {}", count);
+
             ports::outb(COMMAND_ADDR, 0b00_11_010_0);
             ports::outb(CH0_ADDR, (count & 0xFF) as u8);
             ports::outb(CH0_ADDR, ((count >> 8) & 0xFF) as u8);
@@ -165,7 +170,7 @@ pub fn calibrate_apic_timer() {
     let data = calibrator.lock();
     data.unregister_handlers();
     let avg = data.average() as u64;
-    APIC_RATE_CONSTANT.store(avg, Ordering::Relaxed);
+    APIC_RATE_CONSTANT.store(avg, Ordering::SeqCst);
 
     println!(
         "timer: APIC timer constant is {} ticks per kernel tick",
@@ -173,19 +178,22 @@ pub fn calibrate_apic_timer() {
     );
 }
 
-pub fn set_lapic_oneshot(kernel_ticks: u64) {
-    use core::convert::TryInto;
-    let lapic = LocalAPIC::new();
+pub fn start_ticks() {
+    let rate = APIC_RATE_CONSTANT.load(Ordering::SeqCst);
+    if rate == 0 {
+        panic!("APIC rate constant not set");
+    }
 
+    let lapic = LocalAPIC::new();
     lapic
-        .configure_timer(local_apic::TimerMode::OneShot, LAPIC_TIMER_DIVISOR, 0x30)
+        .configure_timer(local_apic::TimerMode::Periodic, LAPIC_TIMER_DIVISOR, 0x30)
         .unwrap();
 
-    let lapic_ticks = kernel_ticks * get_apic_rate_constant();
-    lapic.set_timer_ticks(lapic_ticks.try_into().unwrap());
-}
+    interrupts::register_handler(0x30, || {
+        update_timers(1);
+        InterruptHandlerStatus::Handled
+    })
+    .expect("could not register kernel tick handler");
 
-pub fn clear_lapic() {
-    let lapic = LocalAPIC::new();
-    lapic.disable_timer();
+    lapic.set_timer_ticks(rate as u32);
 }

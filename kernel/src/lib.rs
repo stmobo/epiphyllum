@@ -41,6 +41,9 @@ use x86_64::structures::idt::InterruptDescriptorTable;
 
 use multiboot::{MemoryType, MultibootInfo};
 
+use alloc_crate::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
+
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct KernelLoaderInfo {
@@ -194,10 +197,36 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     }
 
     devices::timer::calibrate_apic_timer();
+    timer::initialize();
+    devices::timer::start_ticks();
+
+    let val = Arc::new(AtomicU64::new(0));
+    let mut last_val: u64 = 0;
+
+    schedule_timer(val.clone());
 
     loop {
         unsafe {
             llvm_asm!("hlt" :::: "volatile");
         }
+
+        let v = val.load(Ordering::SeqCst);
+        if v > last_val {
+            println!("tick {}", v);
+            last_val = v;
+        }
     }
+}
+
+fn schedule_timer(val: Arc<AtomicU64>) {
+    let deadline = timer::TimerDeadline::Relative(4096);
+    let timer = timer::TimerData::new(
+        move || {
+            val.fetch_add(1, Ordering::SeqCst);
+            schedule_timer(val);
+        },
+        deadline,
+    );
+
+    timer.start().expect("could not start timer");
 }

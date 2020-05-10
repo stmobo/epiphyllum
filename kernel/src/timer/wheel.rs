@@ -1,12 +1,12 @@
-use crate::lock::{NoIRQSpinlock, NoIRQSpinlockGuard};
 use alloc_crate::boxed::Box;
 use core::mem::MaybeUninit;
 
-use spin::Once;
+use super::get_kernel_ticks;
+use crate::lock::LockedGlobal;
 
 pub struct TimerData {
     pub callback: Box<dyn FnOnce() + Sync + Send + 'static>,
-    pub deadline: u64,
+    deadline: u64,
 }
 
 pub struct WheelNode {
@@ -18,6 +18,35 @@ pub struct WheelNode {
 pub struct TimerHandle {
     id: u64,
     deadline: u64,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum TimerDeadline {
+    Absolute(u64),
+    Relative(u64),
+}
+
+impl TimerDeadline {
+    pub fn absolute(self) -> u64 {
+        match self {
+            TimerDeadline::Absolute(t) => t,
+            TimerDeadline::Relative(t) => get_kernel_ticks() + t,
+        }
+    }
+
+    pub fn relative(self) -> Option<u64> {
+        match self {
+            TimerDeadline::Relative(t) => Some(t),
+            TimerDeadline::Absolute(t) => {
+                let cur = get_kernel_ticks();
+                if t >= cur {
+                    Some(t - cur)
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 pub struct TimerWheel {
@@ -91,7 +120,7 @@ impl TimerWheel {
 
         /* Find first wheel where timer is at least 1 unit into the future. */
         let deadline_idx = timer.deadline.to_le_bytes();
-        for level in 7..=0usize {
+        for level in (0..=7usize).rev() {
             if deadline_idx[level] > self.indices[level] {
                 let insert_at = deadline_idx[level] as usize;
                 let deadline = timer.deadline;
@@ -116,7 +145,7 @@ impl TimerWheel {
          * the timer's index lies in the future.
          */
         let deadline_idx = timer.deadline.to_le_bytes();
-        for level in 7..=0usize {
+        for level in (0..=7usize).rev() {
             if deadline_idx[level] > self.indices[level] {
                 let idx = self.indices[level] as usize;
                 let mut cur = self.wheels[level][idx].take();
@@ -159,58 +188,65 @@ impl TimerWheel {
         Err(())
     }
 
-    fn update(&mut self, n_ticks: u64) -> u64 {
-        for _ in 0..n_ticks {
-            let mut cur = self.tick(0);
-            while cur.is_some() {
-                let mut node = *cur.unwrap();
-                cur = node.next.take();
-                (node.timer.callback)();
-            }
-        }
+    fn update(&mut self) -> Option<Box<WheelNode>> {
+        self.tick(0)
+    }
 
+    fn get_time(&self) -> u64 {
         u64::from_le_bytes(self.indices)
     }
 }
 
-static TIMER_WHEEL: Once<NoIRQSpinlock<TimerWheel>> = Once::new();
+static TIMER_WHEEL: LockedGlobal<TimerWheel> = LockedGlobal::new();
 
-fn get_timer_wheel() -> NoIRQSpinlockGuard<'static, TimerWheel> {
-    TIMER_WHEEL
-        .call_once(|| NoIRQSpinlock::new(TimerWheel::new()))
-        .lock()
+pub fn init_timer_wheel() {
+    TIMER_WHEEL.init(|| TimerWheel::new());
 }
 
 pub fn update_timers(n_ticks: u64) -> u64 {
-    let mut wheel = get_timer_wheel();
-    wheel.update(n_ticks)
+    for _ in 0..n_ticks {
+        let mut cur = TIMER_WHEEL.lock().update();
+        while cur.is_some() {
+            let mut node = *cur.unwrap();
+            cur = node.next.take();
+            (node.timer.callback)();
+        }
+    }
+
+    TIMER_WHEEL.lock().get_time()
 }
 
 impl TimerData {
-    pub fn new<F>(callback: F, deadline: u64) -> TimerData
+    pub fn new<F>(callback: F, deadline: TimerDeadline) -> TimerData
     where
         F: FnOnce() + Sync + Send + 'static,
     {
         TimerData {
             callback: Box::new(callback),
-            deadline,
+            deadline: deadline.absolute(),
         }
     }
 
+    pub fn set_deadline(&mut self, deadline: TimerDeadline) {
+        self.deadline = deadline.absolute();
+    }
+
+    pub fn deadline(&self) -> TimerDeadline {
+        TimerDeadline::Absolute(self.deadline)
+    }
+
     pub fn start(self) -> Result<TimerHandle, u64> {
-        let mut wheel = get_timer_wheel();
-        wheel.insert(self)
+        TIMER_WHEEL.lock().insert(self)
     }
 }
 
 impl TimerHandle {
     pub fn stop(&self) -> Result<TimerData, ()> {
-        let mut wheel = get_timer_wheel();
-        wheel.remove(self)
+        TIMER_WHEEL.lock().remove(self)
     }
 
-    pub fn deadline(&self) -> u64 {
-        self.deadline
+    pub fn deadline(&self) -> TimerDeadline {
+        TimerDeadline::Absolute(self.deadline)
     }
 
     pub fn id(&self) -> u64 {

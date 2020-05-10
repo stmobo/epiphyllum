@@ -231,8 +231,8 @@ pub mod local_apic {
                 TimerMode::Deadline => (interrupt_no as u32) | (2 << 17),
             };
 
-            self.write_register(WritableRegisters::TimerDivideConfig, divide_config);
             self.write_register(WritableRegisters::TimerLVT, lvt);
+            self.write_register(WritableRegisters::TimerDivideConfig, divide_config);
 
             Ok(())
         }

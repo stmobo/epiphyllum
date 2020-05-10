@@ -1,12 +1,12 @@
 use alloc_crate::boxed::Box;
 use alloc_crate::sync::{Arc, Weak};
 
-use super::wheel::{TimerData, TimerHandle};
+use super::wheel::{TimerData, TimerDeadline, TimerHandle};
 use crate::lock::NoIRQSpinlock;
 use core::mem;
 
 type CallbackBox = Box<dyn Fn() + Sync + Send + 'static>;
-
+#[derive(Debug, Copy, Clone)]
 pub enum TimerError {
     InvalidDeadline(u64),
     IncorrectState,
@@ -36,7 +36,10 @@ impl Timer {
         }
     }
 
-    fn new_internal(callback: Option<CallbackBox>, deadline: u64) -> Arc<NoIRQSpinlock<Timer>> {
+    pub fn new(
+        callback: Option<CallbackBox>,
+        deadline: Option<TimerDeadline>,
+    ) -> Arc<NoIRQSpinlock<Timer>> {
         let timer = NoIRQSpinlock::new(Timer {
             event_count: 0,
             state: TimerState::Complete,
@@ -45,31 +48,19 @@ impl Timer {
         });
 
         let timer = Arc::new(timer);
-        let cb_timer = timer.clone();
-        let cb_wrapper = move || {
-            Timer::callback_wrapper(&cb_timer);
-        };
-
         let mut d = timer.lock();
-        d.state = TimerState::Stopped(TimerData::new(cb_wrapper, deadline));
+
         d.self_ref = Arc::downgrade(&timer);
+        if let Some(deadline) = deadline {
+            d.prime(deadline).unwrap();
+        }
+
         drop(d);
 
         timer
     }
 
-    pub fn new_empty(deadline: u64) -> Arc<NoIRQSpinlock<Timer>> {
-        Timer::new_internal(None, deadline)
-    }
-
-    pub fn new<F>(callback: F, deadline: u64) -> Arc<NoIRQSpinlock<Timer>>
-    where
-        F: Fn() + Sync + Send + 'static,
-    {
-        Timer::new_internal(Some(Box::new(callback)), deadline)
-    }
-
-    pub fn restart(&mut self, deadline: u64) -> Result<(), TimerError> {
+    pub fn prime(&mut self, deadline: TimerDeadline) -> Result<(), TimerError> {
         if !self.is_complete() {
             return Err(TimerError::IncorrectState);
         }
@@ -134,22 +125,21 @@ impl Timer {
         }
     }
 
-    pub fn set_deadline(&mut self, deadline: u64) -> Result<(), TimerError> {
+    pub fn set_deadline(&mut self, deadline: TimerDeadline) -> Result<(), TimerError> {
         match &mut self.state {
             TimerState::Stopped(data) => {
-                data.deadline = deadline;
+                data.set_deadline(deadline);
                 Ok(())
             }
-            TimerState::Complete => self.restart(deadline),
             _ => Err(TimerError::IncorrectState),
         }
     }
 
-    pub fn deadline(&self) -> Result<u64, TimerError> {
+    pub fn deadline(&self) -> Result<TimerDeadline, TimerError> {
         match &self.state {
             TimerState::Complete => Err(TimerError::IncorrectState),
             TimerState::Started(h) => Ok(h.deadline()),
-            TimerState::Stopped(d) => Ok(d.deadline),
+            TimerState::Stopped(d) => Ok(d.deadline()),
         }
     }
 

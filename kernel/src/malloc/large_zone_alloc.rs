@@ -78,6 +78,10 @@ impl LargeZone {
             let effective_size: usize;
             let padding_size: usize;
 
+            if !block.free {
+                continue;
+            }
+
             if block.addr & align_mask == 0 {
                 effective_addr = block.addr;
                 effective_size = block.size as usize;

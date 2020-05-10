@@ -8,7 +8,7 @@ use alloc_crate::boxed::Box;
 use alloc_crate::collections::BTreeMap;
 use core::mem;
 use core::ptr;
-use spin::{Mutex, MutexGuard, Once};
+use spin::Mutex;
 
 #[no_mangle]
 pub extern "C" fn AcpiOsInitialize() -> ACPI_STATUS {

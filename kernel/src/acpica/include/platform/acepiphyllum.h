@@ -152,21 +152,24 @@
 #ifndef __ACEPIPHYLLUM_H__
 #define __ACEPIPHYLLUM_H__
 
-#define ACPI_MACHINE_WIDTH          64
-#define COMPILER_DEPENDENT_INT64    long
-#define COMPILER_DEPENDENT_UINT64   unsigned long
+#define ACPI_MACHINE_WIDTH 64
+#define COMPILER_DEPENDENT_INT64 int64_t
+#define COMPILER_DEPENDENT_UINT64 uint64_t
 
 #define ACPI_DEBUG_OUTPUT
 #define ACPI_NO_ERROR_MESSAGES
 
-#define ACPI_MUTEX_TYPE             ACPI_OSL_MUTEX
+#define ACPI_MUTEX_TYPE ACPI_OSL_MUTEX
 
-#define ACPI_CACHE_T                ACPI_MEMORY_LIST
-#define ACPI_USE_LOCAL_CACHE        1
+#define ACPI_CACHE_T ACPI_MEMORY_LIST
+#define ACPI_USE_LOCAL_CACHE 1
 
-#define ACPI_FLUSH_CPU_CACHE()      asm volatile("wbinvd" : : : "memory")
+#define ACPI_FLUSH_CPU_CACHE() asm volatile("wbinvd" \
+                                            :        \
+                                            :        \
+                                            : "memory")
 
-#define ACPI_CPU_FLAGS              uint64_t
+#define ACPI_CPU_FLAGS uint64_t
 
 #if !defined(__cplusplus)
 #include <stdbool.h>

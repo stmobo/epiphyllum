@@ -2,8 +2,6 @@ use core::convert::TryInto;
 use x86_64::instructions::tlb;
 use x86_64::VirtAddr;
 
-use lazy_static::lazy_static;
-
 use crate::lock::LockedGlobal;
 use crate::malloc::physical_mem;
 use crate::structures::AVLTree;

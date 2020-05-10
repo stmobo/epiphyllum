@@ -9,6 +9,15 @@ fn get_flags() -> u64 {
     return flags;
 }
 
+pub fn get_cr2() -> usize {
+    let cr2: u64;
+    unsafe {
+        llvm_asm!("mov %cr2, $0" : "=r"(cr2) ::: "volatile");
+    }
+
+    return cr2 as usize;
+}
+
 pub mod interrupts {
     pub fn enabled() -> bool {
         let flags = super::get_flags();

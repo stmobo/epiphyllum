@@ -97,9 +97,11 @@ fn protection_fault(frame: &InterruptFrame) {
 }
 
 fn page_fault(frame: &InterruptFrame) {
+    let cr2 = crate::asm::get_cr2();
+
     panic!(
-        "unhandled page fault (#PG) at {:#016x}, code {:#08x}",
-        frame.rip, frame.error_code
+        "unhandled page fault (#PG) at {:#016x}\n    faulting address: {:#016x}\n    error code: {:#08x}\n   ",
+        frame.rip, cr2, frame.error_code
     );
 }
 

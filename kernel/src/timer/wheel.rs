@@ -4,22 +4,6 @@ use core::mem::MaybeUninit;
 use super::get_kernel_ticks;
 use crate::lock::LockedGlobal;
 
-pub struct TimerData {
-    pub callback: Box<dyn FnOnce() + Sync + Send + 'static>,
-    deadline: u64,
-}
-
-pub struct WheelNode {
-    timer: TimerData,
-    id: u64,
-    next: Option<Box<WheelNode>>,
-}
-
-pub struct TimerHandle {
-    id: u64,
-    deadline: u64,
-}
-
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum TimerDeadline {
     Absolute(u64),
@@ -46,6 +30,57 @@ impl TimerDeadline {
                 }
             }
         }
+    }
+}
+
+pub struct TimerData {
+    pub callback: Box<dyn FnOnce() + Sync + Send + 'static>,
+    deadline: u64,
+}
+
+pub struct WheelNode {
+    timer: TimerData,
+    id: u64,
+    next: Option<Box<WheelNode>>,
+}
+
+pub struct NodeIterator(Option<Box<WheelNode>>);
+
+impl NodeIterator {
+    pub fn new(start: Option<Box<WheelNode>>) -> NodeIterator {
+        NodeIterator(start)
+    }
+}
+
+impl Iterator for NodeIterator {
+    type Item = Box<WheelNode>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(mut node) = self.0.take() {
+            self.0 = node.next.take();
+            Some(node)
+        } else {
+            None
+        }
+    }
+}
+
+pub struct TimerHandle {
+    id: u64,
+    deadline: u64,
+}
+
+impl TimerHandle {
+    pub fn stop(&self) -> Result<TimerData, ()> {
+        TIMER_WHEEL.lock().remove(self)
+    }
+
+    pub fn deadline(&self) -> TimerDeadline {
+        TimerDeadline::Absolute(self.deadline)
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
     }
 }
 
@@ -85,7 +120,11 @@ impl TimerWheel {
         }
     }
 
-    fn tick(&mut self, level: usize) -> Option<Box<WheelNode>> {
+    fn nodes(&mut self, level: usize, index: u8) -> NodeIterator {
+        NodeIterator::new(self.wheels[level][index as usize].take())
+    }
+
+    fn tick(&mut self, level: usize) -> NodeIterator {
         if self.indices[level] == 255 {
             self.cascade(level);
             self.indices[level] = 0;
@@ -93,8 +132,7 @@ impl TimerWheel {
             self.indices[level] += 1;
         }
 
-        let idx = self.indices[level];
-        self.wheels[level][idx as usize].take()
+        self.nodes(level, self.indices[level])
     }
 
     fn cascade(&mut self, level: usize) {
@@ -102,11 +140,7 @@ impl TimerWheel {
             return;
         }
 
-        let mut cur = self.tick(level + 1);
-        while cur.is_some() {
-            let mut node = cur.unwrap();
-            cur = node.next.take();
-
+        for mut node in self.tick(level + 1) {
             let deadline = node.timer.deadline;
             let index = ((deadline >> (8 * level)) & 0xFF) as usize;
 
@@ -147,37 +181,21 @@ impl TimerWheel {
         let deadline_idx = timer.deadline.to_le_bytes();
         for level in (0..=7usize).rev() {
             if deadline_idx[level] > self.indices[level] {
-                let idx = self.indices[level] as usize;
-                let mut cur = self.wheels[level][idx].take();
-                let mut head: Option<Box<WheelNode>> = None;
-                let mut search_node: Option<Box<WheelNode>> = None;
+                let idx = deadline_idx[level];
+                let mut removed_node: Option<WheelNode> = None;
+                let mut cur_head: Option<Box<WheelNode>> = None;
 
-                while cur.is_some() {
-                    let mut node = cur.unwrap();
-
-                    if node.id != timer.id {
-                        // go to next node
-                        if let Some(b) = head {
-                            cur = node.next.replace(b);
-                        } else {
-                            cur = node.next.take();
-                        }
-
-                        head = Some(node);
+                for mut node in self.nodes(level, idx) {
+                    if node.id == timer.id {
+                        removed_node = Some(*node);
                     } else {
-                        // found the node
-                        // save it for later and unlink it from the rest
-                        cur = node.next.take();
-                        search_node = Some(node);
+                        node.next = cur_head.take();
+                        cur_head = Some(node);
                     }
                 }
 
-                if let Some(node) = head {
-                    self.wheels[level][idx].replace(node);
-                }
-
-                if let Some(node) = search_node {
-                    let node = *node;
+                self.wheels[level][idx as usize] = cur_head;
+                if let Some(node) = removed_node {
                     return Ok(node.timer);
                 } else {
                     return Err(());
@@ -188,7 +206,7 @@ impl TimerWheel {
         Err(())
     }
 
-    fn update(&mut self) -> Option<Box<WheelNode>> {
+    fn update(&mut self) -> NodeIterator {
         self.tick(0)
     }
 
@@ -205,10 +223,9 @@ pub fn init_timer_wheel() {
 
 pub fn update_timers(n_ticks: u64) -> u64 {
     for _ in 0..n_ticks {
-        let mut cur = TIMER_WHEEL.lock().update();
-        while cur.is_some() {
-            let mut node = *cur.unwrap();
-            cur = node.next.take();
+        let nodes = TIMER_WHEEL.lock().update();
+        for node in nodes {
+            let node = *node;
             (node.timer.callback)();
         }
     }
@@ -237,19 +254,5 @@ impl TimerData {
 
     pub fn start(self) -> Result<TimerHandle, u64> {
         TIMER_WHEEL.lock().insert(self)
-    }
-}
-
-impl TimerHandle {
-    pub fn stop(&self) -> Result<TimerData, ()> {
-        TIMER_WHEEL.lock().remove(self)
-    }
-
-    pub fn deadline(&self) -> TimerDeadline {
-        TimerDeadline::Absolute(self.deadline)
-    }
-
-    pub fn id(&self) -> u64 {
-        self.id
     }
 }

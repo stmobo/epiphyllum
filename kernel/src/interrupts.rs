@@ -14,25 +14,25 @@ static INTERRUPT_CONTEXT_FLAG: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 pub struct GeneralRegisterState {
-    r15: u64,
-    r14: u64,
-    r13: u64,
-    r12: u64,
-    r11: u64,
-    r10: u64,
-    r9: u64,
-    r8: u64,
-    rdi: u64,
-    rsi: u64,
-    rdx: u64,
-    rcx: u64,
-    rbx: u64,
-    rax: u64,
-    rbp: u64,
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rbx: u64,
+    pub rax: u64,
+    pub rbp: u64,
 }
 
 impl GeneralRegisterState {
-    pub fn new(rdi: u64) -> GeneralRegisterState {
+    pub fn new() -> GeneralRegisterState {
         GeneralRegisterState {
             r15: 0,
             r14: 0,
@@ -42,7 +42,7 @@ impl GeneralRegisterState {
             r10: 0,
             r9: 0,
             r8: 0,
-            rdi,
+            rdi: 0,
             rsi: 0,
             rdx: 0,
             rcx: 0,
@@ -55,20 +55,20 @@ impl GeneralRegisterState {
 
 #[repr(C)]
 pub struct InterruptFrame {
-    gpr: GeneralRegisterState,
-    interrupt_no: u64,
-    error_code: u64,
-    rip: u64,
-    cs: u64,
-    rflags: u64,
-    rsp: u64,
-    ss: u64,
+    pub registers: GeneralRegisterState,
+    pub interrupt_no: u64,
+    pub error_code: u64,
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
 }
 
 impl InterruptFrame {
-    pub fn new(start_addr: usize, rsp: usize, init_arg: u64) -> InterruptFrame {
+    pub fn new(start_addr: usize, rsp: usize) -> InterruptFrame {
         InterruptFrame {
-            gpr: GeneralRegisterState::new(init_arg),
+            registers: GeneralRegisterState::new(),
             interrupt_no: 0,
             error_code: 0,
             rip: start_addr as u64,
@@ -88,10 +88,15 @@ pub fn in_interrupt_context() -> bool {
 pub extern "C" fn kernel_entry(mut frame: InterruptFrame) -> *mut InterruptFrame {
     INTERRUPT_CONTEXT_FLAG.store(true, Ordering::Relaxed);
 
-    task::set_next_context(&mut frame);
+    task::scheduler::update_task_context(&mut frame);
     handler::handle_interrupt(&mut frame);
+    task::scheduler::update();
 
     INTERRUPT_CONTEXT_FLAG.store(false, Ordering::Relaxed);
 
-    task::get_next_context()
+    if let Some(new_ctx) = task::scheduler::current_context() {
+        new_ctx
+    } else {
+        &mut frame
+    }
 }

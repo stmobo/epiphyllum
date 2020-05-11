@@ -2,6 +2,8 @@
 .global exceptions_start
 .global kernel_entry
 .global switch_context
+.global yield_cpu_1
+.global yield_cpu_2
 
 .code64
 
@@ -76,6 +78,36 @@ switch_context:
     
     add $16, %rsp
     iretq
+
+
+yield_cpu_1:
+    popq %rax /* return address */
+    movq %rsp, %rdi
+    
+    /* Create an interrupt stack frame: */
+    xor %rdx, %rdx
+    mov $0x10, %dx /* hardcoded SS value for kernel space */
+
+    xor %rcx, %rcx
+    mov $0x08, %cx /* hardcoded CS value for kernel space */
+
+    pushq %rdx
+    pushq %rdi
+    pushfq
+    pushq %rcx
+    pushq %rax
+    pushq $0
+    pushq $0
+    SAVE_REGISTERS
+
+    /* Set up call into yield_cpu_2 */
+    mov %rsp, %rdi
+    
+    movabs $yield_cpu_2, %rax
+    call *%rax
+
+    /* should not get here */
+    int $3
 
 
 .align 16

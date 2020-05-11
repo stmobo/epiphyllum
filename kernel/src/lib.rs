@@ -14,12 +14,15 @@
 #![feature(new_uninit)]
 #![feature(maybe_uninit_extra)]
 #![feature(alloc_layout_extra)]
+#![feature(weak_into_raw)]
 
 #[macro_use]
 extern crate alloc as alloc_crate;
 
 #[cfg(not(test))]
 extern crate compiler_builtins;
+
+extern crate crossbeam;
 
 #[macro_use]
 pub mod print;
@@ -196,13 +199,13 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     task::initialize();
 
     let h = task::Task::new(kernel_stage2_main, 10).expect("could not spawn initial task");
-    h.make_next_task();
+    task::scheduler::set_running_task(h);
     unsafe {
-        task::switch_to_task();
+        task::scheduler::switch_to_task();
     }
 }
 
-fn kernel_stage2_main(arg: u64) -> ! {
+fn kernel_stage2_main(arg: u64) -> u64 {
     println!("init: arg = {}", arg);
 
     unsafe {
@@ -213,30 +216,30 @@ fn kernel_stage2_main(arg: u64) -> ! {
     timer::initialize();
     devices::timer::start_ticks();
 
-    let val = Arc::new(AtomicU64::new(0));
-    let mut last_val: u64 = 0;
+    let h = task::Task::new(test_task, 0).expect("could not spawn task");
+    h.schedule();
 
-    schedule_timer(val.clone());
+    0
+}
+
+fn test_task(_: u64) -> u64 {
+    let handle = task::scheduler::get_running_task();
+    let mut val: u64 = 0;
 
     loop {
-        unsafe {
-            llvm_asm!("hlt" :::: "volatile");
-        }
+        println!("tick {}", val);
+        val += 1;
 
-        let v = val.load(Ordering::SeqCst);
-        if v > last_val {
-            println!("tick {}", v);
-            last_val = v;
-        }
+        schedule_timer(handle.clone());
+        task::scheduler::yield_cpu();
     }
 }
 
-fn schedule_timer(val: Arc<AtomicU64>) {
-    let deadline = timer::TimerDeadline::Relative(4096);
+fn schedule_timer(handle: task::TaskHandle) {
+    let deadline = timer::TimerDeadline::Relative(8192);
     let timer = timer::TimerData::new(
         move || {
-            val.fetch_add(1, Ordering::SeqCst);
-            schedule_timer(val);
+            handle.schedule();
         },
         deadline,
     );

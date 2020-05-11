@@ -91,8 +91,8 @@ fn stack_segment_fault(frame: &InterruptFrame) {
 
 fn protection_fault(frame: &InterruptFrame) {
     panic!(
-        "unhandled general protection fault (#GP) at {:#016x}",
-        frame.rip,
+        "unhandled general protection fault (#GP) at {:#016x} (error code {:04x})",
+        frame.rip, frame.error_code
     );
 }
 

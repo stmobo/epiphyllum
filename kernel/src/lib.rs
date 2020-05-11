@@ -45,9 +45,6 @@ use x86_64::structures::idt::InterruptDescriptorTable;
 
 use multiboot::{MemoryType, MultibootInfo};
 
-use alloc_crate::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
-
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct KernelLoaderInfo {

@@ -48,6 +48,8 @@ fn main() {
         .flag("-g")
         .flag("-Wno-unused-parameter")
         .flag("-ffreestanding")
+        .flag("-mno-red-zone")
+        .flag("-fno-omit-frame-pointer")
         .compile("acpica");
 
     cc::Build::new()

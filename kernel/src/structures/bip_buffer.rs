@@ -17,41 +17,43 @@ pub struct RawWriteRSVP {
     watermark_start: Option<usize>,
 }
 
-pub struct RingBuffer {
+pub struct BipBuffer {
     data: *mut u8,
     len: usize,
     read: AtomicUsize,
     write: AtomicUsize,
     watermark: AtomicUsize,
+    layout: Layout,
 }
 
-impl RingBuffer {
-    fn new_buffer(layout: Layout) -> RingBuffer {
+impl BipBuffer {
+    fn new_buffer(layout: Layout) -> BipBuffer {
         unsafe {
             let p = alloc::alloc(layout);
             if p == ptr::null_mut() {
                 alloc::handle_alloc_error(layout);
             }
 
-            RingBuffer {
+            BipBuffer {
                 data: p,
                 len: layout.size(),
                 read: AtomicUsize::new(0),
                 write: AtomicUsize::new(0),
                 watermark: AtomicUsize::new(layout.size()),
+                layout,
             }
         }
     }
 
-    pub fn new<T>(len: usize) -> (BufferReader<T>, BufferWriter<T>) {
+    pub fn new<T>(len: usize) -> (BipReader<T>, BipWriter<T>) {
         let layout = Layout::array::<T>(len).unwrap();
-        let buffer = Arc::new(RingBuffer::new_buffer(layout));
-        let reader = BufferReader {
+        let buffer = Arc::new(BipBuffer::new_buffer(layout));
+        let reader = BipReader {
             buffer: buffer.clone(),
             _marker: PhantomData,
         };
 
-        let writer = BufferWriter {
+        let writer = BipWriter {
             buffer: buffer.clone(),
             _marker: PhantomData,
         };
@@ -110,7 +112,7 @@ impl RingBuffer {
                 }
             } else {
                 // don't overlap unread data at beginning of buffer
-                return Err(self.read_pos() - write_pos);
+                return Err(self.read_pos() - write_pos + 1);
             }
 
             Ok(RawWriteRSVP {
@@ -246,8 +248,16 @@ impl RingBuffer {
     }
 }
 
+impl Drop for BipBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            alloc::dealloc(self.data, self.layout);
+        }
+    }
+}
+
 pub struct BufferWrite<'a, T> {
-    buffer: &'a RingBuffer,
+    buffer: &'a BipBuffer,
     rsvp: RawWriteRSVP,
     len: usize,
     _marker: PhantomData<*mut T>,
@@ -304,7 +314,7 @@ impl<'a, T> AsMut<[T]> for BufferWrite<'a, T> {
 }
 
 pub struct BufferRead<'a, T> {
-    buffer: &'a RingBuffer,
+    buffer: &'a BipBuffer,
     ptr: *const T,
     len: usize,
 }
@@ -347,12 +357,13 @@ impl<'a, T> AsRef<[T]> for BufferRead<'a, T> {
     }
 }
 
-pub struct BufferReader<T> {
-    buffer: Arc<RingBuffer>,
+#[repr(transparent)]
+pub struct BipReader<T> {
+    buffer: Arc<BipBuffer>,
     _marker: PhantomData<T>,
 }
 
-impl<T> BufferReader<T> {
+impl<T> BipReader<T> {
     pub fn read(&self, len: usize) -> Result<BufferRead<'_, T>, usize> {
         unsafe { self.buffer.read(len) }
     }
@@ -371,7 +382,7 @@ impl<T> BufferReader<T> {
     }
 }
 
-impl<T: Copy> BufferReader<T> {
+impl<T: Copy> BipReader<T> {
     pub fn read_into<U: AsMut<[T]>>(&self, buf: &mut U) -> bool {
         let dst = buf.as_mut();
         if let Ok(reader) = self.read(dst.len()) {
@@ -384,14 +395,15 @@ impl<T: Copy> BufferReader<T> {
     }
 }
 
-unsafe impl<T> Send for BufferReader<T> {}
+unsafe impl<T> Send for BipReader<T> {}
 
-pub struct BufferWriter<T> {
-    buffer: Arc<RingBuffer>,
+#[repr(transparent)]
+pub struct BipWriter<T> {
+    buffer: Arc<BipBuffer>,
     _marker: PhantomData<T>,
 }
 
-impl<T> BufferWriter<T> {
+impl<T> BipWriter<T> {
     pub fn write(&self, len: usize) -> Result<BufferWrite<'_, T>, usize> {
         unsafe { self.buffer.write(len) }
     }
@@ -406,7 +418,7 @@ impl<T> BufferWriter<T> {
     }
 }
 
-impl<T: Copy> BufferWriter<T> {
+impl<T: Copy> BipWriter<T> {
     pub fn write_from<U: AsRef<[T]>>(&self, buf: &U) -> bool {
         let src = buf.as_ref();
         if let Ok(mut writer) = self.write(src.len()) {
@@ -419,4 +431,4 @@ impl<T: Copy> BufferWriter<T> {
     }
 }
 
-unsafe impl<T> Send for BufferWriter<T> {}
+unsafe impl<T> Send for BipWriter<T> {}

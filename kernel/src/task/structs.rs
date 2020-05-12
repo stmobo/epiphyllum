@@ -41,7 +41,6 @@ pub enum ExitStatus {
     ReturnCode(u64),
 }
 
-#[derive(Debug)]
 pub struct Task {
     id: u64,
     kernel_stack_base: usize,
@@ -49,7 +48,7 @@ pub struct Task {
     status: AtomicCell<TaskStatus>,
     scheduler_data: SchedulerData,
     exit_status: OnceCell<ExitStatus>,
-    wake_on_exit: Queue<Waker>,
+    exit_callbacks: Queue<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 impl Task {
@@ -79,7 +78,7 @@ impl Task {
             status: AtomicCell::new(TaskStatus::Sleeping),
             scheduler_data: SchedulerData::new(),
             exit_status: OnceCell::new(),
-            wake_on_exit: Queue::new_direct(),
+            exit_callbacks: Queue::new_direct(),
         });
 
         unsafe {
@@ -175,8 +174,8 @@ impl Task {
             // this is safe since this is the only place we ever read from the
             // queue, and we will never be here twice to begin with.
             // (we will return beforehand if we try)
-            for waker in self.wake_on_exit.try_iter() {
-                waker.wake();
+            for callback in self.exit_callbacks.try_iter() {
+                callback();
             }
         }
 
@@ -189,8 +188,8 @@ impl Task {
         self.exit_status.get().copied()
     }
 
-    pub fn register_wake_on_exit(&self, waker: Waker) {
-        self.wake_on_exit.push(waker);
+    pub fn register_exit_callback<F: FnOnce() + Send + 'static>(&self, callback: F) {
+        self.exit_callbacks.push(Box::new(callback));
     }
 
     pub fn waker(self: Arc<Self>) -> Waker {

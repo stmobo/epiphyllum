@@ -8,6 +8,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use super::scheduling;
 use super::{ExitStatus, Task, TaskHandle, TaskSpawnError};
+use crate::lock::NoIRQSpinlock;
 
 const TASK_WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(clone_task, wake_task, wake_task_ref, drop_task);
@@ -81,24 +82,40 @@ fn async_task_runner<T: Future<Output = u64> + Send + 'static>(ctx: *mut T) -> u
     run_future(pinned)
 }
 
-pub struct TaskExitFuture(TaskHandle);
+pub struct TaskExitState {
+    task: TaskHandle,
+    waker: Option<Waker>,
+}
+
+pub struct TaskExitFuture(Arc<NoIRQSpinlock<TaskExitState>>);
 
 impl TaskExitFuture {
     pub fn new(task: TaskHandle) -> TaskExitFuture {
-        TaskExitFuture(task)
+        let state = Arc::new(NoIRQSpinlock::new(TaskExitState { task, waker: None }));
+        let cb_state = state.clone();
+
+        let s = state.lock();
+        s.task.register_exit_callback(move || {
+            let mut lock = cb_state.lock();
+            if let Some(waker) = lock.waker.take() {
+                waker.wake();
+            }
+        });
+        drop(s);
+
+        TaskExitFuture(state)
     }
 }
 
 impl Future for TaskExitFuture {
     type Output = ExitStatus;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(status) = self.0.exit_status() {
+    fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut lock = self.0.lock();
+        if let Some(status) = lock.task.exit_status() {
             Poll::Ready(status)
         } else {
-            // FIXME: this might register a bunch of redundant wakes depending
-            // on how often poll gets called
-            self.0.register_wake_on_exit(cx.waker().clone());
+            lock.waker = Some(ctx.waker().clone());
             Poll::Pending
         }
     }

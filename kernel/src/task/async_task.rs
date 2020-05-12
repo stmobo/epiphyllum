@@ -60,35 +60,25 @@ pub fn run_future<T>(mut future: impl Future<Output = T>) -> T {
     }
 }
 
-pub fn spawn_async(
-    future: impl Future<Output = u64> + 'static + Send,
+pub fn spawn_async<T: Future<Output = u64> + Send + 'static>(
+    future: T,
 ) -> Result<TaskHandle, TaskSpawnError> {
-    // Yes, this is a Box containing another Box.
-    // The "inner" Box (inside the FutureBoxWrapper) has type
-    // Box<dyn Future<...> + ...>. We can't convert that into a single pointer
-    // since it contains a DST, so therefore we have to wrap it into _another_
-    // Box to get the single pointer that we need.
-    let wrapper = Box::new(FutureBoxWrapper(Box::pin(future)));
-    let ctx = (Box::into_raw(wrapper) as usize) as u64;
+    let data = Box::into_raw(Box::new(future)) as usize;
+    let res = unsafe { Task::new_raw(async_task_runner::<T> as usize, data as u64) };
 
-    match Task::new(async_task_runner, ctx) {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            // free the context so we don't leak:
-            let ctx = ctx as usize;
-            drop(unsafe { Box::from_raw(ctx as *mut FutureBoxWrapper) });
-            Err(e)
+    match res {
+        Ok(h) => Ok(h),
+        Err(v) => {
+            drop(unsafe { Box::from_raw(data as *mut T) });
+            Err(v)
         }
     }
 }
 
-struct FutureBoxWrapper(Pin<Box<dyn Future<Output = u64> + Send + 'static>>);
-
-fn async_task_runner(ctx: u64) -> u64 {
-    let ctx = ctx as usize;
-    let wrapper = unsafe { Box::from_raw(ctx as *mut FutureBoxWrapper) };
-    let future = (*wrapper).0;
-    run_future(future)
+fn async_task_runner<T: Future<Output = u64> + Send + 'static>(ctx: *mut T) -> u64 {
+    let boxed = unsafe { Box::from_raw(ctx) };
+    let pinned: Pin<Box<T>> = boxed.into();
+    run_future(pinned)
 }
 
 pub struct TaskExitFuture(TaskHandle);

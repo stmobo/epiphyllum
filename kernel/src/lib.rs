@@ -216,6 +216,14 @@ fn kernel_stage2_main(arg: u64) -> u64 {
     let h = task::Task::new(test_task, 0).expect("could not spawn task");
     h.schedule();
 
+    let foo = 25;
+    task::Task::from_closure(move || {
+        println!("hello from closure task, foo = {}", foo);
+        0
+    })
+    .expect("could not spawn closure task")
+    .schedule();
+
     0
 }
 

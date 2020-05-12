@@ -1,3 +1,4 @@
+use alloc_crate::boxed::Box;
 use alloc_crate::sync::{Arc, Weak};
 use core::mem;
 use core::ptr;
@@ -52,7 +53,7 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn new(entry: fn(u64) -> u64, init_arg: u64) -> Result<TaskHandle, TaskSpawnError> {
+    fn new_common(entry: usize, init_arg: u64) -> Result<TaskHandle, TaskSpawnError> {
         let stack_end = unsafe {
             heap_pages::allocate(TASK_STACK_SIZE).map_err(|e| TaskSpawnError::AllocationError(e))?
         };
@@ -84,7 +85,7 @@ impl Task {
         unsafe {
             let handle_ptr = Weak::into_raw(Arc::downgrade(&task));
             (*kernel_stack_head).registers.rdi = (handle_ptr as usize) as u64;
-            (*kernel_stack_head).registers.rsi = (entry as usize) as u64;
+            (*kernel_stack_head).registers.rsi = entry as u64;
             (*kernel_stack_head).registers.rdx = init_arg;
         }
 
@@ -93,6 +94,28 @@ impl Task {
             .insert(id, task.clone())
             .map_err(|_| TaskSpawnError::StructureError)?;
         Ok(task)
+    }
+
+    pub fn new(entry: fn(u64) -> u64, init_arg: u64) -> Result<TaskHandle, TaskSpawnError> {
+        Self::new_common(entry as usize, init_arg)
+    }
+
+    pub fn from_closure<T: FnOnce() -> u64 + Send + 'static>(
+        entry: T,
+    ) -> Result<TaskHandle, TaskSpawnError> {
+        let p = (Box::into_raw(Box::new(entry)) as usize) as u64;
+        match Self::new_common(boxed_func_task::<T> as usize, p) {
+            Ok(h) => Ok(h),
+            Err(e) => {
+                let p = (p as usize) as *mut T;
+                drop(unsafe { Box::from_raw(p) });
+                Err(e)
+            }
+        }
+    }
+
+    pub unsafe fn new_raw(entry: usize, init_arg: u64) -> Result<TaskHandle, TaskSpawnError> {
+        Self::new_common(entry, init_arg)
     }
 
     pub fn get_context(&self) -> *mut InterruptFrame {
@@ -213,4 +236,9 @@ fn task_entry(handle: *const Task, entrypoint: fn(u64) -> u64, init_arg: u64) {
     unsafe {
         sched.force_context_switch();
     }
+}
+
+fn boxed_func_task<T: FnOnce() -> u64 + Send + 'static>(ctx: *mut T) -> u64 {
+    let boxed = unsafe { Box::from_raw(ctx) };
+    (*boxed)()
 }

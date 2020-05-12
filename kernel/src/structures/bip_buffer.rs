@@ -5,57 +5,50 @@ use alloc_crate::alloc;
 use alloc_crate::alloc::Layout;
 use alloc_crate::sync::Arc;
 use core::convert::{AsMut, AsRef};
-use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr;
 use core::slice;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-pub struct RawWriteRSVP {
-    ptr: *mut u8,
+pub struct RawWriteRSVP<T> {
+    ptr: *mut T,
     offset: usize,
     watermark_start: Option<usize>,
 }
 
-pub struct BipBuffer {
-    data: *mut u8,
+pub struct BipBuffer<T> {
+    data: *mut T,
     len: usize,
     read: AtomicUsize,
     write: AtomicUsize,
     watermark: AtomicUsize,
-    layout: Layout,
 }
 
-impl BipBuffer {
-    fn new_buffer(layout: Layout) -> BipBuffer {
-        unsafe {
+impl<T> BipBuffer<T> {
+    pub fn new(len: usize) -> (BipReader<T>, BipWriter<T>) {
+        let layout = Layout::array::<T>(len).unwrap();
+        let buffer = unsafe {
             let p = alloc::alloc(layout);
             if p == ptr::null_mut() {
                 alloc::handle_alloc_error(layout);
             }
 
             BipBuffer {
-                data: p,
-                len: layout.size(),
+                data: p as *mut T,
+                len,
                 read: AtomicUsize::new(0),
                 write: AtomicUsize::new(0),
-                watermark: AtomicUsize::new(layout.size()),
-                layout,
+                watermark: AtomicUsize::new(len),
             }
-        }
-    }
+        };
 
-    pub fn new<T>(len: usize) -> (BipReader<T>, BipWriter<T>) {
-        let layout = Layout::array::<T>(len).unwrap();
-        let buffer = Arc::new(BipBuffer::new_buffer(layout));
+        let buffer = Arc::new(buffer);
         let reader = BipReader {
             buffer: buffer.clone(),
-            _marker: PhantomData,
         };
 
         let writer = BipWriter {
             buffer: buffer.clone(),
-            _marker: PhantomData,
         };
 
         (reader, writer)
@@ -81,7 +74,7 @@ impl BipBuffer {
     ///
     /// ## Safety
     /// This should only be called by a single writer thread.
-    unsafe fn reserve_write(&self, len: usize) -> Result<RawWriteRSVP, usize> {
+    unsafe fn reserve_write(&self, len: usize) -> Result<RawWriteRSVP<T>, usize> {
         // since this function is only called by one writer, the write_pos
         // shouldn't change suddenly
         let write_pos = self.write_pos();
@@ -129,7 +122,7 @@ impl BipBuffer {
     /// This function must only be called from a single writer thread.
     /// This function also assumes that actual_len is a valid write length
     /// for the given RawWriteRSVP.
-    unsafe fn commit_write(&self, rsvp: RawWriteRSVP, actual_len: usize) {
+    unsafe fn commit_write(&self, rsvp: RawWriteRSVP<T>, actual_len: usize) {
         let new_write_pos = rsvp.offset + actual_len;
         let new_watermark = match rsvp.watermark_start {
             Some(p) => p,
@@ -145,7 +138,7 @@ impl BipBuffer {
     ///
     /// ## Safety
     /// This should only be called by a single reader thread.
-    unsafe fn reserve_read(&self, len: usize) -> Result<*mut u8, usize> {
+    unsafe fn reserve_read(&self, len: usize) -> Result<*mut T, usize> {
         let cur_read = self.read_pos();
 
         let avail: usize;
@@ -193,7 +186,7 @@ impl BipBuffer {
         }
     }
 
-    fn read_bytes_available(&self) -> usize {
+    fn read_space_available(&self) -> usize {
         if self.write_pos() >= self.read_pos() {
             self.write_pos().saturating_sub(self.read_pos())
         } else {
@@ -201,7 +194,7 @@ impl BipBuffer {
         }
     }
 
-    fn write_bytes_available(&self) -> usize {
+    fn write_space_available(&self) -> usize {
         if self.write_pos() >= self.read_pos() {
             self.len.saturating_sub(self.write_pos())
         } else {
@@ -213,15 +206,9 @@ impl BipBuffer {
     ///
     /// If there isn't enough space in the buffer to read from, then it returns
     /// the number of elements available to read from the buffer instead.
-    unsafe fn read<T>(&self, len: usize) -> Result<BufferRead<'_, T>, usize> {
-        let bytes = Layout::array::<T>(len).unwrap().size();
-        let p = self.reserve_read(bytes).map_err(|avail| {
-            let elem_sz = Layout::new::<T>().pad_to_align().size();
-            avail / elem_sz
-        })?;
-
+    unsafe fn read(&self, len: usize) -> Result<BufferRead<'_, T>, usize> {
         Ok(BufferRead {
-            ptr: p as *const T,
+            ptr: self.reserve_read(len)? as *const T,
             buffer: self,
             len,
         })
@@ -232,54 +219,46 @@ impl BipBuffer {
     /// If there isn't enough space in the buffer to read from, then it returns
     /// the number of free spaces available that can be written into the buffer
     /// instead.
-    unsafe fn write<T>(&self, len: usize) -> Result<BufferWrite<'_, T>, usize> {
-        let bytes = Layout::array::<T>(len).unwrap().size();
-        let rsvp = self.reserve_write(bytes).map_err(|avail| {
-            let elem_sz = Layout::new::<T>().pad_to_align().size();
-            avail / elem_sz
-        })?;
-
+    unsafe fn write(&self, len: usize) -> Result<BufferWrite<'_, T>, usize> {
         Ok(BufferWrite {
-            rsvp,
+            rsvp: self.reserve_write(len)?,
             buffer: self,
             len,
-            _marker: PhantomData,
         })
     }
 }
 
-impl Drop for BipBuffer {
+impl<T> Drop for BipBuffer<T> {
     fn drop(&mut self) {
         unsafe {
-            alloc::dealloc(self.data, self.layout);
+            let layout = Layout::array::<T>(self.len).unwrap();
+            alloc::dealloc(self.data as *mut u8, layout);
         }
     }
 }
 
 pub struct BufferWrite<'a, T> {
-    buffer: &'a BipBuffer,
-    rsvp: RawWriteRSVP,
+    buffer: &'a BipBuffer<T>,
+    rsvp: RawWriteRSVP<T>,
     len: usize,
-    _marker: PhantomData<*mut T>,
 }
 
 impl<'a, T> BufferWrite<'a, T> {
-    pub fn commit(self, len: usize) {
-        if len > self.len {
+    pub fn commit(self, actual_len: usize) {
+        if actual_len > self.len {
             panic!(
                 "invalid length for commit (len is {} but reserved {})",
-                len, self.len
+                actual_len, self.len
             );
         }
 
-        let bytes = Layout::array::<T>(len).unwrap().size();
         unsafe {
-            self.buffer.commit_write(self.rsvp, bytes);
+            self.buffer.commit_write(self.rsvp, actual_len);
         }
     }
 
     pub fn as_ptr(&self) -> *mut T {
-        self.rsvp.ptr as *mut T
+        self.rsvp.ptr
     }
 
     pub fn len(&self) -> usize {
@@ -297,7 +276,7 @@ impl<'a, T> Deref for BufferWrite<'a, T> {
 
 impl<'a, T> DerefMut for BufferWrite<'a, T> {
     fn deref_mut(&mut self) -> &mut [T] {
-        unsafe { slice::from_raw_parts_mut(self.rsvp.ptr as *mut T, self.len) }
+        unsafe { slice::from_raw_parts_mut(self.rsvp.ptr, self.len) }
     }
 }
 
@@ -313,24 +292,26 @@ impl<'a, T> AsMut<[T]> for BufferWrite<'a, T> {
     }
 }
 
+unsafe impl<'a, T> Send for BufferWrite<'a, T> {}
+unsafe impl<'a, T> Sync for BufferWrite<'a, T> {}
+
 pub struct BufferRead<'a, T> {
-    buffer: &'a BipBuffer,
+    buffer: &'a BipBuffer<T>,
     ptr: *const T,
     len: usize,
 }
 
 impl<'a, T> BufferRead<'a, T> {
-    pub fn commit(self, len: usize) {
-        if len > self.len {
+    pub fn commit(self, actual_len: usize) {
+        if actual_len > self.len {
             panic!(
                 "invalid length for commit (len is {} but reserved {})",
-                len, self.len
+                actual_len, self.len
             );
         }
 
-        let bytes = Layout::array::<T>(len).unwrap().size();
         unsafe {
-            self.buffer.commit_read(bytes);
+            self.buffer.commit_read(actual_len);
         }
     }
 
@@ -357,10 +338,12 @@ impl<'a, T> AsRef<[T]> for BufferRead<'a, T> {
     }
 }
 
+unsafe impl<'a, T> Send for BufferRead<'a, T> {}
+unsafe impl<'a, T> Sync for BufferRead<'a, T> {}
+
 #[repr(transparent)]
 pub struct BipReader<T> {
-    buffer: Arc<BipBuffer>,
-    _marker: PhantomData<T>,
+    buffer: Arc<BipBuffer<T>>,
 }
 
 impl<T> BipReader<T> {
@@ -372,13 +355,8 @@ impl<T> BipReader<T> {
         unsafe { self.buffer.read(self.elements_available()).unwrap() }
     }
 
-    pub fn bytes_available(&self) -> usize {
-        self.buffer.read_bytes_available()
-    }
-
     pub fn elements_available(&self) -> usize {
-        let elem_sz = Layout::new::<T>().pad_to_align().size();
-        self.buffer.read_bytes_available() / elem_sz
+        self.buffer.read_space_available()
     }
 }
 
@@ -399,8 +377,7 @@ unsafe impl<T> Send for BipReader<T> {}
 
 #[repr(transparent)]
 pub struct BipWriter<T> {
-    buffer: Arc<BipBuffer>,
-    _marker: PhantomData<T>,
+    buffer: Arc<BipBuffer<T>>,
 }
 
 impl<T> BipWriter<T> {
@@ -408,13 +385,8 @@ impl<T> BipWriter<T> {
         unsafe { self.buffer.write(len) }
     }
 
-    pub fn bytes_available(&self) -> usize {
-        self.buffer.write_bytes_available()
-    }
-
     pub fn elements_available(&self) -> usize {
-        let elem_sz = Layout::new::<T>().pad_to_align().size();
-        self.buffer.write_bytes_available() / elem_sz
+        self.buffer.write_space_available()
     }
 }
 

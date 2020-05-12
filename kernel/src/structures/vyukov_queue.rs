@@ -9,6 +9,7 @@
 use alloc_crate::boxed::Box;
 use alloc_crate::sync::Arc;
 use core::cell::UnsafeCell;
+use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
@@ -26,6 +27,7 @@ impl<T> QueueNode<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct Queue<T> {
     head: AtomicPtr<QueueNode<T>>,
     tail: UnsafeCell<*mut QueueNode<T>>,
@@ -42,7 +44,15 @@ impl<T> Queue<T> {
         (QueueReader::new(queue.clone()), QueueWriter::new(queue))
     }
 
-    fn push(&self, data: T) {
+    pub fn new_direct() -> Queue<T> {
+        let stub = unsafe { QueueNode::new(None) };
+        Queue {
+            head: AtomicPtr::new(stub),
+            tail: UnsafeCell::new(stub),
+        }
+    }
+
+    pub fn push(&self, data: T) {
         unsafe {
             let node = QueueNode::new(Some(data));
             let prev = self.head.swap(node, Ordering::AcqRel);
@@ -51,7 +61,7 @@ impl<T> Queue<T> {
         }
     }
 
-    unsafe fn pop(&self) -> Option<T> {
+    pub unsafe fn pop(&self) -> Option<T> {
         let tail = *self.tail.get();
         let next = (*tail).next.load(Ordering::Acquire);
 
@@ -65,7 +75,14 @@ impl<T> Queue<T> {
 
         None
     }
+
+    pub unsafe fn try_iter(&self) -> TryIter<'_, T> {
+        TryIter(self)
+    }
 }
+
+unsafe impl<T> Send for Queue<T> {}
+unsafe impl<T> Sync for Queue<T> {}
 
 #[derive(Clone)]
 #[repr(transparent)]
@@ -89,11 +106,15 @@ unsafe impl<T> Sync for QueueWriter<T> {}
 #[repr(transparent)]
 pub struct QueueReader<T> {
     queue: Arc<Queue<T>>,
+    _marker: PhantomData<UnsafeCell<T>>, // for !Sync
 }
 
 impl<T> QueueReader<T> {
     fn new(queue: Arc<Queue<T>>) -> QueueReader<T> {
-        QueueReader { queue }
+        QueueReader {
+            queue,
+            _marker: PhantomData,
+        }
     }
 
     pub fn pop(&self) -> Option<T> {
@@ -101,18 +122,18 @@ impl<T> QueueReader<T> {
     }
 
     pub fn try_iter(&self) -> TryIter<'_, T> {
-        TryIter(self)
+        TryIter(self.queue.as_ref())
     }
 }
 
 unsafe impl<T> Send for QueueReader<T> {}
 
-pub struct TryIter<'a, T>(&'a QueueReader<T>);
+pub struct TryIter<'a, T>(&'a Queue<T>);
 
 impl<'a, T> Iterator for TryIter<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.pop()
+        unsafe { self.0.pop() }
     }
 }

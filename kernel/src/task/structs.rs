@@ -2,13 +2,15 @@ use alloc_crate::sync::{Arc, Weak};
 use core::mem;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
+use core::task::Waker;
 
+use super::async_task;
 use super::scheduling;
 use super::scheduling::SchedulerData;
 use crate::interrupts::InterruptFrame;
-use crate::lock::{LockedGlobal, NoIRQSpinlock};
+use crate::lock::{LockedGlobal, OnceCell};
 use crate::malloc::{heap_pages, AllocationError};
-use crate::structures::AVLTree;
+use crate::structures::{AVLTree, Queue};
 
 use crossbeam::atomic::AtomicCell;
 
@@ -45,7 +47,8 @@ pub struct Task {
     kernel_stack_head: AtomicPtr<InterruptFrame>,
     status: AtomicCell<TaskStatus>,
     scheduler_data: SchedulerData,
-    exit_status: NoIRQSpinlock<Option<ExitStatus>>,
+    exit_status: OnceCell<ExitStatus>,
+    wake_on_exit: Queue<Waker>,
 }
 
 impl Task {
@@ -74,7 +77,8 @@ impl Task {
             kernel_stack_head: AtomicPtr::new(kernel_stack_head),
             status: AtomicCell::new(TaskStatus::Sleeping),
             scheduler_data: SchedulerData::new(),
-            exit_status: NoIRQSpinlock::new(None),
+            exit_status: OnceCell::new(),
+            wake_on_exit: Queue::new_direct(),
         });
 
         unsafe {
@@ -111,8 +115,14 @@ impl Task {
         self.status.store(status)
     }
 
-    pub fn schedule(self: Arc<Self>) {
-        scheduling::scheduler().schedule(&self)
+    pub fn schedule(self: &Arc<Self>) {
+        let status = self.status();
+        if status == TaskStatus::Waiting || status == TaskStatus::Running {
+            // we're already scheduled to run
+            return;
+        }
+
+        scheduling::scheduler().schedule(self)
     }
 
     pub fn set_task_running(&self) {
@@ -124,8 +134,13 @@ impl Task {
         &self.scheduler_data
     }
 
-    pub fn kill(&self, status: ExitStatus) {
-        self.exit_status.lock().replace(status);
+    /// Mark this task as dead.
+    /// If this task is already dead, returns an error containing its ExitStatus.
+    pub fn kill(&self, status: ExitStatus) -> Result<(), ExitStatus> {
+        if let Err(_) = self.exit_status.set(status) {
+            return Err(self.exit_status().unwrap());
+        }
+
         self.set_status(TaskStatus::Dead);
 
         TASKS
@@ -133,8 +148,34 @@ impl Task {
             .remove(&self.id())
             .expect("task not found in tasks list");
 
+        unsafe {
+            // this is safe since this is the only place we ever read from the
+            // queue, and we will never be here twice to begin with.
+            // (we will return beforehand if we try)
+            for waker in self.wake_on_exit.try_iter() {
+                waker.wake();
+            }
+        }
+
         // if this task was scheduled, it'll be removed from the runqueue since
         // it's marked as dead.
+        Ok(())
+    }
+
+    pub fn exit_status(&self) -> Option<ExitStatus> {
+        self.exit_status.get().copied()
+    }
+
+    pub fn register_wake_on_exit(&self, waker: Waker) {
+        self.wake_on_exit.push(waker);
+    }
+
+    pub fn waker(self: Arc<Self>) -> Waker {
+        async_task::make_task_waker(self)
+    }
+
+    pub fn exit_future(self: Arc<Self>) -> async_task::TaskExitFuture {
+        async_task::TaskExitFuture::new(self)
     }
 }
 
@@ -158,10 +199,11 @@ pub fn initialize() {
     TASKS.init(|| AVLTree::new());
 }
 
+#[allow(unused_must_use)]
 fn task_entry(handle: *const Task, entrypoint: fn(u64) -> u64, init_arg: u64) {
     let handle = unsafe { Weak::from_raw(handle) };
-
     let retcode = entrypoint(init_arg);
+
     if let Some(handle) = handle.upgrade() {
         handle.kill(ExitStatus::ReturnCode(retcode));
     }

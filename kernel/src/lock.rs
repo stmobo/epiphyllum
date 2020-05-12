@@ -137,3 +137,75 @@ impl<T> LockedGlobal<T> {
         self.get().force_unlock()
     }
 }
+
+/// A Cell-like container that can only be filled once.
+/// Meant to be identical to the once_cell crate, but based on `spin` instead.
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct OnceCell<T> {
+    data: Once<T>,
+}
+
+impl<T> OnceCell<T> {
+    pub const fn new() -> OnceCell<T> {
+        OnceCell { data: Once::new() }
+    }
+
+    pub fn get(&self) -> Option<&T> {
+        self.data.r#try()
+    }
+
+    pub fn wait(&self) -> Option<&T> {
+        self.data.wait()
+    }
+
+    pub fn set(&self, value: T) -> Result<(), T> {
+        let mut v = Some(value);
+        self.data.call_once(|| v.take().unwrap());
+        match v {
+            Some(x) => Err(x),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<T> Default for OnceCell<T> {
+    fn default() -> Self {
+        OnceCell::new()
+    }
+}
+
+impl<T: PartialEq> PartialEq for OnceCell<T> {
+    fn eq(&self, other: &OnceCell<T>) -> bool {
+        self.get() == other.get()
+    }
+}
+
+impl<T: Eq> Eq for OnceCell<T> {}
+
+impl<T: PartialEq> PartialEq<T> for OnceCell<T> {
+    fn eq(&self, other: &T) -> bool {
+        self.get().map_or(false, |r| r.eq(other))
+    }
+}
+
+impl<T> From<T> for OnceCell<T> {
+    fn from(v: T) -> OnceCell<T> {
+        let cell = OnceCell::new();
+        if let Err(_) = cell.set(v) {
+            panic!("could not set newly-initialized OnceCell");
+        }
+
+        cell
+    }
+}
+
+impl<T: Clone> Clone for OnceCell<T> {
+    fn clone(&self) -> OnceCell<T> {
+        if let Some(v) = self.get() {
+            v.clone().into()
+        } else {
+            OnceCell::new()
+        }
+    }
+}

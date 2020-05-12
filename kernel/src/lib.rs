@@ -223,6 +223,15 @@ fn test_task(_: u64) -> u64 {
     let handle = task::current_task();
     let mut val: u64 = 0;
 
+    task::run_future(async {
+        println!("async block starting");
+
+        let deadline = timer::TimerDeadline::Relative(8192 * 2);
+        timer::sleep_async(deadline).unwrap().await;
+
+        println!("async block exiting");
+    });
+
     loop {
         println!("tick {}", val);
         val += 1;

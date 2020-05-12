@@ -196,9 +196,9 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     task::initialize();
 
     let h = task::Task::new(kernel_stage2_main, 10).expect("could not spawn initial task");
-    task::scheduler::set_running_task(h);
+    h.schedule();
     unsafe {
-        task::scheduler::switch_to_task();
+        task::scheduler().force_context_switch();
     }
 }
 
@@ -220,7 +220,7 @@ fn kernel_stage2_main(arg: u64) -> u64 {
 }
 
 fn test_task(_: u64) -> u64 {
-    let handle = task::scheduler::get_running_task();
+    let handle = task::current_task();
     let mut val: u64 = 0;
 
     loop {
@@ -228,7 +228,7 @@ fn test_task(_: u64) -> u64 {
         val += 1;
 
         schedule_timer(handle.clone());
-        task::scheduler::yield_cpu();
+        task::yield_cpu();
     }
 }
 

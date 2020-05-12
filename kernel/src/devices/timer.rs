@@ -6,6 +6,7 @@ use crate::asm::ports;
 use crate::interrupts;
 use crate::interrupts::InterruptHandlerStatus;
 use crate::lock::NoIRQSpinlock;
+use crate::task::scheduler;
 use crate::timer::{update_timers, TICKS_PER_SECOND};
 
 use alloc_crate::sync::Arc;
@@ -191,6 +192,8 @@ pub fn start_ticks() {
 
     interrupts::register_handler(0x30, || {
         update_timers(1);
+        scheduler().update();
+
         InterruptHandlerStatus::Handled
     })
     .expect("could not register kernel tick handler");

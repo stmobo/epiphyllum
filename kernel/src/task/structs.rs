@@ -3,8 +3,8 @@ use core::mem;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use super::scheduler;
-use super::scheduler::SchedulerData;
+use super::scheduling;
+use super::scheduling::SchedulerData;
 use crate::interrupts::InterruptFrame;
 use crate::lock::{LockedGlobal, NoIRQSpinlock};
 use crate::malloc::{heap_pages, AllocationError};
@@ -112,7 +112,7 @@ impl Task {
     }
 
     pub fn schedule(self: Arc<Self>) {
-        scheduler::schedule_task(self);
+        scheduling::scheduler().schedule(&self)
     }
 
     pub fn set_task_running(&self) {
@@ -166,8 +166,9 @@ fn task_entry(handle: *const Task, entrypoint: fn(u64) -> u64, init_arg: u64) {
         handle.kill(ExitStatus::ReturnCode(retcode));
     }
 
-    scheduler::update();
+    let sched = scheduling::scheduler();
+    sched.update();
     unsafe {
-        scheduler::switch_to_task();
+        sched.force_context_switch();
     }
 }

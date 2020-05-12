@@ -85,18 +85,17 @@ pub fn in_interrupt_context() -> bool {
 }
 
 #[no_mangle]
-pub extern "C" fn kernel_entry(mut frame: InterruptFrame) -> *mut InterruptFrame {
+pub extern "C" fn kernel_entry(frame: *mut InterruptFrame) -> *mut InterruptFrame {
     INTERRUPT_CONTEXT_FLAG.store(true, Ordering::Relaxed);
 
-    task::scheduler::update_task_context(&mut frame);
-    handler::handle_interrupt(&mut frame);
-    task::scheduler::update();
+    task::scheduler().update_cur_context(frame);
+    handler::handle_interrupt(unsafe { &mut *frame });
 
     INTERRUPT_CONTEXT_FLAG.store(false, Ordering::Relaxed);
 
-    if let Some(new_ctx) = task::scheduler::current_context() {
+    if let Some(new_ctx) = task::current_context() {
         new_ctx
     } else {
-        &mut frame
+        frame
     }
 }

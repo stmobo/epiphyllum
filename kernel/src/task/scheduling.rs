@@ -174,9 +174,10 @@ impl Scheduler {
                     )
                 };
 
-                if prev_task.status() == TaskStatus::Running {
+                if prev_task.should_run() {
                     // prev_task is still runnable
                     prev_task.set_status(TaskStatus::Waiting);
+                    prev_task.set_wakeup_pending(false);
                     if !prev_task.eq(&self.default_task) {
                         self.run_queue_writer.push(prev_task);
                     }
@@ -186,7 +187,7 @@ impl Scheduler {
             }
 
             // no other tasks are runnable
-            if cur_task.status() == TaskStatus::Running {
+            if cur_task.should_run() {
                 // set up this task for another timeslice
                 cur_task.set_task_running();
             } else {
@@ -243,8 +244,10 @@ extern "C" fn yield_cpu_2(return_ctx: *mut InterruptFrame) {
             interrupts::set_if(false);
 
             let task = sched.running_task_ptr();
-            if (*task).status() == TaskStatus::Running {
+            if (*task).should_run() {
                 // Abort the yield and restore our context from yield_cpu_1.
+                (*task).set_status(TaskStatus::Running);
+                (*task).set_wakeup_pending(false);
                 return;
             }
 

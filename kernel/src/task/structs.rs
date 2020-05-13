@@ -2,7 +2,7 @@ use alloc_crate::boxed::Box;
 use alloc_crate::sync::{Arc, Weak};
 use core::mem;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use core::task::Waker;
 
 use super::async_task;
@@ -46,6 +46,7 @@ pub struct Task {
     kernel_stack_base: usize,
     kernel_stack_head: AtomicPtr<InterruptFrame>,
     status: AtomicCell<TaskStatus>,
+    wakeup_pending: AtomicBool,
     scheduler_data: SchedulerData,
     exit_status: OnceCell<ExitStatus>,
     exit_callbacks: Queue<Box<dyn FnOnce() + Send + 'static>>,
@@ -76,6 +77,7 @@ impl Task {
             kernel_stack_base,
             kernel_stack_head: AtomicPtr::new(kernel_stack_head),
             status: AtomicCell::new(TaskStatus::Sleeping),
+            wakeup_pending: AtomicBool::new(false),
             scheduler_data: SchedulerData::new(),
             exit_status: OnceCell::new(),
             exit_callbacks: Queue::new_direct(),
@@ -137,7 +139,17 @@ impl Task {
         self.status.store(status)
     }
 
+    pub fn wakeup_pending(&self) -> bool {
+        self.wakeup_pending.load(Ordering::SeqCst)
+    }
+
+    pub fn set_wakeup_pending(&self, val: bool) {
+        self.wakeup_pending.store(val, Ordering::SeqCst);
+    }
+
     pub fn schedule(self: &Arc<Self>) {
+        self.set_wakeup_pending(true);
+
         let status = self.status();
         if status == TaskStatus::Waiting || status == TaskStatus::Running {
             // we're already scheduled to run
@@ -145,6 +157,10 @@ impl Task {
         }
 
         scheduling::scheduler().schedule(self)
+    }
+
+    pub fn should_run(&self) {
+        self.status() == TaskStatus::Running || self.wakeup_pending()
     }
 
     pub fn set_task_running(&self) {

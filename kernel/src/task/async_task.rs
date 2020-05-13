@@ -53,15 +53,12 @@ pub fn run_future<T>(mut future: impl Future<Output = T>) -> T {
         // this should be safe since nothing else gets its hands on the future
         // anyway (it's moved into this function)
         let future = unsafe { Pin::new_unchecked(&mut future) };
-
-        // TODO: this might suffer from the lost-wakeup problem.
-        // Unfortunately, we can't set ourselves as 'sleeping' prior to
-        // entering `future.poll()`, since if we got preempted while running
-        // in poll() we'd never wake up again.
-        //
-        // Maybe we could add a special Async task state to cover this case
-        // within the scheduler?
         let p = scheduling::scheduler().running_task_ptr();
+
+        unsafe {
+            (*p).set_wakeup_pending(false);
+        }
+
         match future.poll(&mut context) {
             Poll::Ready(retval) => return retval,
             Poll::Pending => {

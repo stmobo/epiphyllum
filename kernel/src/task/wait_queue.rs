@@ -175,21 +175,27 @@ impl WaitQueue {
 
     pub fn wait<F: FnMut() -> bool>(&self, mut condition: F, mode: WaitMode) {
         let h = self.add_waiter(Some(current_task().waker()), mode);
+        let p = scheduler().running_task_ptr();
 
         loop {
             unsafe {
-                (*scheduler().running_task_ptr()).set_status(TaskStatus::Sleeping);
+                (*p).set_wakeup_pending(false);
             }
 
             if condition() {
                 break;
             }
 
+            unsafe {
+                (*p).set_status(TaskStatus::Sleeping);
+            }
+
             yield_cpu();
         }
 
         unsafe {
-            (*scheduler().running_task_ptr()).set_status(TaskStatus::Running);
+            (*p).set_wakeup_pending(false);
+            (*p).set_status(TaskStatus::Running);
         }
 
         drop(h);

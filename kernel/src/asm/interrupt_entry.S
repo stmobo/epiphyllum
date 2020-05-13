@@ -106,8 +106,10 @@ yield_cpu_1:
     movabs $yield_cpu_2, %rax
     call *%rax
 
-    /* should not get here */
-    int $3
+    /* yield aborted, return to caller */
+    LOAD_REGISTERS
+    add $16, %rsp
+    iretq
 
 
 .align 16

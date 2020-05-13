@@ -231,7 +231,7 @@ pub fn yield_cpu() {
 }
 
 #[no_mangle]
-extern "C" fn yield_cpu_2(return_ctx: *mut InterruptFrame) -> ! {
+extern "C" fn yield_cpu_2(return_ctx: *mut InterruptFrame) {
     let sched = scheduler(); // this is safe to not drop
 
     {
@@ -243,7 +243,11 @@ extern "C" fn yield_cpu_2(return_ctx: *mut InterruptFrame) -> ! {
             interrupts::set_if(false);
 
             let task = sched.running_task_ptr();
-            (*task).set_status(TaskStatus::Sleeping);
+            if (*task).status() == TaskStatus::Running {
+                // Abort the yield and restore our context from yield_cpu_1.
+                return;
+            }
+
             (*task).set_context(return_ctx);
         }
     }

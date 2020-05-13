@@ -101,6 +101,8 @@ mod sleep_funcs {
         }
     }
 
+    // TODO: cancel timer on Drop?
+
     pub fn sleep_async(deadline: TimerDeadline) -> Result<AsyncSleep, u64> {
         AsyncSleep::new(deadline)
     }

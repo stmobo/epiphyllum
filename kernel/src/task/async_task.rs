@@ -7,7 +7,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use super::scheduling;
-use super::{ExitStatus, Task, TaskHandle, TaskSpawnError};
+use super::{ExitStatus, Task, TaskHandle, TaskSpawnError, TaskStatus};
 use crate::lock::NoIRQSpinlock;
 
 const TASK_WAKER_VTABLE: RawWakerVTable =
@@ -54,9 +54,22 @@ pub fn run_future<T>(mut future: impl Future<Output = T>) -> T {
         // anyway (it's moved into this function)
         let future = unsafe { Pin::new_unchecked(&mut future) };
 
+        // TODO: this might suffer from the lost-wakeup problem.
+        // Unfortunately, we can't set ourselves as 'sleeping' prior to
+        // entering `future.poll()`, since if we got preempted while running
+        // in poll() we'd never wake up again.
+        //
+        // Maybe we could add a special Async task state to cover this case
+        // within the scheduler?
+        let p = scheduling::scheduler().running_task_ptr();
         match future.poll(&mut context) {
             Poll::Ready(retval) => return retval,
-            Poll::Pending => scheduling::yield_cpu(),
+            Poll::Pending => {
+                unsafe {
+                    (*p).set_status(TaskStatus::Sleeping);
+                }
+                scheduling::yield_cpu()
+            }
         };
     }
 }
@@ -106,6 +119,9 @@ impl TaskExitFuture {
         TaskExitFuture(state)
     }
 }
+
+// TODO: impl Drop for TaskExitFuture?
+// (unregister callback somehow?)
 
 impl Future for TaskExitFuture {
     type Output = ExitStatus;

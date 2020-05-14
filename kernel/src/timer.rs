@@ -1,9 +1,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
-mod extension;
 mod wheel;
 
-pub use extension::{Timer, TimerError};
 pub use sleep_funcs::{sleep, sleep_async, AsyncSleep};
 pub use wheel::{TimerData, TimerDeadline, TimerHandle};
 

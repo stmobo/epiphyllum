@@ -52,7 +52,7 @@ def launch_qemu(is_test: bool):
             timeout = QEMU_TIMEOUT
 
         proc = sp.run(["qemu-system-x86_64"] + QEMU_OPTS, cwd=ROOT, timeout=timeout)
-        if proc.returncode == QEMU_EXPECTED_EXIT:
+        if not is_test or proc.returncode == QEMU_EXPECTED_EXIT:
             sys.exit(0)
         else:
             sys.exit(1)

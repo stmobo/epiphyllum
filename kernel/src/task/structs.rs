@@ -159,7 +159,7 @@ impl Task {
         scheduling::scheduler().schedule(self)
     }
 
-    pub fn should_run(&self) {
+    pub fn should_run(&self) -> bool {
         self.status() == TaskStatus::Running || self.wakeup_pending()
     }
 

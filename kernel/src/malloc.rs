@@ -155,3 +155,41 @@ pub mod heap_pages {
         physical_mem::deallocate(paddr, alloc_sz);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use core::cmp::Ordering;
+    use core::fmt;
+
+    #[derive(Debug, Copy, Clone)]
+    pub struct TestAlloc {
+        pub addr: usize,
+        pub size: usize,
+    }
+
+    impl PartialEq for TestAlloc {
+        fn eq(&self, other: &TestAlloc) -> bool {
+            self.addr.eq(&other.addr)
+        }
+    }
+
+    impl Eq for TestAlloc {}
+
+    impl PartialOrd for TestAlloc {
+        fn partial_cmp(&self, other: &TestAlloc) -> Option<Ordering> {
+            self.addr.partial_cmp(&other.addr)
+        }
+    }
+
+    impl Ord for TestAlloc {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.addr.cmp(&other.addr)
+        }
+    }
+
+    impl fmt::Display for TestAlloc {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{:#018x} (size {})", self.addr, self.size)
+        }
+    }
+}

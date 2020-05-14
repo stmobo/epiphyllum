@@ -311,3 +311,194 @@ pub unsafe fn deallocate(addr: usize, layout: Layout) {
 pub unsafe fn add_pages(addr: usize, n_pages: usize) {
     KERNEL_LZA.lock().add_pages(addr, n_pages);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::malloc;
+    use crate::malloc::tests::TestAlloc;
+    use crate::rng::MersenneTwister64;
+    use crate::test::TEST_SEED;
+    use kernel_test_macro::kernel_test;
+
+    use alloc_crate::vec::Vec;
+
+    unsafe fn random_alloc(
+        zone: *mut LargeZone,
+        rng: &mut MersenneTwister64,
+    ) -> Result<(usize, Layout), AllocationError> {
+        let r = rng.generate() as usize;
+        let sz = 512 + (r % (7160 - 512));
+
+        let layout = Layout::from_size_align(sz, 512).unwrap();
+        Ok(((*zone).allocate(layout)?, layout))
+    }
+
+    const TEST_REPS: usize = 50;
+    unsafe fn zone_alloc_test_pattern(seed: u64, rng: &mut MersenneTwister64) {
+        rng.seed(seed);
+        let zone_vaddr = malloc::heap_pages::allocate(0x2000).unwrap();
+        ptr::write_bytes(zone_vaddr as *mut u8, 0, 0x2000);
+
+        let zone = LargeZone::init_at(zone_vaddr, ptr::null_mut());
+        let mut allocs: Vec<(usize, Layout)> = Vec::with_capacity(16);
+
+        for _ in 0..TEST_REPS {
+            if allocs.len() > 0 {
+                let n_deallocs = (rng.generate() as usize) % allocs.len();
+
+                // deallocate random blocks
+                for i in 0..n_deallocs {
+                    let idx = (rng.generate() as usize) % allocs.len();
+                    let (addr, layout) = allocs.swap_remove(idx);
+
+                    ptr::write_bytes(addr as *mut u8, 0, layout.size());
+                    (*zone).deallocate(addr, layout);
+                }
+            }
+
+            // generate a sequence of new blocks to allocate
+            let mut new_blocks = [0u16; 16];
+            let mut head: usize = 0;
+
+            for i in 0..((*zone).n_blocks as usize) {
+                if (*zone).blocks[i].free {
+                    let mut blk_sz = (*zone).blocks[i].size;
+                    while blk_sz >= 512 {
+                        let m: u64;
+                        if blk_sz > 512 {
+                            m = rng.generate() % ((blk_sz - 512) as u64);
+                        } else {
+                            m = 0;
+                        }
+
+                        let b = 512 + (m as u16);
+                        let mut effective_sz = b;
+
+                        if b & 511 != 0 {
+                            // round up to a multiple of 512
+                            effective_sz = (b & !511) + 512;
+                        }
+
+                        if effective_sz > blk_sz {
+                            break;
+                        }
+
+                        new_blocks[head] = b;
+                        head += 1;
+                        blk_sz -= effective_sz;
+                    }
+                }
+            }
+
+            if head == 0 {
+                continue;
+            }
+
+            let (blk, _) = new_blocks.split_at_mut(head);
+            rng.shuffle(blk);
+
+            // allocate a subsequence of those blocks
+            let n_alloc = (rng.generate() as usize) % blk.len();
+            for i in 0..n_alloc {
+                let sz = new_blocks[i];
+                let layout = Layout::from_size_align(sz as usize, 512).unwrap();
+                let addr = match (*zone).allocate(layout) {
+                    Ok(a) => a,
+                    Err(e) => panic!(
+                        "failed to allocate block of size {} (seed: {:#x}) - {:?} (free space: {})",
+                        sz,
+                        seed,
+                        e,
+                        (*zone).free_bytes
+                    ),
+                };
+
+                // make sure the address is aligned
+                assert_eq!(
+                    addr & 511,
+                    0,
+                    "allocation is not aligned (seed: {:#x}, size {})",
+                    seed,
+                    sz
+                );
+
+                // make sure we're not overlapping with another block
+                let p = addr as *mut u8;
+                for offset in 0..(sz as isize) {
+                    let q = p.offset(offset);
+                    assert_eq!(
+                        *q, 0,
+                        "double allocation detected (seed: {:#x}, size {})",
+                        seed, sz
+                    );
+                }
+
+                // watermark this block
+                ptr::write_bytes(p, 0xA5, sz as usize);
+                allocs.push((addr, layout));
+            }
+        }
+
+        for (addr, layout) in allocs {
+            (*zone).deallocate(addr, layout);
+        }
+
+        malloc::heap_pages::deallocate(zone_vaddr, 0x2000);
+    }
+
+    #[kernel_test]
+    fn test_large_zones() {
+        let mut seed_gen = MersenneTwister64::new(TEST_SEED);
+        let mut sub_rng = MersenneTwister64::new(0);
+
+        for _ in 0..20 {
+            unsafe {
+                zone_alloc_test_pattern(seed_gen.generate(), &mut sub_rng);
+            }
+        }
+    }
+
+    const LZA_TEST_ALLOCS: usize = 500;
+
+    #[kernel_test]
+    fn test_lza() {
+        let mut rng = MersenneTwister64::new(TEST_SEED);
+        let mut allocs: Vec<TestAlloc> = Vec::with_capacity(LZA_TEST_ALLOCS);
+
+        for i in 0..LZA_TEST_ALLOCS {
+            let size = 512 + (rng.generate() % (7160 - 512)) as usize;
+            let layout = Layout::from_size_align(size, 512).unwrap();
+
+            let addr = match unsafe { allocate(layout) } {
+                Ok(a) => a,
+                Err(e) => panic!(
+                    "alloc {} failed (seed: {:#x}, size {}) - {:?}",
+                    i, TEST_SEED, size, e
+                ),
+            };
+
+            allocs.push(TestAlloc { addr, size });
+        }
+
+        allocs.sort();
+        for i in 0..(allocs.len() - 1) {
+            let this_end = allocs[i].addr + allocs[i].size;
+            let next_start = allocs[i + 1].addr;
+
+            assert!(
+                next_start >= this_end,
+                "found overlapping allocations: {} and {}",
+                allocs[i],
+                allocs[i + 1]
+            );
+        }
+
+        for alloc in allocs {
+            let layout = Layout::from_size_align(alloc.size, 512).unwrap();
+            unsafe {
+                deallocate(alloc.addr, layout);
+            }
+        }
+    }
+}

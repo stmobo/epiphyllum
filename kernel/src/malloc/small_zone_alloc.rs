@@ -373,11 +373,12 @@ pub unsafe fn deallocate(addr: usize) {
 pub mod tests {
     use super::*;
     use crate::malloc;
+    use crate::malloc::tests::TestAlloc;
     use crate::rng::MersenneTwister64;
     use crate::test::TEST_SEED;
+
     use alloc_crate::collections::VecDeque;
     use alloc_crate::vec::Vec;
-    use core::cmp::Ordering;
     use kernel_test_macro::kernel_test;
 
     fn zone_alloc_test_pattern(seed: u64, rng: &mut MersenneTwister64, order: u32) {
@@ -416,23 +417,30 @@ pub mod tests {
 
                 let allocated = addr as *mut u8;
                 let value = (alloc_slot & 0xFF) as u8;
-
-                for offset in 0..sz {
-                    let alloc_ptr = allocated.offset(offset as isize);
-                    assert_eq!(
-                        *alloc_ptr, 0,
-                        "double allocation detected (seed: {:#x}, order {})",
-                        seed, order
-                    );
-                }
-
                 ptr::write_bytes(allocated, value, sz);
                 v.push_back(addr);
             }
 
-            rng.shuffle(v.make_contiguous());
+            let slice = v.make_contiguous();
+            slice.sort();
+            for i in 0..(slice.len() - 1) {
+                let block_start = slice[i];
+                let block_end = block_start + sz;
+                let next_start = slice[i + 1];
 
+                assert!(
+                    next_start >= block_end,
+                    "found overlapping allocations: {:#018x} and {:#018x} (seed {:#x}, order {})",
+                    block_start,
+                    next_start,
+                    seed,
+                    order
+                );
+            }
+
+            rng.shuffle(slice);
             let mut alloc_no = slots;
+            drop(slice);
 
             for i in 0..25 {
                 let blk_cnt = v.len();
@@ -501,30 +509,7 @@ pub mod tests {
         }
     }
 
-    #[derive(Debug, Copy, Clone)]
-    struct TestAlloc(usize, usize);
-
-    impl PartialEq for TestAlloc {
-        fn eq(&self, other: &TestAlloc) -> bool {
-            self.0.eq(&other.0)
-        }
-    }
-
-    impl Eq for TestAlloc {}
-
-    impl PartialOrd for TestAlloc {
-        fn partial_cmp(&self, other: &TestAlloc) -> Option<Ordering> {
-            self.0.partial_cmp(&other.0)
-        }
-    }
-
-    impl Ord for TestAlloc {
-        fn cmp(&self, other: &Self) -> Ordering {
-            self.0.cmp(&other.0)
-        }
-    }
-
-    const SMA_TEST_ALLOCS: usize = 1000;
+    const SMA_TEST_ALLOCS: usize = 500;
 
     #[kernel_test]
     fn test_sma() {
@@ -533,42 +518,39 @@ pub mod tests {
 
         for i in 0..SMA_TEST_ALLOCS {
             let order = (rng.generate() % 7) as usize;
-            let sz = 1usize << (3 + order);
-            let layout = Layout::from_size_align(sz, sz).unwrap();
+            let size = 1usize << (3 + order);
+            let layout = Layout::from_size_align(size, size).unwrap();
 
             let addr = match unsafe { allocate(layout) } {
                 Ok(a) => a,
                 Err(e) => panic!(
                     "alloc {} failed (seed: {:#x}, size {}) - {:?}",
-                    i, TEST_SEED, sz, e
+                    i, TEST_SEED, size, e
                 ),
             };
 
-            allocs.push(TestAlloc(addr, sz));
+            allocs.push(TestAlloc { addr, size });
         }
 
         allocs.sort();
         for i in 0..(allocs.len() - 1) {
             // ensure this alloc does not overlap the next one
-            let this_end = allocs[i].0 + allocs[i].1;
-            let next_start = allocs[i + 1].0;
+            let this_end = allocs[i].addr + allocs[i].size;
+            let next_start = allocs[i + 1].addr;
 
             // next_start >= allocs[i].0 is guaranteed because we sorted the
             // allocs list
             assert!(
                 next_start >= this_end,
-                "found overlapping allocations: {:#018x}, size {} and {:#018x}, size {}",
-                allocs[i].0,
-                allocs[i].1,
-                allocs[i + 1].0,
-                allocs[i + 1].1,
+                "found overlapping allocations: {} and {}",
+                allocs[i],
+                allocs[i + 1]
             );
         }
 
         for alloc in allocs {
-            let addr = alloc.0;
             unsafe {
-                deallocate(addr);
+                deallocate(alloc.addr);
             }
         }
     }

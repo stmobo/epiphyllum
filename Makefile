@@ -1,24 +1,14 @@
-.PHONY: clean bootloader kernel iso run
+.PHONY: clean bootloader run test
 
 clean:
 	rm -rf target/
 	xargo clean
 
-bootloader: 
+bootloader:
 	cd bootloader && RUST_TARGET_PATH=`pwd` xargo +nightly build --target x86_64-bootloader
 
-kernel: 
-	cd kernel && RUST_TARGET_PATH=`pwd` xargo +nightly -Zfeatures=all build --target x86_64-epiphyllum
+run: bootloader grub.cfg
+	cd kernel && RUST_TARGET_PATH=`pwd` xargo +nightly -Zfeatures=all run --target x86_64-epiphyllum
 
-kernel-test: 
-	cd kernel && cargo +nightly -Zfeatures=all test --target x86_64-unknown-linux-gnu
-
-iso: bootloader kernel grub.cfg
-	mkdir -p target/iso/boot/grub
-	cp grub.cfg target/iso/boot/grub
-	cp target/x86_64-bootloader/debug/epiphyllum-bootloader target/iso/boot/epiphyllum-bootloader
-	cp target/x86_64-epiphyllum/debug/epiphyllum target/iso/boot/epiphyllum
-	grub-mkrescue -o target/boot.iso target/iso
-
-run: iso
-	qemu-system-x86_64 -cdrom target/boot.iso -device isa-debug-exit,iobase=0xf4,iosize=0x04 -serial stdio -s -no-reboot -no-shutdown -d cpu_reset
+test: bootloader grub.cfg
+	cd kernel && RUST_TARGET_PATH=`pwd` xargo +nightly -Zfeatures=all test --target x86_64-epiphyllum

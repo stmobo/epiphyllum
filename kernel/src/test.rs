@@ -1,7 +1,6 @@
 use crate::asm;
 
 use core::mem;
-use core::raw::TraitObject;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -19,7 +18,7 @@ pub fn test_exit(status: TestExitStatus) -> ! {
 }
 
 pub fn test_runner(tests: &[&(&'static str, &'static str, fn())]) {
-    println!("Running {} tests from main test_runner", tests.len());
+    println!("Running {} tests:", tests.len());
 
     for (module, name, test) in tests {
         print!("    {}::{} ...", *module, *name);

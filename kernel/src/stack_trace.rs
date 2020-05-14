@@ -1,4 +1,4 @@
-use crate::paging::KERNEL_BASE;
+use crate::paging;
 
 #[derive(Debug, Copy, Clone)]
 pub struct StackFrame {
@@ -9,7 +9,7 @@ pub struct StackFrame {
 #[derive(Debug, Copy, Clone)]
 #[repr(transparent)]
 pub struct StackFrameIterator {
-    cur_frame: StackFrame,
+    cur_frame: Option<StackFrame>,
 }
 
 impl StackFrameIterator {
@@ -22,7 +22,7 @@ impl StackFrameIterator {
             llvm_asm!("mov $0, [rbp+8]" : "=r"(frame_ip) ::: "intel");
 
             StackFrameIterator {
-                cur_frame: StackFrame { frame_ip, frame_bp },
+                cur_frame: Some(StackFrame { frame_ip, frame_bp }),
             }
         }
     }
@@ -32,20 +32,31 @@ impl Iterator for StackFrameIterator {
     type Item = StackFrame;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let frame_bp = self.cur_frame.frame_bp;
-        if frame_bp < KERNEL_BASE {
-            return None;
+        if let Some(frame) = self.cur_frame.take() {
+            let frame_bp = frame.frame_bp;
+            if frame_bp < paging::KERNEL_HEAP_BASE {
+                return None;
+            }
+
+            if paging::get_mapping(frame_bp).is_some() {
+                unsafe {
+                    let next_frame = frame_bp as *const usize;
+                    let next_bp = *next_frame;
+
+                    // ensure that we're always travelling _up_ the stack
+                    if next_bp > frame_bp {
+                        self.cur_frame = Some(StackFrame {
+                            frame_ip: *(next_frame.offset(1)),
+                            frame_bp: *next_frame,
+                        });
+                    }
+                }
+            }
+
+            Some(frame)
+        } else {
+            None
         }
-
-        let ret_frame = self.cur_frame;
-        unsafe {
-            let frame_bp = frame_bp as *const usize;
-
-            self.cur_frame.frame_ip = *(frame_bp.offset(1));
-            self.cur_frame.frame_bp = *frame_bp;
-        }
-
-        Some(ret_frame)
     }
 }
 
@@ -53,5 +64,6 @@ pub fn trace_stack() -> impl Iterator<Item = StackFrame> {
     let mut it = StackFrameIterator::new();
     it.next();
     it.next();
-    it.filter(|frame| frame.frame_ip >= KERNEL_BASE)
+    it
+    //it.filter(|frame| frame.frame_ip >= KERNEL_BASE)
 }

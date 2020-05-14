@@ -6,10 +6,6 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-name = "kernel"
-path = "src/lib.rs"
-
 [[bin]]
 name = "epiphyllum"
 path = "src/main.rs"
@@ -31,6 +27,7 @@ spin = "*"
 x86_64 = "^0.9"
 cstr_core = "^0.1"
 cty = "^0.2"
+kernel_test_macro = { path = "./kernel_test_macro" }
 
 [target.x86_64-epiphyllum.dependencies]
 compiler_builtins = { version="*", features = ["mem"] }

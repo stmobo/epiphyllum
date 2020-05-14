@@ -404,3 +404,75 @@ impl<T: Copy> BipWriter<T> {
 }
 
 unsafe impl<T> Send for BipWriter<T> {}
+
+#[cfg(test)]
+mod tests {
+    use super::BipBuffer;
+    use alloc_crate::vec::Vec;
+    use kernel_test_macro::kernel_test;
+
+    #[kernel_test]
+    fn test_single_thread() {
+        let (reader, writer) = BipBuffer::new(5);
+
+        let mut w = writer.write(3).unwrap();
+        w.copy_from_slice(&[1, 2, 3]);
+        w.commit(3);
+
+        let r = reader.read(3).unwrap();
+        let v: Vec<u8> = r.iter().cloned().collect();
+        r.commit(3);
+
+        assert_eq!(v, vec![1, 2, 3]);
+
+        let mut w = writer.write(2).unwrap();
+        w.copy_from_slice(&[4, 5]);
+        w.commit(2);
+
+        let mut w = writer.write(2).unwrap();
+        w.copy_from_slice(&[6, 7]);
+        w.commit(2);
+
+        let r = reader.read(2).unwrap();
+        let v: Vec<u8> = r.iter().cloned().collect();
+        r.commit(2);
+
+        assert_eq!(v, vec![4, 5]);
+
+        let r = reader.read(2).unwrap();
+        let v: Vec<u8> = r.iter().cloned().collect();
+        r.commit(2);
+
+        assert_eq!(v, vec![6, 7]);
+    }
+
+    #[kernel_test]
+    pub fn test_struct_buffers() {
+        #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+        struct LargeStruct(u64, u64);
+
+        let (reader, writer) = BipBuffer::new(20);
+
+        let mut w = writer.write(10).unwrap();
+        for i in 0..5u64 {
+            w[i as usize] = LargeStruct(i * 10, i * 20);
+        }
+        w.commit(5);
+
+        assert_eq!(reader.elements_available(), 5);
+        assert_eq!(reader.read(10).map(|_| {}).unwrap_err(), 5);
+        let r = reader.read(5).unwrap();
+        let v: Vec<LargeStruct> = r.iter().cloned().collect();
+
+        assert_eq!(
+            v,
+            vec![
+                LargeStruct(0, 0),
+                LargeStruct(10, 20),
+                LargeStruct(20, 40),
+                LargeStruct(30, 60),
+                LargeStruct(40, 80),
+            ]
+        );
+    }
+}

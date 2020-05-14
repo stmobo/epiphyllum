@@ -18,13 +18,12 @@ pub enum AllocationError {
     CouldNotMapAddress,
 }
 
-#[cfg(not(test))]
 pub mod global_allocator {
     use super::*;
 
     pub struct KernelHeapAllocator {}
 
-    #[cfg_attr(not(test), global_allocator)]
+    #[global_allocator]
     pub static mut KERNEL_ALLOCATOR: KernelHeapAllocator = KernelHeapAllocator {};
 
     fn enforce_min_layout_size(layout: Layout) -> Layout {

@@ -36,6 +36,7 @@ fn main() {
         .header("src/acpica/wrapper.h")
         .ctypes_prefix("cty")
         .use_core()
+        .layout_tests(false)
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
         .expect("unable to generate ACPICA bindings");

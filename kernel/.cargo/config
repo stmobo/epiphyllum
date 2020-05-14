@@ -4,5 +4,5 @@ target = "x86_64-epiphyllum.json"
 [target.x86_64-epiphyllum]
 
 [target.'cfg(target_os = "none")']
-runner = "qemu-system-x86_64 -cdrom target/boot.iso -device isa-debug-exit,iobase=0xf4,iosize=0x04 -s -no-reboot -d int,cpu_reset"
+runner = "../runner.py"
 

@@ -941,6 +941,8 @@ impl<'a, K: Ord + 'a, V: 'a> FusedIterator for TreeRangeMut<'a, K, V> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc_crate::vec::Vec;
+    use kernel_test_macro::kernel_test;
 
     fn assert_link<K, V>(tree: &AVLTree<K, V>, parent: usize, child: Option<usize>, left: bool)
     where
@@ -987,7 +989,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[kernel_test]
     fn single_insert() {
         let mut tree = AVLTree::new();
         tree.insert(5, 7).unwrap();
@@ -998,7 +1000,7 @@ mod tests {
         assert_eq!(tree.nodes[0].val, 7, "incorrect root value");
     }
 
-    #[test]
+    #[kernel_test]
     fn multiple_insert() {
         let mut tree = AVLTree::new();
         tree.insert(5, 5).unwrap();
@@ -1024,7 +1026,7 @@ mod tests {
         assert_eq!(tree.nodes[4].val, 20, "incorrect node 4 value");
     }
 
-    #[test]
+    #[kernel_test]
     fn balanced_insert() {
         let mut tree = AVLTree::new();
         tree.insert(5, 5).unwrap();
@@ -1042,7 +1044,7 @@ mod tests {
         assert_link(&tree, 2, None, false);
     }
 
-    #[test]
+    #[kernel_test]
     fn left_left_insert() {
         let mut tree = AVLTree::new();
         tree.insert(10, 10).unwrap();
@@ -1060,7 +1062,7 @@ mod tests {
         assert_link(&tree, 2, None, false);
     }
 
-    #[test]
+    #[kernel_test]
     fn right_right_insert() {
         let mut tree = AVLTree::new();
         tree.insert(1, 1).unwrap();
@@ -1078,7 +1080,7 @@ mod tests {
         assert_link(&tree, 2, None, false);
     }
 
-    #[test]
+    #[kernel_test]
     fn left_right_insert() {
         let mut tree = AVLTree::new();
         tree.insert(3, 3).unwrap();
@@ -1096,7 +1098,7 @@ mod tests {
         assert_link(&tree, 1, None, false);
     }
 
-    #[test]
+    #[kernel_test]
     fn right_left_insert() {
         let mut tree = AVLTree::new();
         tree.insert(1, 1).unwrap();
@@ -1114,7 +1116,7 @@ mod tests {
         assert_link(&tree, 1, None, false);
     }
 
-    #[test]
+    #[kernel_test]
     fn deep_insert() {
         let mut tree = AVLTree::new();
         tree.insert(2, 2).unwrap();
@@ -1149,7 +1151,7 @@ mod tests {
         assert_link(&tree, 1, None, false);
     }
 
-    #[test]
+    #[kernel_test]
     fn leaf_delete() {
         let mut tree = AVLTree::new();
         tree.insert(5, 5).unwrap();
@@ -1173,7 +1175,7 @@ mod tests {
         assert_link(&tree, 1, None, false);
     }
 
-    #[test]
+    #[kernel_test]
     fn right_child_delete() {
         let mut tree = AVLTree::new();
         tree.insert(5, 5).unwrap();
@@ -1204,7 +1206,7 @@ mod tests {
         assert_link(&tree, 2, None, false);
     }
 
-    #[test]
+    #[kernel_test]
     fn left_child_delete() {
         let mut tree = AVLTree::new();
         tree.insert(5, 5).unwrap();
@@ -1235,7 +1237,7 @@ mod tests {
         assert_link(&tree, 2, None, false);
     }
 
-    #[test]
+    #[kernel_test]
     fn multi_child_delete() {
         let mut tree = AVLTree::new();
         tree.insert(5, 5).unwrap();
@@ -1339,7 +1341,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[kernel_test]
     fn large_avl_validate() {
         let mut tree: AVLTree<i32, i32> = AVLTree::new();
         for i in 0..50 {
@@ -1349,7 +1351,7 @@ mod tests {
         recursive_validate(&tree, tree.root);
     }
 
-    #[test]
+    #[kernel_test]
     fn test_get() {
         let mut tree: AVLTree<i32, i32> = AVLTree::new();
         for i in 0..50 {
@@ -1360,7 +1362,7 @@ mod tests {
         assert_eq!(*val, 50, "got incorrect value from tree");
     }
 
-    #[test]
+    #[kernel_test]
     fn test_find_mut() {
         let mut tree: AVLTree<i32, i32> = AVLTree::new();
         for i in 0..50 {
@@ -1376,7 +1378,7 @@ mod tests {
         assert_eq!(*val, 0, "got incorrect value from tree");
     }
 
-    #[test]
+    #[kernel_test]
     fn test_contains() {
         let mut tree: AVLTree<i32, i32> = AVLTree::new();
         for i in 0..50 {
@@ -1386,7 +1388,7 @@ mod tests {
         assert!(tree.contains(&12));
     }
 
-    #[test]
+    #[kernel_test]
     fn test_iter() {
         let mut tree: AVLTree<i32, i32> = AVLTree::new();
         tree.insert(0, 0).unwrap();
@@ -1410,7 +1412,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[kernel_test]
     fn test_iter_back() {
         let mut tree: AVLTree<i32, i32> = AVLTree::new();
         tree.insert(0, 0).unwrap();
@@ -1434,7 +1436,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[kernel_test]
     fn test_iter_mut() {
         let mut tree: AVLTree<i32, i32> = AVLTree::new();
         tree.insert(0, 0).unwrap();
@@ -1471,7 +1473,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[kernel_test]
     fn test_range() {
         let mut tree: AVLTree<i32, i32> = AVLTree::new();
         tree.insert(8, 8).unwrap();
@@ -1497,7 +1499,7 @@ mod tests {
         assert_eq!(*v[2].0, 7, "iterator key 3 incorrect");
     }
 
-    #[test]
+    #[kernel_test]
     fn test_invalid_range() {
         let mut tree: AVLTree<i32, i32> = AVLTree::new();
         tree.insert(8, 8).unwrap();

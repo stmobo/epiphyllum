@@ -9,13 +9,40 @@ fn get_flags() -> u64 {
     return flags;
 }
 
+pub fn get_cr0() -> u64 {
+    let reg: u64;
+    unsafe {
+        llvm_asm!("mov %cr0, $0" : "=r"(reg) ::: "volatile");
+    }
+
+    reg
+}
+
 pub fn get_cr2() -> usize {
     let cr2: u64;
     unsafe {
         llvm_asm!("mov %cr2, $0" : "=r"(cr2) ::: "volatile");
     }
 
-    return cr2 as usize;
+    cr2 as usize
+}
+
+pub fn get_cr3() -> usize {
+    let reg: u64;
+    unsafe {
+        llvm_asm!("mov %cr3, $0" : "=r"(reg) ::: "volatile");
+    }
+
+    reg as usize
+}
+
+pub fn get_cr4() -> u64 {
+    let reg: u64;
+    unsafe {
+        llvm_asm!("mov %cr4, $0" : "=r"(reg) ::: "volatile");
+    }
+
+    reg
 }
 
 pub mod interrupts {

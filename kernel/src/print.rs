@@ -1,9 +1,11 @@
 use core::fmt;
 use core::panic::PanicInfo;
 
+use crate::asm;
 use crate::devices::serial;
 use crate::devices::vga;
 use crate::stack_trace;
+use crate::task;
 
 #[cfg(test)]
 use crate::test;
@@ -41,7 +43,7 @@ pub fn do_panic(info: &PanicInfo) -> ! {
         break_print_locks();
     };
 
-    print!("kernel panic: ");
+    print!("\nkernel panic: ");
 
     if let Some(msg) = info.message() {
         print!("{}", msg);
@@ -57,10 +59,28 @@ pub fn do_panic(info: &PanicInfo) -> ! {
         print!(" - no location information available\n");
     }
 
-    println!("Stack trace:");
+    println!("\n== [Stack Trace] ==");
     for frame in stack_trace::trace_stack() {
-        println!("    {:#016x}", frame.frame_ip);
+        println!("    {:#018x}", frame.frame_ip);
     }
+
+    if let Some(ctx) = task::current_context() {
+        println!("\n== [Task Context] ==\n{}", unsafe { &*ctx });
+    } else {
+        println!("\nUnable to identify task context.\n== [Control Registers] ==");
+    }
+
+    println!(
+        "CR0: {:#018x}    CR2: {:#018x}",
+        asm::get_cr0(),
+        asm::get_cr2()
+    );
+
+    println!(
+        "CR4: {:#018x}    CR3: {:#018x}",
+        asm::get_cr4(),
+        asm::get_cr3()
+    );
 
     #[cfg(test)]
     test::test_panic();

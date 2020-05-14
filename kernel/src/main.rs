@@ -231,8 +231,11 @@ fn test_task(_: u64) -> u64 {
     loop {
         println!("tick {}", val);
         val += 1;
+        handle.set_wakeup_pending(false);
 
         schedule_timer(handle.clone());
+
+        handle.set_status(task::TaskStatus::Sleeping);
         task::yield_cpu();
     }
 }

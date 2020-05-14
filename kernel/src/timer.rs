@@ -30,6 +30,7 @@ mod sleep_funcs {
 
     use crate::lock::NoIRQSpinlock;
     use crate::task;
+    use crate::task::TaskStatus;
 
     use super::wheel::{TimerData, TimerDeadline};
 
@@ -37,19 +38,30 @@ mod sleep_funcs {
         let cur_task = task::current_task();
         let flag = Arc::new(AtomicBool::new(false));
         let cb_flag = flag.clone();
+        let cb_handle = cur_task.clone();
 
         TimerData::new(
             move || {
                 cb_flag.store(true, Ordering::SeqCst);
-                cur_task.schedule();
+                cb_handle.schedule();
             },
             deadline,
         )
         .start()?;
 
-        while !flag.load(Ordering::SeqCst) {
+        loop {
+            cur_task.set_wakeup_pending(false);
+
+            if flag.load(Ordering::SeqCst) {
+                break;
+            }
+
+            cur_task.set_status(TaskStatus::Sleeping);
             task::yield_cpu();
         }
+
+        cur_task.set_wakeup_pending(false);
+        cur_task.set_status(TaskStatus::Running);
 
         Ok(())
     }
@@ -103,5 +115,44 @@ mod sleep_funcs {
 
     pub fn sleep_async(deadline: TimerDeadline) -> Result<AsyncSleep, u64> {
         AsyncSleep::new(deadline)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task;
+    use kernel_test_macro::kernel_test;
+
+    #[kernel_test]
+    fn test_timed_sleep() {
+        let deadline = TimerDeadline::Relative(1024);
+        let start_ticks = get_kernel_ticks();
+
+        sleep(deadline).expect("could not start sleep");
+
+        let end_ticks = get_kernel_ticks();
+        let dt = end_ticks - start_ticks;
+        assert!(
+            dt >= 1024,
+            "test did not sleep for long enough (slept for {} ticks, expected 1024)",
+            dt
+        );
+    }
+
+    #[kernel_test]
+    fn test_async_sleep() {
+        let deadline = TimerDeadline::Relative(1024);
+        let start_ticks = get_kernel_ticks();
+
+        task::run_future(sleep_async(deadline).expect("could not start sleep"));
+
+        let end_ticks = get_kernel_ticks();
+        let dt = end_ticks - start_ticks;
+        assert!(
+            dt >= 1024,
+            "test did not sleep for long enough (slept for {} ticks, expected 1024)",
+            dt
+        );
     }
 }

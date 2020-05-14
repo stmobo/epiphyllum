@@ -38,6 +38,7 @@ mod lock;
 mod malloc;
 mod multiboot;
 mod paging;
+mod rng;
 mod stack_trace;
 mod structures;
 mod task;

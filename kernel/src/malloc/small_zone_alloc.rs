@@ -141,7 +141,7 @@ impl SmallZone {
             let n_bitmaps = n_slots / 64;
             for i in 1..n_bitmaps {
                 if let Some(idx) = SmallZone::find_unset(self.bitmap[i], 64) {
-                    return Some(idx);
+                    return Some((64 * i) + idx);
                 }
             }
         }
@@ -151,6 +151,10 @@ impl SmallZone {
 
     fn get_slot_address(&self, slot: usize) -> usize {
         self.self_addr() + (self.get_alloc_size() * slot)
+    }
+
+    fn slot_from_address(&self, address: usize) -> usize {
+        (address - self.self_addr()) / self.get_alloc_size()
     }
 
     fn full(&self) -> bool {
@@ -235,8 +239,7 @@ impl SmallZoneAllocator {
         for i in 0..n_pages {
             let p: *mut SmallZone = cur_addr as *mut SmallZone;
 
-            *p = SmallZone::new(0);
-
+            ptr::write(p, SmallZone::new(0));
             if i < n_pages - 1 {
                 (*p).next = next_addr as *mut SmallZone;
             } else {
@@ -367,4 +370,206 @@ pub unsafe fn deallocate(addr: usize) {
 }
 
 #[cfg(test)]
-pub mod tests {}
+pub mod tests {
+    use super::*;
+    use crate::malloc;
+    use crate::rng::MersenneTwister64;
+    use crate::test::TEST_SEED;
+    use alloc_crate::collections::VecDeque;
+    use alloc_crate::vec::Vec;
+    use core::cmp::Ordering;
+    use kernel_test_macro::kernel_test;
+
+    fn zone_alloc_test_pattern(seed: u64, rng: &mut MersenneTwister64, order: u32) {
+        unsafe {
+            rng.seed(seed);
+            let zone_vaddr = malloc::heap_pages::allocate(0x1000).unwrap();
+            let p = zone_vaddr as *mut SmallZone;
+
+            ptr::write_bytes(zone_vaddr as *mut u8, 0, 0x1000);
+            ptr::write(p, SmallZone::new(order));
+
+            let sz = (*p).get_alloc_size();
+            let slots = (*p).get_max_count() as usize;
+            let reserved_slots = SmallZone::get_reserved_slots(order) as usize;
+            let mut v: VecDeque<usize> = VecDeque::with_capacity(slots);
+
+            for i in 0..slots {
+                let addr = match (*p).allocate() {
+                    Ok(a) => a,
+                    Err(e) => panic!(
+                        "alloc {} failed (seed: {:#x}, order {}) - {:?}",
+                        i, seed, order, e
+                    ),
+                };
+                let alloc_slot = (*p).slot_from_address(addr);
+
+                assert!(
+                    alloc_slot >= reserved_slots && (addr - zone_vaddr) < 0x1000,
+                    "alloc {} returned invalid address {:#018x} from zone page {:#018x} (seed: {:#x}, order {})",
+                    i,
+                    addr,
+                    zone_vaddr,
+                    seed,
+                    order,
+                );
+
+                let allocated = addr as *mut u8;
+                let value = (alloc_slot & 0xFF) as u8;
+
+                for offset in 0..sz {
+                    let alloc_ptr = allocated.offset(offset as isize);
+                    assert_eq!(
+                        *alloc_ptr, 0,
+                        "double allocation detected (seed: {:#x}, order {})",
+                        seed, order
+                    );
+                }
+
+                ptr::write_bytes(allocated, value, sz);
+                v.push_back(addr);
+            }
+
+            rng.shuffle(v.make_contiguous());
+
+            let mut alloc_no = slots;
+
+            for i in 0..25 {
+                let blk_cnt = v.len();
+                let free_cnt = slots - blk_cnt;
+
+                let mut n_dealloc = 0;
+                let mut n_alloc = 0;
+
+                if blk_cnt > 0 {
+                    n_dealloc = (rng.generate() as usize) % blk_cnt;
+                }
+
+                if free_cnt > 0 {
+                    n_alloc = (rng.generate() as usize) % free_cnt;
+                }
+
+                for _ in 0..n_dealloc {
+                    let addr = v.pop_front().unwrap();
+                    ptr::write_bytes(addr as *mut u8, 0, sz);
+                    (*p).deallocate(addr);
+                }
+
+                for j in 0..n_alloc {
+                    let addr = match (*p).allocate() {
+                        Ok(a) => a,
+                        Err(e) => panic!(
+                            "alloc {} failed (seed: {:#x}, order {}) - {:?}",
+                            alloc_no, seed, order, e
+                        ),
+                    };
+                    let allocated = addr as *mut u8;
+                    let value = ((*p).slot_from_address(addr) & 0xFF) as u8;
+
+                    for offset in 0..sz {
+                        let alloc_ptr = allocated.offset(offset as isize);
+                        assert_eq!(
+                            *alloc_ptr, 0,
+                            "double allocation detected (seed: {:#x}, order {})",
+                            seed, order
+                        );
+                    }
+
+                    ptr::write_bytes(allocated, value, sz);
+                    v.push_back(addr);
+                    alloc_no += 1;
+                }
+            }
+
+            for addr in v {
+                (*p).deallocate(addr);
+            }
+
+            malloc::heap_pages::deallocate(zone_vaddr, 0x1000);
+        }
+    }
+
+    #[kernel_test]
+    fn test_small_zones() {
+        let mut seed_gen = MersenneTwister64::new(TEST_SEED);
+        let mut sub_rng = MersenneTwister64::new(0);
+
+        for _ in 0..2 {
+            for order in 0..=6 {
+                zone_alloc_test_pattern(seed_gen.generate(), &mut sub_rng, order);
+            }
+        }
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    struct TestAlloc(usize, usize);
+
+    impl PartialEq for TestAlloc {
+        fn eq(&self, other: &TestAlloc) -> bool {
+            self.0.eq(&other.0)
+        }
+    }
+
+    impl Eq for TestAlloc {}
+
+    impl PartialOrd for TestAlloc {
+        fn partial_cmp(&self, other: &TestAlloc) -> Option<Ordering> {
+            self.0.partial_cmp(&other.0)
+        }
+    }
+
+    impl Ord for TestAlloc {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.0.cmp(&other.0)
+        }
+    }
+
+    const SMA_TEST_ALLOCS: usize = 1000;
+
+    #[kernel_test]
+    fn test_sma() {
+        let mut rng = MersenneTwister64::new(TEST_SEED);
+        let mut allocs: Vec<TestAlloc> = Vec::with_capacity(SMA_TEST_ALLOCS);
+
+        for i in 0..SMA_TEST_ALLOCS {
+            let order = (rng.generate() % 7) as usize;
+            let sz = 1usize << (3 + order);
+            let layout = Layout::from_size_align(sz, sz).unwrap();
+
+            let addr = match unsafe { allocate(layout) } {
+                Ok(a) => a,
+                Err(e) => panic!(
+                    "alloc {} failed (seed: {:#x}, size {}) - {:?}",
+                    i, TEST_SEED, sz, e
+                ),
+            };
+
+            allocs.push(TestAlloc(addr, sz));
+        }
+
+        allocs.sort();
+        for i in 0..(allocs.len() - 1) {
+            // ensure this alloc does not overlap the next one
+            let this_end = allocs[i].0 + allocs[i].1;
+            let next_start = allocs[i + 1].0;
+
+            // next_start >= allocs[i].0 is guaranteed because we sorted the
+            // allocs list
+            assert!(
+                next_start >= this_end,
+                "found overlapping allocations: {:#018x}, size {} and {:#018x}, size {}",
+                allocs[i].0,
+                allocs[i].1,
+                allocs[i + 1].0,
+                allocs[i + 1].1,
+            );
+        }
+
+        for alloc in allocs {
+            let addr = alloc.0;
+            unsafe {
+                deallocate(addr);
+            }
+        }
+    }
+}

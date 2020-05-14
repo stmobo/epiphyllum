@@ -93,6 +93,14 @@ impl MersenneTwister64 {
         self.index += 1;
         y
     }
+
+    /// Shuffle a slice using the Fisher-Yates algorithm.
+    pub fn shuffle<T>(&mut self, slice: &mut [T]) {
+        for i in 0..(slice.len() - 1) {
+            let j = i + ((self.generate() as usize) % (slice.len() - i));
+            slice.swap(i, j);
+        }
+    }
 }
 
 impl Iterator for MersenneTwister64 {

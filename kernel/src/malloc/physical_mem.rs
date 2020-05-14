@@ -686,10 +686,6 @@ impl PhysicalMemoryAllocator {
     pub fn deallocate(&mut self, addr: usize, size: usize) {
         for r in self.ranges.iter_mut() {
             if addr >= r.range_start && addr < r.range_end {
-                println!(
-                    "{:#016x} - {:#016x} - {:#016x}",
-                    r.range_start, addr, r.range_end
-                );
                 r.deallocate(addr, size);
             }
         }

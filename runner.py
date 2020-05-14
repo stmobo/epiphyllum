@@ -6,7 +6,7 @@ import shutil
 import subprocess as sp
 
 QEMU_EXPECTED_EXIT = 41
-QEMU_TIMEOUT = 30
+QEMU_TIMEOUT = None
 
 ROOT = str(Path("../").resolve())
 QEMU_OPTS = [

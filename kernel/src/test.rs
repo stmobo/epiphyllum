@@ -1,6 +1,7 @@
 use crate::asm;
 
 use core::mem;
+pub const TEST_SEED: u64 = 0x4B616E6174614368;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]

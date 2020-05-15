@@ -21,7 +21,7 @@ fn impl_kernel_test(ast: &syn::ItemFn) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn kernel_test(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn kernel_test(_: TokenStream, item: TokenStream) -> TokenStream {
     let ast: syn::ItemFn = parse_macro_input!(item as ItemFn);
     impl_kernel_test(&ast)
 }

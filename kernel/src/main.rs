@@ -162,14 +162,16 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     const EXTRA_PAGES: usize = 512;
     unsafe {
-        for _ in 0..(EXTRA_PAGES / 128) {
-            let sma_alloc = malloc::heap_pages::allocate(128 * 0x1000)
+        for _ in 0..EXTRA_PAGES {
+            let sma_alloc = malloc::heap_pages::allocate(0x1000)
                 .expect("Could not allocate extra space for SMA");
-            let lza_alloc = malloc::heap_pages::allocate(128 * 0x1000)
-                .expect("Could not allocate extra space for LZA");
+            malloc::small_zone_alloc::add_page(sma_alloc);
+        }
 
-            malloc::small_zone_alloc::add_pages(sma_alloc, 128);
-            malloc::large_zone_alloc::add_pages(lza_alloc, 128);
+        for _ in 0..(EXTRA_PAGES / 2) {
+            let lza_alloc = malloc::heap_pages::allocate(0x2000)
+                .expect("Could not allocate extra space for LZA");
+            malloc::large_zone_alloc::add_page(lza_alloc);
         }
 
         println!("SMA/LZA bootstrap complete.");

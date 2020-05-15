@@ -6,11 +6,12 @@ use alloc_crate::rc::Rc;
 use alloc_crate::vec::Vec;
 use core::cell::{Ref, RefCell, RefMut};
 use core::cmp::Ordering;
+use core::mem;
 use core::ops::Bound;
 
 use crate::lock::LockedGlobal;
 
-use super::AllocationError;
+use super::{AllocationError, MemoryPageAllocator};
 
 const BUDDY_ALLOC_MAX_SIZE: usize = 0x1000usize << 8; // bytes
 const BUDDY_ALLOC_ALIGN_MASK: usize = !(BUDDY_ALLOC_MAX_SIZE - 1);
@@ -193,14 +194,16 @@ impl BuddyAllocator {
             );
         }
 
-        if order < 8 && index != 255 && self.get_block_state(order, index + 1) {
-            self.set_block_state(order, index + 1, false);
-            self.free_block(order + 1, index >> 1);
+        if order < 8 {
+            let buddy = index ^ 1;
+            if self.get_block_state(order, buddy) {
+                self.set_block_state(order, buddy, false);
+                self.free_block(order + 1, index >> 1);
+            }
         } else {
             self.set_block_state(order, index, true);
         }
     }
-
     fn get_block_for_addr(&self, addr: usize, order: u64) -> usize {
         let offset = addr - self.mem_addr;
         offset / (0x1000usize << order)
@@ -217,8 +220,8 @@ impl BuddyAllocator {
             1 => (self.ord_1_bitmap[index / 64] & (1u64 << (index % 64))) != 0,
             2 => (self.ord_2_bitmap & (1u64 << index % 64)) != 0,
             3..=8 => {
-                let t = 1u64 << (8 - order);
-                let bit = (t - 1) + ((index as u64) % t);
+                let t = (1u64 << (8 - order)) - 1;
+                let bit = t + ((index as u64) & t);
                 (self.hi_ord_bitmap & (1 << bit)) != 0
             }
             _ => panic!("invalid order {} for buddy allocator", order),
@@ -339,13 +342,13 @@ impl FreeMemoryRange {
 
 impl PartialOrd for FreeMemoryRange {
     fn partial_cmp(&self, other: &FreeMemoryRange) -> Option<Ordering> {
-        self.size().partial_cmp(&other.size())
+        Some(self.size().cmp(&other.size()).reverse())
     }
 }
 
 impl Ord for FreeMemoryRange {
     fn cmp(&self, other: &FreeMemoryRange) -> Ordering {
-        self.size().cmp(&other.size())
+        self.size().cmp(&other.size()).reverse()
     }
 }
 
@@ -388,7 +391,7 @@ impl BuddyAllocatorWrapper {
     }
 
     fn swap_usage_indices(&self, other: &BuddyAllocatorWrapper) {
-        use core::{mem, ptr};
+        use core::ptr;
 
         if ptr::eq(self, other) {
             return;
@@ -706,7 +709,7 @@ pub unsafe fn register(addr: usize, len: usize) {
 /// Allocate a given amount of physical memory in bytes.
 ///
 /// The given size must be a multiple of the page size!
-pub unsafe fn allocate(size: usize) -> Result<usize, AllocationError> {
+pub fn allocate(size: usize) -> Result<usize, AllocationError> {
     KERNEL_PMA.lock().allocate(size)
 }
 
@@ -726,71 +729,81 @@ pub unsafe fn deallocate(addr: usize, size: usize) {
     KERNEL_PMA.lock().deallocate(addr, size);
 }
 
-/// Represents an owned, allocated block of physical memory.
-///
-/// This can be used as a safer interface to the physical memory allocator;
-/// deallocating physical memory correctly is handled automatically via
-/// Drop.
-#[derive(Debug)]
-pub struct PhysicalMemory {
-    address: usize,
-    size: usize,
-}
-
-impl PhysicalMemory {
-    pub fn new(size: usize) -> Result<PhysicalMemory, AllocationError> {
-        let alloc_sz = paging::round_to_next_page(size);
-
-        unsafe {
-            allocate(alloc_sz).map(|address| PhysicalMemory {
-                address,
-                size: alloc_sz,
-            })
-        }
+impl MemoryPageAllocator for PhysicalMemoryAllocator {
+    fn allocate(size: usize) -> Result<usize, AllocationError> {
+        allocate(size)
     }
 
-    pub fn new_at(addr: usize, size: usize) -> Result<PhysicalMemory, AllocationError> {
-        let addr = paging::round_to_prev_page(addr);
-        let alloc_sz = paging::round_to_next_page(size);
-
-        let order = BuddyAllocator::round_allocation_size(alloc_sz);
+    unsafe fn allocate_at(addr: usize, size: usize) -> Result<usize, AllocationError> {
+        let order = BuddyAllocator::round_allocation_size(paging::round_to_next_page(size));
         let alloc_end = addr + (0x1000usize << order);
 
         if (addr & BUDDY_ALLOC_ALIGN_MASK) != (alloc_end & BUDDY_ALLOC_ALIGN_MASK) {
             panic!("physical address allocation request for {:#016x} ({:#08x} bytes) crosses megabyte boundaries", addr, size);
         }
 
-        unsafe {
-            allocate_at(addr, alloc_sz).map(|address| PhysicalMemory {
-                address,
-                size: alloc_sz,
-            })
-        }
+        allocate_at(addr, size)
     }
 
-    pub fn address(&self) -> usize {
-        self.address
-    }
-
-    pub fn size(&self) -> usize {
-        self.size
-    }
-
-    pub fn as_u64(&self) -> u64 {
-        self.address() as u64
-    }
-
-    pub fn as_ptr<T>(&self) -> *const T {
-        paging::offset_direct_map(self.address()) as *const T
-    }
-
-    pub fn as_mut_ptr<T>(&self) -> *mut T {
-        paging::offset_direct_map(self.address()) as *mut T
+    unsafe fn deallocate(addr: usize, size: usize) {
+        deallocate(addr, size)
     }
 }
 
-impl Drop for PhysicalMemory {
-    fn drop(&mut self) {
-        unsafe { deallocate(self.address(), self.size()) }
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use crate::malloc;
+    use crate::malloc::tests::TestAlloc;
+    use crate::rng::MersenneTwister64;
+    use crate::test::TEST_SEED;
+
+    use alloc_crate::vec::Vec;
+    use kernel_test_macro::kernel_test;
+
+    const PMA_TEST_ALLOCS: usize = 500;
+    const PMA_TEST_MAX_PAGE_ALLOC: u64 = 20;
+
+    #[kernel_test]
+    fn test_pma() {
+        let mut rng = MersenneTwister64::new(TEST_SEED);
+        let mut allocs: Vec<TestAlloc> = Vec::with_capacity(PMA_TEST_ALLOCS);
+
+        for i in 0..PMA_TEST_ALLOCS {
+            let n_pages = rng.generate() % PMA_TEST_MAX_PAGE_ALLOC;
+            let size = (n_pages as usize) * 0x1000;
+
+            let addr = match allocate(size) {
+                Ok(a) => a,
+                Err(e) => panic!(
+                    "alloc {} failed (seed: {:#x}, size {:#x}) - {:?}",
+                    i, TEST_SEED, size, e
+                ),
+            };
+
+            allocs.push(TestAlloc { addr, size });
+        }
+
+        allocs.sort();
+        for i in 0..(allocs.len() - 1) {
+            // ensure this alloc does not overlap the next one
+            let this_end = allocs[i].addr + allocs[i].size;
+            let next_start = allocs[i + 1].addr;
+
+            // next_start >= allocs[i].0 is guaranteed because we sorted the
+            // allocs list
+            assert!(
+                next_start >= this_end,
+                "found overlapping allocations: {} and {}",
+                allocs[i],
+                allocs[i + 1]
+            );
+        }
+
+        for alloc in allocs {
+            unsafe {
+                deallocate(alloc.addr, alloc.size);
+            }
+        }
     }
 }

@@ -1,4 +1,6 @@
 use alloc_crate::alloc::{GlobalAlloc, Layout};
+use core::marker::PhantomData;
+use core::mem;
 use core::ptr;
 
 pub mod large_zone_alloc;
@@ -6,8 +8,10 @@ pub mod physical_mem;
 pub mod small_zone_alloc;
 pub mod virtual_mem;
 
+use crate::paging;
 pub use crate::paging::KERNEL_HEAP_BASE;
-pub use physical_mem::PhysicalMemory;
+pub type PhysicalMemory = PageBlock<physical_mem::PhysicalMemoryAllocator>;
+pub type VirtualMemory = PageBlock<virtual_mem::VirtualMemoryAllocator>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AllocationError {
@@ -83,6 +87,76 @@ pub mod global_allocator {
             "could not satisfy kernel heap allocation request for {} bytes",
             layout.size()
         );
+    }
+}
+
+pub trait MemoryPageAllocator {
+    fn allocate(size: usize) -> Result<usize, AllocationError>;
+    unsafe fn allocate_at(addr: usize, size: usize) -> Result<usize, AllocationError>;
+    unsafe fn deallocate(addr: usize, size: usize);
+}
+
+/// Represents an owned, allocated block of contiguous pages, which can be
+/// either physical or virtual.
+///
+/// This can be used as a safer interface to the physical memory allocator;
+/// deallocating physical memory correctly is handled automatically via
+/// Drop.
+#[derive(Debug)]
+pub struct PageBlock<T: MemoryPageAllocator + 'static> {
+    address: usize,
+    size: usize,
+    _marker: PhantomData<&'static T>,
+}
+
+impl<T: MemoryPageAllocator + 'static> PageBlock<T> {
+    pub fn new(size: usize) -> Result<PageBlock<T>, AllocationError> {
+        let alloc_sz = paging::round_to_next_page(size);
+
+        T::allocate(alloc_sz).map(|address| PageBlock {
+            address,
+            size: alloc_sz,
+            _marker: PhantomData,
+        })
+    }
+
+    pub fn new_at(addr: usize, size: usize) -> Result<PageBlock<T>, AllocationError> {
+        let addr = paging::round_to_prev_page(addr);
+        let alloc_sz = paging::round_to_next_page(size);
+
+        unsafe {
+            T::allocate_at(addr, alloc_sz).map(|address| PageBlock {
+                address,
+                size: alloc_sz,
+                _marker: PhantomData,
+            })
+        }
+    }
+
+    pub fn address(&self) -> usize {
+        self.address
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.address() as u64
+    }
+
+    pub fn into_raw(self) -> (usize, usize) {
+        let addr = self.address;
+        let sz = self.size;
+        mem::forget(self);
+
+        (addr, sz)
+    }
+}
+
+impl<T: MemoryPageAllocator + 'static> Drop for PageBlock<T> {
+    fn drop(&mut self) {
+        unsafe { T::deallocate(self.address(), self.size()) }
     }
 }
 

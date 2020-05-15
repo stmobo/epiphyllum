@@ -1,7 +1,10 @@
 use alloc_crate::alloc::Layout;
+use core::iter;
 use core::mem;
 use core::ptr;
+use core::ptr::NonNull;
 
+use super::heap_pages;
 use super::AllocationError;
 use crate::lock::LockedGlobal;
 use crate::paging::PAGE_MASK;
@@ -260,7 +263,6 @@ impl SmallZoneAllocator {
         &mut self,
         order: usize,
     ) -> Result<*mut SmallZone, AllocationError> {
-        use super::heap_pages;
         let mut p = self.free_list;
 
         if p == ptr::null_mut() {
@@ -276,6 +278,7 @@ impl SmallZoneAllocator {
 
         let next = (*p).next;
         self.free_list = next;
+        self.free_len -= 1;
 
         let prev_head = self.heads[order];
         self.heads[order] = p;
@@ -305,6 +308,7 @@ impl SmallZoneAllocator {
 
         (*zone).next = self.free_list;
         self.free_list = zone;
+        self.free_len += 1;
     }
 
     /// Allocate a chunk of memory from this allocator.
@@ -337,6 +341,26 @@ impl SmallZoneAllocator {
             self.release_zone_page(zone);
         }
     }
+
+    pub fn reclaim_pages(&mut self) -> *mut SmallZone {
+        unsafe {
+            if self.free_len > 64 {
+                let old_head = self.free_list;
+                let mut cur = self.free_list;
+                let mut prev = ptr::null_mut();
+                for _ in 64..self.free_len {
+                    prev = cur;
+                    cur = (*cur).next;
+                }
+
+                self.free_list = cur;
+                (*prev).next = ptr::null_mut();
+                old_head
+            } else {
+                ptr::null_mut()
+            }
+        }
+    }
 }
 
 unsafe impl Send for SmallZoneAllocator {}
@@ -345,8 +369,8 @@ pub unsafe fn initialize(init_addr: usize, n_pages: usize) {
     KERNEL_SMA.init(|| SmallZoneAllocator::new(init_addr, n_pages));
 }
 
-pub unsafe fn add_pages(addr: usize, n_pages: usize) {
-    KERNEL_SMA.lock().add_free_pages(addr, n_pages)
+pub unsafe fn add_page(addr: usize) {
+    KERNEL_SMA.lock().add_free_pages(addr, 1)
 }
 
 pub fn is_valid_sma_block(layout: Layout) -> bool {
@@ -367,6 +391,14 @@ pub unsafe fn allocate(layout: Layout) -> Result<usize, AllocationError> {
 
 pub unsafe fn deallocate(addr: usize) {
     KERNEL_SMA.lock().deallocate(addr);
+}
+
+pub fn reclaim_pages() -> impl Iterator<Item = usize> {
+    let p = KERNEL_SMA.lock().reclaim_pages();
+    iter::successors(NonNull::new(p), |p| unsafe {
+        NonNull::new((*p.as_ptr()).next)
+    })
+    .map(|p| p.as_ptr() as usize)
 }
 
 #[cfg(test)]
@@ -551,6 +583,12 @@ pub mod tests {
         for alloc in allocs {
             unsafe {
                 deallocate(alloc.addr);
+            }
+        }
+
+        unsafe {
+            for addr in reclaim_pages() {
+                malloc::heap_pages::deallocate(addr, 0x1000);
             }
         }
     }

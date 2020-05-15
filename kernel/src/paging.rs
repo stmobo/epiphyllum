@@ -316,7 +316,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
 
     let pdpt;
     if !pml4t.get_entry(pml4t_idx).unwrap().present() {
-        let table_addr = unsafe { physical_mem::allocate(0x1000) };
+        let table_addr = physical_mem::allocate(0x1000);
         if table_addr.is_err() {
             return false;
         }
@@ -337,7 +337,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
 
     let pd;
     if !pdpt.get_entry(pdpt_idx).unwrap().present() {
-        let table_addr = unsafe { physical_mem::allocate(0x1000) };
+        let table_addr = physical_mem::allocate(0x1000);
         if table_addr.is_err() {
             return false;
         }
@@ -357,7 +357,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
 
     let pt: &'static mut PageTable;
     if !pd.get_entry(pd_idx).unwrap().present() {
-        let table_addr = unsafe { physical_mem::allocate(0x1000) };
+        let table_addr = physical_mem::allocate(0x1000);
         if table_addr.is_err() {
             return false;
         }

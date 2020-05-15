@@ -1,7 +1,8 @@
 use alloc_crate::vec::Vec;
+use core::cmp::Ordering;
 use core::ops::Bound;
 
-use super::AllocationError;
+use super::{AllocationError, MemoryPageAllocator};
 use crate::lock::LockedGlobal;
 use crate::paging::{is_page_aligned, round_to_next_page, round_to_prev_page};
 use crate::structures::AVLTree;
@@ -43,10 +44,10 @@ impl VirtualMemoryRange {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct FreeListEntry {
-    address: usize,
     size: usize,
+    address: usize,
 }
 
 impl FreeListEntry {
@@ -58,7 +59,27 @@ impl FreeListEntry {
     }
 }
 
-struct VirtualMemoryAllocator {
+impl PartialOrd for FreeListEntry {
+    fn partial_cmp(&self, other: &FreeListEntry) -> Option<Ordering> {
+        Some(
+            self.size
+                .cmp(&other.size)
+                .reverse()
+                .then_with(|| self.address.cmp(&other.address)),
+        )
+    }
+}
+
+impl Ord for FreeListEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.size
+            .cmp(&other.size)
+            .reverse()
+            .then_with(|| self.address.cmp(&other.address))
+    }
+}
+
+pub struct VirtualMemoryAllocator {
     regions: AVLTree<usize, VirtualMemoryRange>, /* indexed by address */
     free: Vec<FreeListEntry>,
 }
@@ -82,6 +103,10 @@ impl VirtualMemoryAllocator {
         self.regions
             .insert(range.start, range)
             .expect("could not add allocator for virtual memory range");
+    }
+
+    fn sort_free_list(&mut self) {
+        self.free.sort_unstable()
     }
 
     /// Remove an entry from the free list.
@@ -280,4 +305,76 @@ pub fn allocate_at(start: usize, end: usize) -> Result<usize, AllocationError> {
 /// to [allocate_kernel_heap_pages] or []
 pub fn deallocate(addr: usize, size: usize) {
     KERNEL_VMA.lock().deallocate(addr, size);
+}
+
+impl MemoryPageAllocator for VirtualMemoryAllocator {
+    fn allocate(size: usize) -> Result<usize, AllocationError> {
+        allocate(size)
+    }
+
+    unsafe fn allocate_at(addr: usize, size: usize) -> Result<usize, AllocationError> {
+        allocate_at(addr, size)
+    }
+
+    unsafe fn deallocate(addr: usize, size: usize) {
+        deallocate(addr, size)
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use crate::malloc;
+    use crate::malloc::tests::TestAlloc;
+    use crate::rng::MersenneTwister64;
+    use crate::test::TEST_SEED;
+
+    use alloc_crate::vec::Vec;
+    use kernel_test_macro::kernel_test;
+
+    const VMA_TEST_ALLOCS: usize = 250;
+    const VMA_TEST_MAX_PAGE_ALLOC: u64 = 20;
+
+    #[kernel_test]
+    fn test_vma() {
+        let mut rng = MersenneTwister64::new(TEST_SEED);
+        let mut allocs: Vec<TestAlloc> = Vec::with_capacity(VMA_TEST_ALLOCS);
+
+        for i in 0..VMA_TEST_ALLOCS {
+            let n_pages = 2 + (rng.generate() % (VMA_TEST_MAX_PAGE_ALLOC - 2));
+            let size = (n_pages as usize) * 0x1000;
+
+            let addr = match allocate(size) {
+                Ok(a) => a,
+                Err(e) => panic!(
+                    "alloc {} failed (seed: {:#x}, size {:#x}) - {:?}",
+                    i, TEST_SEED, size, e
+                ),
+            };
+
+            allocs.push(TestAlloc { addr, size });
+        }
+
+        allocs.sort();
+        for i in 0..(allocs.len() - 1) {
+            // ensure this alloc does not overlap the next one
+            let this_end = allocs[i].addr + allocs[i].size;
+            let next_start = allocs[i + 1].addr;
+
+            // next_start >= allocs[i].0 is guaranteed because we sorted the
+            // allocs list
+            assert!(
+                next_start >= this_end,
+                "found overlapping allocations: {} and {}",
+                allocs[i],
+                allocs[i + 1]
+            );
+        }
+
+        for alloc in allocs {
+            unsafe {
+                deallocate(alloc.addr, alloc.size);
+            }
+        }
+    }
 }

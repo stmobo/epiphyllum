@@ -1,8 +1,11 @@
 use alloc_crate::alloc::Layout;
 use core::cmp::Ordering;
+use core::iter;
 use core::mem;
 use core::ptr;
+use core::ptr::NonNull;
 
+use super::heap_pages;
 use super::AllocationError;
 use crate::lock::LockedGlobal;
 use crate::paging::round_to_prev_page;
@@ -21,6 +24,7 @@ pub struct LargeZone {
     free_bytes: u16,
     n_blocks: u8,
     next_zone: *mut LargeZone,
+    prev_zone: *mut LargeZone,
     blocks: [AllocationBlock; 16],
 }
 
@@ -32,6 +36,7 @@ impl LargeZone {
             header: ZONE_HEADER,
             free_bytes: 8192 - (mem::size_of::<LargeZone>() as u16),
             next_zone,
+            prev_zone: ptr::null_mut(),
             n_blocks: 1,
             blocks: [AllocationBlock::empty(); 16],
         };
@@ -46,6 +51,16 @@ impl LargeZone {
     unsafe fn init_at(addr: usize, next_zone: *mut LargeZone) -> *mut LargeZone {
         let p = addr as *mut LargeZone;
         ptr::write(p, LargeZone::new(addr, next_zone));
+
+        if next_zone != ptr::null_mut() {
+            (*p).prev_zone = (*next_zone).prev_zone;
+            (*next_zone).prev_zone = p;
+
+            if (*p).prev_zone != ptr::null_mut() {
+                (*(*p).prev_zone).next_zone = p;
+            }
+        }
+
         p
     }
 
@@ -240,8 +255,6 @@ impl LargeZoneAllocator {
     }
 
     fn allocate(&mut self, layout: Layout) -> Result<usize, AllocationError> {
-        use super::heap_pages;
-
         let mut cur = self.zone_list;
         let sz = layout.size();
 
@@ -268,20 +281,55 @@ impl LargeZoneAllocator {
 
     unsafe fn deallocate(&mut self, addr: usize, layout: Layout) {
         let zone = LargeZone::zone_for_addr(addr);
+
         if zone != ptr::null_mut() {
             (*zone).deallocate(addr, layout);
         }
     }
 
-    unsafe fn add_pages(&mut self, addr: usize, n_pages: usize) {
-        if n_pages % 2 != 0 {
-            panic!("number of pages not divisible by 2");
+    unsafe fn add_page(&mut self, vaddr: usize) {
+        self.zone_list = LargeZone::init_at(vaddr, self.zone_list);
+    }
+
+    fn reclaim_pages(&mut self) -> *mut LargeZone {
+        let mut cur = self.zone_list;
+        let mut reclaim_list: *mut LargeZone = ptr::null_mut();
+
+        unsafe {
+            while cur != ptr::null_mut() {
+                let next = (*cur).next_zone;
+
+                if (*cur).n_blocks == 1
+                    && (*cur).blocks[0].free
+                    && (*cur).blocks[0].size == (*cur).free_bytes
+                {
+                    // reclaim this zone
+                    let prev = (*cur).prev_zone;
+
+                    if prev != ptr::null_mut() {
+                        (*prev).next_zone = next;
+                    }
+
+                    if next != ptr::null_mut() {
+                        (*next).prev_zone = prev;
+                    }
+
+                    (*cur).next_zone = ptr::null_mut();
+                    if reclaim_list != ptr::null_mut() {
+                        (*reclaim_list).next_zone = cur;
+                        (*cur).prev_zone = reclaim_list;
+                        reclaim_list = cur;
+                    } else {
+                        reclaim_list = cur;
+                        (*cur).prev_zone = ptr::null_mut();
+                    }
+                }
+
+                cur = next;
+            }
         }
 
-        for i in 0..(n_pages / 2) {
-            let vaddr = addr + (i * 0x2000);
-            self.zone_list = LargeZone::init_at(vaddr, self.zone_list);
-        }
+        reclaim_list
     }
 }
 
@@ -308,8 +356,16 @@ pub unsafe fn deallocate(addr: usize, layout: Layout) {
     KERNEL_LZA.lock().deallocate(addr, layout)
 }
 
-pub unsafe fn add_pages(addr: usize, n_pages: usize) {
-    KERNEL_LZA.lock().add_pages(addr, n_pages);
+pub unsafe fn add_page(addr: usize) {
+    KERNEL_LZA.lock().add_page(addr);
+}
+
+pub fn reclaim_pages() -> impl Iterator<Item = usize> {
+    let p = KERNEL_LZA.lock().reclaim_pages();
+    iter::successors(NonNull::new(p), |p| unsafe {
+        NonNull::new((*p.as_ptr()).next_zone)
+    })
+    .map(|p| p.as_ptr() as usize)
 }
 
 #[cfg(test)]
@@ -423,6 +479,16 @@ mod tests {
                     sz
                 );
 
+                // make sure the address is within the bounds of the zone
+                assert!(
+                    addr > zone_vaddr && (addr - zone_vaddr) < 0x2000,
+                    "zone {:#018x} allocated out-of-bounds (addr {}, size {}, seed {:#x})",
+                    zone_vaddr,
+                    addr,
+                    sz,
+                    seed
+                );
+
                 // make sure we're not overlapping with another block
                 let p = addr as *mut u8;
                 for offset in 0..(sz as isize) {
@@ -470,7 +536,7 @@ mod tests {
             let size = 512 + (rng.generate() % (7160 - 512)) as usize;
             let layout = Layout::from_size_align(size, 512).unwrap();
 
-            let addr = match unsafe { allocate(layout) } {
+            let addr = match allocate(layout) {
                 Ok(a) => a,
                 Err(e) => panic!(
                     "alloc {} failed (seed: {:#x}, size {}) - {:?}",
@@ -498,6 +564,12 @@ mod tests {
             let layout = Layout::from_size_align(alloc.size, 512).unwrap();
             unsafe {
                 deallocate(alloc.addr, layout);
+            }
+        }
+
+        unsafe {
+            for addr in reclaim_pages() {
+                malloc::heap_pages::deallocate(addr, 0x2000);
             }
         }
     }

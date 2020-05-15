@@ -1,13 +1,18 @@
-use core::convert::TryInto;
+use core::convert::{TryFrom, TryInto};
+use core::ptr::NonNull;
 use x86_64::instructions::tlb;
 use x86_64::VirtAddr;
 
+use crate::asm;
+use crate::asm::cpuid::FeatureFlags;
 use crate::lock::LockedGlobal;
-use crate::malloc::physical_mem;
+use crate::malloc::{physical_mem, AllocationError, PhysicalMemory, VirtualMemory};
 use crate::structures::AVLTree;
 
+mod index;
 mod tables;
 
+pub use index::PageHierarchyIndex;
 pub use tables::{PageTable, PageTableEntry};
 
 pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
@@ -21,7 +26,7 @@ pub const HIGHER_HALF_START: usize = 0xFFFF_8000_0000_0000;
 // const MAX_PHYSICAL_MEMORY: usize = KERNEL_HEAP_BASE - PHYSICAL_MAP_BASE;
 
 // const KERNEL_STACK_PML4_IDX: usize = 0b111_111_110;
-// const KERNEL_BASE_PML4_IDX: usize = 0b110_001_000;
+const KERNEL_BASE_PML4_IDX: usize = 0b110_001_000;
 const KERNEL_HEAP_PML4_IDX: usize = 0b110_000_001;
 const PHYSICAL_MAP_PML4_IDX: usize = 0b100_000_010;
 const HIGHER_HALF_PML4_IDX: usize = 0b100_000_000;
@@ -50,187 +55,6 @@ pub fn round_to_prev_page<T: Into<usize>>(value: T) -> usize {
 
 pub fn init_paging_metadata() {
     PAGING_METADATA.init(|| AVLTree::new());
-}
-
-#[derive(Debug, Clone, Copy, PartialOrd, PartialEq, Eq, Ord)]
-pub enum PageHierarchyIndex {
-    PML4T,
-    PDPT(u16),
-    PD(u32),
-    PT(u32),
-}
-
-impl PageHierarchyIndex {
-    /// Check to see if all of this index's structure indices are valid.
-    pub fn is_valid(&self) -> bool {
-        match &self {
-            PageHierarchyIndex::PML4T => true,
-            PageHierarchyIndex::PDPT(i) => PageHierarchyIndex::extract_pdpt_indexes(*i) < 512,
-            PageHierarchyIndex::PD(i) => {
-                let (pml4t_idx, pdpt_idx) = PageHierarchyIndex::extract_pd_indexes(*i);
-                pml4t_idx < 512 && pdpt_idx < 512
-            }
-            PageHierarchyIndex::PT(i) => {
-                let (pml4t_idx, pdpt_idx, pd_idx) = PageHierarchyIndex::extract_pt_indexes(*i);
-                pml4t_idx < 512 && pdpt_idx < 512 && pd_idx < 512
-            }
-        }
-    }
-
-    pub fn pdpt(pml4t_index: u16) -> PageHierarchyIndex {
-        PageHierarchyIndex::PDPT((pml4t_index & 0x1FF) as u16)
-    }
-
-    pub fn pd(pml4t_index: u32, pdpt_index: u32) -> PageHierarchyIndex {
-        PageHierarchyIndex::PD(((pml4t_index & 0x1FF) << 9) | (pdpt_index & 0x1FF))
-    }
-
-    pub fn pt(pml4t_index: u32, pdpt_index: u32, pd_index: u32) -> PageHierarchyIndex {
-        PageHierarchyIndex::PT(
-            ((pml4t_index & 0x1FF) << 18) | ((pdpt_index & 0x1FF) << 9) | (pd_index & 0x1FF),
-        )
-    }
-
-    fn extract_pdpt_indexes(i: u16) -> usize {
-        (i & 0x1FF) as usize
-    }
-
-    fn extract_pd_indexes(i: u32) -> (usize, usize) {
-        (((i >> 9) & 0x1FF) as usize, (i & 0x1FF) as usize)
-    }
-
-    fn extract_pt_indexes(i: u32) -> (usize, usize, usize) {
-        (
-            ((i >> 18) & 0x1FF) as usize,
-            ((i >> 9) & 0x1FF) as usize,
-            (i & 0x1FF) as usize,
-        )
-    }
-
-    pub fn pml4t_index(&self) -> Option<usize> {
-        match &self {
-            PageHierarchyIndex::PML4T => None,
-            PageHierarchyIndex::PDPT(i) => Some(PageHierarchyIndex::extract_pdpt_indexes(*i)),
-            PageHierarchyIndex::PD(i) => Some(((i >> 9) & 0x1FF) as usize),
-            PageHierarchyIndex::PT(i) => Some(((i >> 18) & 0x1FF) as usize),
-        }
-    }
-
-    pub fn pdpt_index(&self) -> Option<usize> {
-        match &self {
-            PageHierarchyIndex::PML4T | PageHierarchyIndex::PDPT(_) => None,
-            PageHierarchyIndex::PD(i) => Some(((*i) & 0x1FF) as usize),
-            PageHierarchyIndex::PT(i) => Some((((*i) >> 9) & 0x1FF) as usize),
-        }
-    }
-
-    pub fn pd_index(&self) -> Option<usize> {
-        match &self {
-            PageHierarchyIndex::PML4T | PageHierarchyIndex::PDPT(_) | PageHierarchyIndex::PD(_) => {
-                None
-            }
-            PageHierarchyIndex::PT(i) => Some(((*i) & 0x1FF) as usize),
-        }
-    }
-
-    /// Get an index for the page table corresponding to a given
-    /// virtual address.
-    pub fn from_vaddr(virt_addr: usize) -> PageHierarchyIndex {
-        PageHierarchyIndex::PT(((virt_addr >> 21) & 0x7FFFFFF) as u32)
-    }
-
-    /// Gets a reference to a page table without checking if indices are
-    /// valid or if higher-level paging structures are mapped.
-    pub unsafe fn get_table_unchecked(self) -> &'static mut PageTable {
-        match self {
-            PageHierarchyIndex::PML4T => PageTable::get_pml4t(),
-            PageHierarchyIndex::PDPT(i) => {
-                PageTable::get_pdpt(PageHierarchyIndex::extract_pdpt_indexes(i))
-            }
-            PageHierarchyIndex::PD(i) => {
-                let (pml4t_idx, pdpt_idx) = PageHierarchyIndex::extract_pd_indexes(i);
-                PageTable::get_pd(pml4t_idx, pdpt_idx)
-            }
-            PageHierarchyIndex::PT(i) => {
-                let (pml4t_idx, pdpt_idx, pd_idx) = PageHierarchyIndex::extract_pt_indexes(i);
-                PageTable::get_pt(pml4t_idx, pdpt_idx, pd_idx)
-            }
-        }
-    }
-
-    pub fn parent(self) -> Option<PageHierarchyIndex> {
-        match &self {
-            PageHierarchyIndex::PML4T => None,
-            PageHierarchyIndex::PDPT(_) => Some(PageHierarchyIndex::PML4T),
-            PageHierarchyIndex::PD(i) => {
-                let (pml4t_idx, _) = PageHierarchyIndex::extract_pd_indexes(*i);
-                Some(PageHierarchyIndex::PDPT(pml4t_idx as u16))
-            }
-            PageHierarchyIndex::PT(i) => {
-                let (pml4t_idx, pdpt_idx, _) = PageHierarchyIndex::extract_pt_indexes(*i);
-                Some(PageHierarchyIndex::PD(((pml4t_idx << 9) | pdpt_idx) as u32))
-            }
-        }
-    }
-
-    /// Get the actual paging structure this index refers to.
-    pub fn get_table(self) -> Option<&'static mut PageTable> {
-        if !self.is_valid() {
-            return None;
-        }
-
-        let pml4t = PageTable::get_pml4t();
-        match self {
-            PageHierarchyIndex::PML4T => {
-                return Some(pml4t);
-            }
-            PageHierarchyIndex::PDPT(i) => {
-                let pml4t_idx = PageHierarchyIndex::extract_pdpt_indexes(i);
-                let pte: PageTableEntry = pml4t.get_entry(pml4t_idx).unwrap();
-
-                if pte.present() {
-                    return unsafe { Some(PageTable::get_pdpt(pml4t_idx)) };
-                }
-
-                return None;
-            }
-            PageHierarchyIndex::PD(i) => {
-                let (pml4t_idx, pdpt_idx) = PageHierarchyIndex::extract_pd_indexes(i);
-                let pte: PageTableEntry = pml4t.get_entry(pml4t_idx).unwrap();
-
-                if pte.present() {
-                    let pdpt = unsafe { PageTable::get_pdpt(pml4t_idx) };
-                    let pte = pdpt.get_entry(pdpt_idx).unwrap();
-
-                    if pte.present() {
-                        return unsafe { Some(PageTable::get_pd(pml4t_idx, pdpt_idx)) };
-                    }
-                }
-
-                return None;
-            }
-            PageHierarchyIndex::PT(i) => {
-                let (pml4t_idx, pdpt_idx, pd_idx) = PageHierarchyIndex::extract_pt_indexes(i);
-                let pte: PageTableEntry = pml4t.get_entry(pml4t_idx).unwrap();
-
-                if pte.present() {
-                    let pdpt = unsafe { PageTable::get_pdpt(pml4t_idx) };
-                    let pte = pdpt.get_entry(pdpt_idx).unwrap();
-
-                    if pte.present() {
-                        let pd = unsafe { PageTable::get_pd(pml4t_idx, pdpt_idx) };
-                        let pte = pd.get_entry(pd_idx).unwrap();
-
-                        if pte.present() {
-                            return unsafe { Some(PageTable::get_pt(pml4t_idx, pdpt_idx, pd_idx)) };
-                        }
-                    }
-                }
-
-                return None;
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -289,8 +113,8 @@ fn remove_page_table_ref(index: PageHierarchyIndex) {
             PageHierarchyIndex::PD(_) => {
                 parent_table.unmap_entry(index.pd_index().unwrap()).unwrap()
             }
-            _ => {}
-        }
+            _ => unreachable!(),
+        };
 
         let paddr = table.table_addr();
         unsafe {
@@ -442,6 +266,8 @@ pub fn remap_boot_identity_paging() {
 
     /* Remap as many PDPTs pointing to the lower half of the address
      * space into the higher half as we can.
+     * This is going to get cleaned up later when we set up the 'real' physical
+     * mappings, anyways.
      */
     for i in 0..n_remapped_pdpts {
         let from_ent = pml4t.get_entry(i).unwrap();
@@ -526,6 +352,147 @@ pub fn reserve_bootstrap_physical_pages() {
     }
 }
 
+fn init_physical_map_gb_pages(window: VirtualMemory) -> Result<usize, AllocationError> {
+    let pdpt = PhysicalMemory::new(0x1000)?;
+
+    if !map_virtual_address(window.address(), pdpt.address()) {
+        return Err(AllocationError::CouldNotMapAddress);
+    }
+
+    let table = window.address() as *mut PageTable;
+
+    for i in 0..512usize {
+        let phys_addr = i << 30;
+        unsafe {
+            let mut pte = PageTableEntry::new();
+            pte.set_physical_address(phys_addr);
+            pte.set_present(true);
+            pte.set_page_size(true);
+            (*table).set_entry(i, pte).unwrap();
+        }
+    }
+
+    unmap_virtual_address(window.address());
+
+    Ok(pdpt.into_address())
+}
+
+fn init_physical_map_mb_pages(window: VirtualMemory) -> Result<usize, AllocationError> {
+    let pdpt = PhysicalMemory::new(0x1000)?;
+
+    // allocate page directories in chunks of 128 pages (= 0.5 MiB)
+    let table = window.address() as *mut PageTable;
+    let mut chunk_addrs: [usize; 4] = [0, 0, 0, 0];
+
+    // create mappings within each page directory
+    for chunk in 0..4 {
+        let block = PhysicalMemory::new(128 * 0x1000)?;
+        let block_addr = block.address();
+
+        for chunk_page in 0..128usize {
+            let pdp_no = (chunk * 128) + chunk_page;
+            let pd_addr = block_addr + (chunk_page * 0x1000);
+
+            if !map_virtual_address(window.address(), pd_addr) {
+                for addr in chunk_addrs.iter() {
+                    let addr = *addr;
+                    if addr != 0 {
+                        unsafe {
+                            physical_mem::deallocate(addr, 128 * 0x1000);
+                        }
+                    }
+                }
+                return Err(AllocationError::CouldNotMapAddress);
+            }
+
+            for pd_offset in 0..512usize {
+                let phys_addr = (pdp_no << 30) | (pd_offset << 21);
+                unsafe {
+                    let mut pte = PageTableEntry::new();
+                    pte.set_physical_address(phys_addr);
+                    pte.set_present(true);
+                    pte.set_page_size(true);
+
+                    (*table).set_entry(pd_offset, pte).unwrap();
+                }
+            }
+        }
+
+        chunk_addrs[chunk] = block.into_address();
+    }
+
+    // create mappings within the PDPT
+    if !map_virtual_address(window.address(), pdpt.address()) {
+        return Err(AllocationError::CouldNotMapAddress);
+    }
+
+    for pdp_no in 0..512usize {
+        let chunk = pdp_no / 128;
+        let chunk_page = pdp_no % 128;
+        let pd_addr = chunk_addrs[chunk] + (chunk_page * 0x1000);
+
+        unsafe {
+            (*table)
+                .map_addr(pdp_no, pd_addr)
+                .map_err(|_| AllocationError::CouldNotMapAddress)?;
+        }
+    }
+
+    unmap_virtual_address(window.address());
+    Ok(pdpt.into_address())
+}
+
+pub fn initialize_direct_physical_mappings() -> Result<(), AllocationError> {
+    let window = VirtualMemory::new(0x1000)?;
+
+    let pdpt = if FeatureFlags::GB_PAGES.supported() {
+        println!("paging: CPU supports GB pages");
+        init_physical_map_gb_pages(window)?
+    } else {
+        println!("paging: CPU does not support GB pages");
+        init_physical_map_mb_pages(window)?
+    };
+
+    // swap in the mappings
+    let pml4t = PageTable::get_pml4t();
+    let old_pdpt = pml4t.get_entry(PHYSICAL_MAP_PML4_IDX).unwrap();
+    pml4t
+        .map_addr(PHYSICAL_MAP_PML4_IDX, pdpt)
+        .map_err(|_| AllocationError::CouldNotMapAddress)?;
+    asm::reload_cr3();
+
+    // clean up old physical mappings
+    unsafe {
+        let pdpt_addr = old_pdpt.physical_address();
+        let old_pdpt: *mut PageTable = old_pdpt.page().unwrap().as_mut_ptr() as *mut PageTable;
+
+        for pdpt_idx in 0..512usize {
+            let pdpe = (*old_pdpt).get_entry(pdpt_idx).unwrap();
+            if !pdpe.present() {
+                continue;
+            }
+
+            let pd = pdpe.page().unwrap().as_mut_ptr() as *mut PageTable;
+            for pd_idx in 0..512usize {
+                let pde = (*pd).get_entry(pd_idx).unwrap();
+                if !pde.present() {
+                    continue;
+                }
+
+                let pt_addr = pde.physical_address();
+                physical_mem::deallocate(pt_addr, 0x1000);
+            }
+
+            let pd_addr = pdpe.physical_address();
+            physical_mem::deallocate(pd_addr, 0x1000);
+        }
+
+        physical_mem::deallocate(pdpt_addr, 0x1000);
+    }
+
+    Ok(())
+}
+
 pub fn offset_direct_map<T: TryInto<usize>>(phys_addr: T) -> usize {
     if let Ok(offset) = phys_addr.try_into() {
         PHYSICAL_MAP_BASE + offset
@@ -540,4 +507,90 @@ pub fn direct_map_pointer<T>(ptr: *const T) -> *const T {
 
 pub fn direct_map_pointer_mut<T>(ptr: *mut T) -> *mut T {
     offset_direct_map(ptr as usize) as *mut T
+}
+
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub struct PhysicalPointer<T>(NonNull<T>);
+
+impl<T> PhysicalPointer<T> {
+    pub fn new(addr: usize) -> Option<PhysicalPointer<T>> {
+        Some(PhysicalPointer(NonNull::new(addr as *mut T)?))
+    }
+
+    pub unsafe fn new_unchecked(addr: usize) -> PhysicalPointer<T> {
+        PhysicalPointer(NonNull::new_unchecked(addr as *mut T))
+    }
+
+    pub fn address(self) -> usize {
+        self.0.as_ptr() as usize
+    }
+
+    pub fn virtual_address(self) -> usize {
+        PHYSICAL_MAP_BASE + self.address()
+    }
+
+    pub fn as_ptr(self) -> *const T {
+        self.virtual_address() as *const T
+    }
+
+    pub fn as_mut_ptr(self) -> *mut T {
+        self.virtual_address() as *mut T
+    }
+}
+
+impl<T> From<PhysicalMemory> for PhysicalPointer<T> {
+    fn from(mem_block: PhysicalMemory) -> Self {
+        unsafe { Self::new_unchecked(mem_block.into_address()) }
+    }
+}
+
+impl<T> TryFrom<usize> for PhysicalPointer<T> {
+    type Error = usize;
+
+    fn try_from(value: usize) -> Result<Self, usize> {
+        PhysicalPointer::new(value).ok_or(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::malloc::{physical_mem, AllocationError, PhysicalMemory, VirtualMemory};
+    use core::ptr;
+    use kernel_test_macro::kernel_test;
+
+    #[kernel_test]
+    fn test_physical_mapping() {
+        let phys = PhysicalMemory::new(0x1000).unwrap();
+        let virt = VirtualMemory::new(0x1000).unwrap();
+
+        if !map_virtual_address(virt.address(), phys.address()) {
+            panic!(
+                "could not map virtual address {:#018x} => {:#018x}",
+                virt.address(),
+                phys.address()
+            );
+        }
+
+        let p: PhysicalPointer<u64> = phys.address().try_into().unwrap();
+        let virt_p = p.as_mut_ptr();
+        unsafe {
+            ptr::write_volatile(virt_p, 0xA5A5DEADC0DEA5A5);
+            drop(virt_p);
+        }
+
+        let mapped_p = virt.address() as *const u64;
+        unsafe {
+            assert_eq!(
+                ptr::read_volatile(mapped_p),
+                0xA5A5DEADC0DEA5A5,
+                "read differing values from virtual addresses {:#018x} and {:#018x}",
+                virt.address(),
+                p.virtual_address()
+            );
+        };
+
+        unmap_virtual_address(virt.address());
+    }
 }

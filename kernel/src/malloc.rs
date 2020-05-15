@@ -152,6 +152,14 @@ impl<T: MemoryPageAllocator + 'static> PageBlock<T> {
 
         (addr, sz)
     }
+
+    pub fn into_address(self) -> usize {
+        self.into_raw().0
+    }
+
+    pub fn leak(self) {
+        mem::forget(self);
+    }
 }
 
 impl<T: MemoryPageAllocator + 'static> Drop for PageBlock<T> {

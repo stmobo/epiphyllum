@@ -177,6 +177,9 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         println!("SMA/LZA bootstrap complete.");
     }
 
+    paging::initialize_direct_physical_mappings()
+        .expect("could not initialize direct physical page mapping");
+
     acpica::initialize().expect("could not initialize ACPICA");
 
     devices::local_apic::initialize();

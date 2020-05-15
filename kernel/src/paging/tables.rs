@@ -1,5 +1,9 @@
+use core::ops::{Index, IndexMut};
 use core::ptr;
 
+use crate::malloc::AllocationError;
+
+use super::PhysicalPointer;
 use super::PAGE_MASK;
 
 const PML4T_RECURSIVE_BASE: usize = 0xFFFF_FFFF_FFFF_F000;
@@ -27,6 +31,10 @@ impl PageTableEntry {
         self.entry = aligned | (self.entry & 0xFFF);
     }
 
+    pub fn page(&self) -> Option<PhysicalPointer<u8>> {
+        PhysicalPointer::new(self.physical_address())
+    }
+
     pub fn present(&self) -> bool {
         (self.entry & 1) > 0
     }
@@ -50,6 +58,18 @@ impl PageTableEntry {
             self.entry = self.entry & !2;
         }
     }
+
+    pub fn page_size(&self) -> bool {
+        (self.entry & (1 << 7)) != 0
+    }
+
+    pub fn set_page_size(&mut self, ps: bool) {
+        if ps {
+            self.entry |= 1 << 7;
+        } else {
+            self.entry &= !(1 << 7);
+        }
+    }
 }
 
 #[repr(transparent)]
@@ -67,10 +87,11 @@ impl PageTable {
         self.set_entry(index, entry)
     }
 
-    pub fn unmap_entry(&mut self, index: usize) -> Result<(), usize> {
+    pub fn unmap_entry(&mut self, index: usize) -> Result<PageTableEntry, usize> {
         let mut entry = self.get_entry(index)?;
         entry.set_present(false);
-        self.set_entry(index, entry)
+        self.set_entry(index, entry)?;
+        Ok(entry)
     }
 
     pub fn get_entry(&self, index: usize) -> Result<PageTableEntry, usize> {
@@ -96,7 +117,15 @@ impl PageTable {
     }
 
     pub fn table_addr(&self) -> usize {
-        (self as *const PageTable) as usize
+        self.entries.as_ptr() as usize
+    }
+
+    pub fn table_mut_ptr(&mut self) -> *mut PageTableEntry {
+        self.entries.as_mut_ptr()
+    }
+
+    pub fn table_ptr(&self) -> *const PageTableEntry {
+        self.entries.as_ptr()
     }
 
     pub fn clear(&mut self) {
@@ -140,3 +169,86 @@ impl PageTable {
         self.entries.iter_mut()
     }
 }
+
+impl Index<usize> for PageTable {
+    type Output = PageTableEntry;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.entries[index]
+    }
+}
+
+impl IndexMut<usize> for PageTable {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.entries[index]
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub enum PageLevel {
+    PML4,
+    PDP,
+    PD,
+    PT,
+}
+
+impl PageLevel {
+    pub fn page_alignment(self) -> Option<usize> {
+        match self {
+            PageLevel::PDP => Some(1 << 30),
+            PageLevel::PD => Some(1 << 21),
+            PageLevel::PT => Some(1 << 12),
+            PageLevel::PML4 => None,
+        }
+    }
+
+    pub fn alignment_mask(self) -> Option<usize> {
+        self.page_alignment().map(|a| a - 1)
+    }
+
+    pub fn child_level(self) -> Option<PageLevel> {
+        match self {
+            PageLevel::PML4 => Some(PageLevel::PDP),
+            PageLevel::PDP => Some(PageLevel::PD),
+            PageLevel::PD => Some(PageLevel::PT),
+            PageLevel::PT => None,
+        }
+    }
+
+    pub fn parent_level(self) -> Option<PageLevel> {
+        match self {
+            PageLevel::PML4 => None,
+            PageLevel::PDP => Some(PageLevel::PML4),
+            PageLevel::PD => Some(PageLevel::PDP),
+            PageLevel::PT => Some(PageLevel::PD),
+        }
+    }
+}
+
+const fn pt_idx(vaddr: usize) -> usize {
+    (vaddr >> 12) & 0x1FF
+}
+
+const fn pd_idx(vaddr: usize) -> usize {
+    (vaddr >> 21) & 0x1FF
+}
+
+const fn pdp_idx(vaddr: usize) -> usize {
+    (vaddr >> 30) & 0x1FF
+}
+
+const fn pml4_idx(vaddr: usize) -> usize {
+    (vaddr >> 39) & 0x1FF
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum MappingError {
+    AllocationFailure(AllocationError),
+    AlreadyMapped,
+}
+
+pub struct AddressSpace {
+    pml4t: PhysicalPointer<PageTable>,
+}
+
+impl AddressSpace {}

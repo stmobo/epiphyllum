@@ -36,6 +36,15 @@ pub fn get_cr3() -> usize {
     reg as usize
 }
 
+pub unsafe fn set_cr3(pml4t_phys_addr: usize) {
+    llvm_asm!("mov $0, %cr3" :: "r"(pml4t_phys_addr as u64) :: "volatile");
+}
+
+pub fn reload_cr3() {
+    let cr3 = get_cr3();
+    unsafe { set_cr3(cr3) };
+}
+
 pub fn get_cr4() -> u64 {
     let reg: u64;
     unsafe {

@@ -146,6 +146,12 @@ pub enum FeatureFlags {
     LAHF = 96, /* LAHF / SAHF instructions (ECX, bit 0) */
 }
 
+impl FeatureFlags {
+    pub fn supported(self) -> bool {
+        check_feature(self)
+    }
+}
+
 fn cpuid(in_eax: u32) -> (u32, u32, u32, u32) {
     let eax: u32;
     let ebx: u32;

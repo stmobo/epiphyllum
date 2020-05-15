@@ -10,12 +10,14 @@ use super::scheduling;
 use super::scheduling::SchedulerData;
 use crate::interrupts::InterruptFrame;
 use crate::lock::{LockedGlobal, OnceCell};
-use crate::malloc::{heap_pages, AllocationError};
+use crate::malloc::{physical_mem, virtual_mem, AllocationError, PhysicalMemory, VirtualMemory};
+use crate::paging;
 use crate::structures::{AVLTree, Queue};
 
 use crossbeam::atomic::AtomicCell;
 
-const TASK_STACK_SIZE: usize = 4 * 0x1000;
+const TASK_STACK_PAGES: usize = 16;
+const TASK_STACK_SIZE: usize = TASK_STACK_PAGES * 0x1000;
 
 pub static TASKS: LockedGlobal<AVLTree<u64, TaskHandle>> = LockedGlobal::new();
 static CUR_PID: AtomicCell<u64> = AtomicCell::new(0);
@@ -54,9 +56,8 @@ pub struct Task {
 
 impl Task {
     fn new_common(entry: usize, init_arg: u64) -> Result<TaskHandle, TaskSpawnError> {
-        let stack_end = unsafe {
-            heap_pages::allocate(TASK_STACK_SIZE).map_err(|e| TaskSpawnError::AllocationError(e))?
-        };
+        let stack_end =
+            Self::allocate_stack_pages().map_err(|e| TaskSpawnError::AllocationError(e))?;
 
         // Stacks grow downwards on x86-64:
         let kernel_stack_base = stack_end + TASK_STACK_SIZE;
@@ -119,12 +120,43 @@ impl Task {
         Self::new_common(entry, init_arg)
     }
 
+    fn allocate_stack_pages() -> Result<usize, AllocationError> {
+        // Allocate one page on both sides of the task stack.
+        let phys_sz = TASK_STACK_PAGES * 0x1000;
+        let virt_sz = phys_sz + 0x2000;
+
+        let paddr = PhysicalMemory::new(phys_sz)?;
+        let vaddr = VirtualMemory::new(virt_sz)?;
+
+        paging::unmap_virtual_address(vaddr.address());
+        paging::unmap_virtual_address(vaddr.address() + TASK_STACK_SIZE + 0x1000);
+
+        for i in 0..TASK_STACK_PAGES {
+            let p = paddr.address() + (0x1000 * i);
+            let v = vaddr.address() + (0x1000 * i) + 0x1000;
+
+            if !paging::map_virtual_address(v, p) {
+                // clean up mappings and bail
+                for j in 0..i {
+                    let v = vaddr.address() + (0x1000 * j);
+                    paging::unmap_virtual_address(v);
+                }
+
+                return Err(AllocationError::CouldNotMapAddress);
+            }
+        }
+
+        mem::forget(paddr);
+        let (vaddr, _) = vaddr.into_raw();
+        Ok(vaddr + 0x1000)
+    }
+
     pub fn get_context(&self) -> *mut InterruptFrame {
-        self.kernel_stack_head.load(Ordering::Acquire)
+        self.kernel_stack_head.load(Ordering::SeqCst)
     }
 
     pub fn set_context(&self, ctx: *mut InterruptFrame) {
-        self.kernel_stack_head.store(ctx, Ordering::Release)
+        self.kernel_stack_head.store(ctx, Ordering::SeqCst)
     }
 
     pub fn id(&self) -> u64 {
@@ -220,7 +252,17 @@ impl Task {
 impl Drop for Task {
     fn drop(&mut self) {
         unsafe {
-            heap_pages::deallocate(self.kernel_stack_base, TASK_STACK_SIZE);
+            let vaddr = self.kernel_stack_base - TASK_STACK_SIZE - 0x1000;
+            let entry: paging::PageTableEntry =
+                paging::get_mapping(vaddr + 0x1000).expect("task structure corrupted");
+
+            let paddr = entry.physical_address();
+            for i in 0..TASK_STACK_PAGES {
+                paging::unmap_virtual_address(vaddr + (i * 0x1000));
+            }
+
+            physical_mem::deallocate(paddr, TASK_STACK_SIZE);
+            virtual_mem::deallocate(vaddr, TASK_STACK_SIZE + 0x2000);
         }
     }
 }

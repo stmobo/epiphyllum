@@ -510,7 +510,7 @@ pub fn direct_map_pointer_mut<T>(ptr: *mut T) -> *mut T {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct PhysicalPointer<T>(NonNull<T>);
 
 impl<T> PhysicalPointer<T> {
@@ -537,11 +537,39 @@ impl<T> PhysicalPointer<T> {
     pub fn as_mut_ptr(self) -> *mut T {
         self.virtual_address() as *mut T
     }
+
+    pub unsafe fn as_ref(&self) -> &T {
+        &*(self.0.as_ptr() as *const T)
+    }
+
+    pub unsafe fn as_mut(&mut self) -> &mut T {
+        &mut *(self.0.as_ptr() as *mut T)
+    }
 }
+
+impl<T> Clone for PhysicalPointer<T> {
+    fn clone(&self) -> Self {
+        PhysicalPointer(self.0.clone())
+    }
+}
+
+impl<T> Copy for PhysicalPointer<T> {}
 
 impl<T> From<PhysicalMemory> for PhysicalPointer<T> {
     fn from(mem_block: PhysicalMemory) -> Self {
         unsafe { Self::new_unchecked(mem_block.into_address()) }
+    }
+}
+
+impl<T> TryFrom<PageTableEntry> for PhysicalPointer<T> {
+    type Error = PageTableEntry;
+
+    fn try_from(value: PageTableEntry) -> Result<Self, PageTableEntry> {
+        if !value.present() {
+            return Err(value);
+        }
+
+        PhysicalPointer::new(value.physical_address()).ok_or(value)
     }
 }
 

@@ -1,7 +1,10 @@
+use core::convert::TryInto;
 use core::ops::{Index, IndexMut};
 use core::ptr;
 
-use crate::malloc::AllocationError;
+use crate::asm;
+use crate::asm::cpuid::FeatureFlags;
+use crate::malloc::{AllocationError, PhysicalMemory};
 
 use super::PhysicalPointer;
 use super::PAGE_MASK;
@@ -247,8 +250,180 @@ pub enum MappingError {
     AlreadyMapped,
 }
 
+#[derive(Copy, Clone)]
+struct Resolved(PhysicalPointer<PageTable>, PageLevel);
+
+#[repr(transparent)]
 pub struct AddressSpace {
     pml4t: PhysicalPointer<PageTable>,
 }
 
-impl AddressSpace {}
+impl AddressSpace {
+    pub fn current() -> AddressSpace {
+        unsafe {
+            AddressSpace {
+                pml4t: PhysicalPointer::new_unchecked(asm::get_cr3()),
+            }
+        }
+    }
+
+    pub fn new() -> Result<AddressSpace, AllocationError> {
+        let page = PhysicalMemory::new(0x1000)?.into_address();
+        PhysicalPointer::new(page)
+            .map(|pml4t| AddressSpace { pml4t })
+            .ok_or(AllocationError::InvalidAllocation)
+    }
+
+    /// Resolves a virtual address in this space into a (Table, Level) pair.
+    ///
+    /// If the result is Ok, then the virtual address is mapped into the
+    /// address space, and the returned table contains the mapping for this page.
+    ///
+    /// If the result is Err, then the virtual address is _not_ mapped into the
+    /// address space, and the returned table contains the closest ancestor
+    /// table that is present in the address space.
+    fn resolve_raw(&self, vaddr: usize) -> Result<Resolved, Resolved> {
+        unsafe {
+            let pml4e = self.pml4t.as_ref().get_entry(pml4_idx(vaddr)).unwrap();
+            let pdpt: PhysicalPointer<PageTable> = pml4e
+                .try_into()
+                .or(Err(Resolved(self.pml4t, PageLevel::PML4)))?;
+
+            let pdpe = pdpt.as_ref().get_entry(pdp_idx(vaddr)).unwrap();
+            if pdpe.present() && pdpe.page_size() {
+                // this is a 1GiB page
+                return Ok(Resolved(pdpt, PageLevel::PDP));
+            }
+
+            let pd: PhysicalPointer<PageTable> =
+                pdpe.try_into().or(Err(Resolved(pdpt, PageLevel::PDP)))?;
+            let pde = pd.as_ref().get_entry(pd_idx(vaddr)).unwrap();
+            if pde.present() && pde.page_size() {
+                // this is a 2MiB page
+                return Ok(Resolved(pd, PageLevel::PD));
+            }
+
+            // otherwise, it's a 4KiB page
+            let pt: PhysicalPointer<PageTable> =
+                pde.try_into().or(Err(Resolved(pd, PageLevel::PD)))?;
+            let pte = pt.as_ref().get_entry(pt_idx(vaddr)).unwrap();
+            let resolved = Resolved(pt, PageLevel::PT);
+
+            if pte.present() {
+                Ok(resolved)
+            } else {
+                Err(resolved)
+            }
+        }
+    }
+
+    pub fn get_mapping(&self, vaddr: usize) -> Option<PageTableEntry> {
+        self.resolve_raw(vaddr).ok().map(|r| {
+            let table = r.0;
+            unsafe {
+                match r.1 {
+                    PageLevel::PML4 => unreachable!(), // should not get here
+                    PageLevel::PDP => table.as_ref().get_entry(pdp_idx(vaddr)).unwrap(),
+                    PageLevel::PD => table.as_ref().get_entry(pd_idx(vaddr)).unwrap(),
+                    PageLevel::PT => table.as_ref().get_entry(pt_idx(vaddr)).unwrap(),
+                }
+            }
+        })
+    }
+
+    pub fn is_mapped(&self, vaddr: usize) -> bool {
+        self.get_mapping(vaddr).is_some()
+    }
+
+    fn create_child_table(mut cur: Resolved, index: usize) -> Result<Resolved, MappingError> {
+        let page = PhysicalMemory::new(0x1000)
+            .map_err(|e| MappingError::AllocationFailure(e))?
+            .into_address();
+
+        unsafe {
+            let cur_table = cur.0.as_mut();
+            cur_table.map_addr(index, page).unwrap();
+
+            let child_table = PhysicalPointer::new_unchecked(page);
+            Ok(Resolved(child_table, cur.1.child_level().unwrap()))
+        }
+    }
+
+    pub fn set_mapping(
+        &self,
+        vaddr: usize,
+        mut mapping: PageTableEntry,
+        level: PageLevel,
+    ) -> Result<(), MappingError> {
+        assert_ne!(level, PageLevel::PML4, "invalid level for page mapping");
+        assert_eq!(
+            mapping.physical_address() & level.alignment_mask().unwrap(),
+            0,
+            "attempted to map unaligned page at {:#018x} to {:#018x}",
+            vaddr,
+            mapping.physical_address()
+        );
+
+        if level == PageLevel::PDP || level == PageLevel::PD {
+            mapping.set_page_size(true);
+        } else {
+            mapping.set_page_size(false);
+        }
+
+        let mut cur = match self.resolve_raw(vaddr) {
+            Ok(_) => return Err(MappingError::AlreadyMapped),
+            Err(r) => r,
+        };
+
+        if cur.1 == PageLevel::PML4 {
+            // map a new PDPT
+            cur = Self::create_child_table(cur, pml4_idx(vaddr))?;
+        }
+
+        if cur.1 == PageLevel::PDP {
+            // page directory does not exist
+            if level == PageLevel::PDP {
+                // directly map in this page
+                assert!(
+                    FeatureFlags::GB_PAGES.supported(),
+                    "attempted to map in GB page without arch support"
+                );
+
+                unsafe {
+                    cur.0.as_mut().set_entry(pdp_idx(vaddr), mapping).unwrap();
+                }
+                return Ok(());
+            } else {
+                // make a subordinate PD
+                cur = Self::create_child_table(cur, pdp_idx(vaddr))?;
+            }
+        }
+
+        if level == PageLevel::PDP {
+            // requested a GB-page mapping when a more fine-grained table
+            // already exists
+            return Err(MappingError::AlreadyMapped);
+        }
+
+        if cur.1 == PageLevel::PD {
+            if level == PageLevel::PD {
+                unsafe {
+                    cur.0.as_mut().set_entry(pd_idx(vaddr), mapping).unwrap();
+                }
+                return Ok(());
+            } else {
+                cur = Self::create_child_table(cur, pd_idx(vaddr))?;
+            }
+        }
+
+        if level == PageLevel::PD {
+            return Err(MappingError::AlreadyMapped);
+        }
+
+        unsafe {
+            cur.0.as_mut().set_entry(pt_idx(vaddr), mapping).unwrap();
+        }
+
+        Ok(())
+    }
+}

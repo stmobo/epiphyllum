@@ -16,7 +16,7 @@ use crate::structures::{AVLTree, Queue};
 
 use crossbeam::atomic::AtomicCell;
 
-const TASK_STACK_PAGES: usize = 16;
+const TASK_STACK_PAGES: usize = 32;
 const TASK_STACK_SIZE: usize = TASK_STACK_PAGES * 0x1000;
 
 pub static TASKS: LockedGlobal<AVLTree<u64, TaskHandle>> = LockedGlobal::new();

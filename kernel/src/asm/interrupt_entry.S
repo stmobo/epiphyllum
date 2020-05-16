@@ -8,26 +8,32 @@
 .code64
 
 .macro SAVE_REGISTERS
-    push %rbp    /* RSP+112 */
+    push %rbp    /* RSP+512+112 */
     mov %rsp, %rbp
 
-    push %rax    /* RSP+104 */
-    push %rbx    /* RSP+96 */
-    push %rcx    /* RSP+88 */
-    push %rdx    /* RSP+80 */
-    push %rsi    /* RSP+72 */
-    push %rdi    /* RSP+64 */
-    push %r8     /* RSP+56 */
-    push %r9     /* RSP+48 */
-    push %r10    /* RSP+40 */
-    push %r11    /* RSP+32 */
-    push %r12    /* RSP+24 */
-    push %r13    /* RSP+16 */
-    push %r14    /* RSP+8 */
-    push %r15    /* RSP */
+    push %rax    /* RSP+512+104 */
+    push %rbx    /* RSP+512+96 */
+    push %rcx    /* RSP+512+88 */
+    push %rdx    /* RSP+512+80 */
+    push %rsi    /* RSP+512+72 */
+    push %rdi    /* RSP+512+64 */
+    push %r8     /* RSP+512+56 */
+    push %r9     /* RSP+512+48 */
+    push %r10    /* RSP+512+40 */
+    push %r11    /* RSP+512+32 */
+    push %r12    /* RSP+512+24 */
+    push %r13    /* RSP+512+16 */
+    push %r14    /* RSP+512+8 */
+    push %r15    /* RSP+512 */
+
+    sub $512, %rsp
+    fxsave64 (%rsp)
 .endm
 
 .macro LOAD_REGISTERS
+    fxrstor64 (%rsp)
+    add $512, %rsp
+
     pop %r15
     pop %r14
     pop %r13
@@ -84,6 +90,8 @@ yield_cpu_1:
     popq %rax /* return address */
     movq %rsp, %rdi
     
+    sub $8, %rsp
+
     /* Create an interrupt stack frame: */
     xor %rdx, %rdx
     mov $0x10, %dx /* hardcoded SS value for kernel space */

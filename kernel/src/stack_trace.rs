@@ -13,7 +13,7 @@ pub struct StackFrameIterator {
 }
 
 impl StackFrameIterator {
-    fn new() -> StackFrameIterator {
+    pub fn new() -> StackFrameIterator {
         unsafe {
             let mut frame_ip: usize;
             let mut frame_bp: usize;
@@ -24,6 +24,12 @@ impl StackFrameIterator {
             StackFrameIterator {
                 cur_frame: Some(StackFrame { frame_ip, frame_bp }),
             }
+        }
+    }
+
+    pub unsafe fn start_at(frame_ip: usize, frame_bp: usize) -> StackFrameIterator {
+        StackFrameIterator {
+            cur_frame: Some(StackFrame { frame_ip, frame_bp }),
         }
     }
 }

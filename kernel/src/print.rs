@@ -38,6 +38,20 @@ pub unsafe fn break_print_locks() {
     vga::force_unlock();
 }
 
+fn print_control_regs() {
+    println!(
+        "CR0: {:#018x}    CR2: {:#018x}",
+        asm::get_cr0(),
+        asm::get_cr2()
+    );
+
+    println!(
+        "CR4: {:#018x}    CR3: {:#018x}",
+        asm::get_cr4(),
+        asm::get_cr3()
+    );
+}
+
 pub fn do_panic(info: &PanicInfo) -> ! {
     unsafe {
         break_print_locks();
@@ -59,28 +73,23 @@ pub fn do_panic(info: &PanicInfo) -> ! {
         print!(" - no location information available\n");
     }
 
-    println!("\n== [Stack Trace] ==");
+    println!("\n== [Current Stack Trace] ==");
     for frame in stack_trace::trace_stack() {
         println!("    {:#018x}", frame.frame_ip);
     }
 
     if let Some(ctx) = task::current_context() {
         println!("\n== [Task Context] ==\n{}", unsafe { &*ctx });
+        print_control_regs();
+
+        println!("\n== [Task Stack Trace] ==");
+        for frame in unsafe { (*ctx).trace_stack() } {
+            println!("    {:#018x}", frame.frame_ip);
+        }
     } else {
         println!("\nUnable to identify task context.\n== [Control Registers] ==");
+        print_control_regs();
     }
-
-    println!(
-        "CR0: {:#018x}    CR2: {:#018x}",
-        asm::get_cr0(),
-        asm::get_cr2()
-    );
-
-    println!(
-        "CR4: {:#018x}    CR3: {:#018x}",
-        asm::get_cr4(),
-        asm::get_cr3()
-    );
 
     #[cfg(test)]
     test::test_panic();

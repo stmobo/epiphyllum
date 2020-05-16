@@ -73,6 +73,7 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
+    asm::initialize_sse();
     paging::remap_boot_identity_paging();
 
     println!("Epiphyllum kernel starting...");

@@ -9,12 +9,14 @@ pub use idt::{claim_idt_page, initialize_idt};
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::stack_trace::StackFrameIterator;
 use crate::task;
 
 static INTERRUPT_CONTEXT_FLAG: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 pub struct GeneralRegisterState {
+    pub fpu_data: [u8; 512],
     pub r15: u64,
     pub r14: u64,
     pub r13: u64,
@@ -35,6 +37,7 @@ pub struct GeneralRegisterState {
 impl GeneralRegisterState {
     pub fn new() -> GeneralRegisterState {
         GeneralRegisterState {
+            fpu_data: [0; 512],
             r15: 0,
             r14: 0,
             r13: 0,
@@ -78,6 +81,10 @@ impl InterruptFrame {
             rsp: rsp as u64,
             ss: 0x10,
         }
+    }
+
+    pub fn trace_stack(&self) -> StackFrameIterator {
+        unsafe { StackFrameIterator::start_at(self.rip as usize, self.registers.rbp as usize) }
     }
 }
 
@@ -153,12 +160,11 @@ pub fn in_interrupt_context() -> bool {
 
 #[no_mangle]
 pub extern "C" fn kernel_entry(frame: *mut InterruptFrame) -> *mut InterruptFrame {
-    INTERRUPT_CONTEXT_FLAG.store(true, Ordering::Relaxed);
+    INTERRUPT_CONTEXT_FLAG.store(true, Ordering::SeqCst);
 
     task::scheduler().update_cur_context(frame);
     handler::handle_interrupt(unsafe { &mut *frame });
-
-    INTERRUPT_CONTEXT_FLAG.store(false, Ordering::Relaxed);
+    INTERRUPT_CONTEXT_FLAG.store(false, Ordering::SeqCst);
 
     if let Some(new_ctx) = task::current_context() {
         new_ctx

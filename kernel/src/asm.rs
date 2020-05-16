@@ -18,6 +18,10 @@ pub fn get_cr0() -> u64 {
     reg
 }
 
+pub unsafe fn set_cr0(reg: u64) {
+    llvm_asm!("mov $0, %cr0" :: "r"(reg) :: "volatile");
+}
+
 pub fn get_cr2() -> usize {
     let cr2: u64;
     unsafe {
@@ -52,6 +56,25 @@ pub fn get_cr4() -> u64 {
     }
 
     reg
+}
+
+pub unsafe fn set_cr4(reg: u64) {
+    llvm_asm!("mov $0, %cr4" :: "r"(reg) :: "volatile");
+}
+
+pub fn initialize_sse() {
+    unsafe {
+        let mut cr0 = get_cr0();
+        cr0 &= !(1 << 2);
+        cr0 |= 1 << 1;
+
+        let mut cr4 = get_cr4();
+        cr4 |= 1 << 9;
+        cr4 |= 1 << 10;
+
+        set_cr0(cr0);
+        set_cr4(cr4);
+    }
 }
 
 pub mod interrupts {

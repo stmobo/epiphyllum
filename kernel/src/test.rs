@@ -1,6 +1,6 @@
 use crate::asm;
+use crate::timer::{sleep, TimerDeadline};
 
-use core::mem;
 pub const TEST_SEED: u64 = 0x4B616E6174614368;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,8 @@ pub fn test_runner(tests: &[&(&'static str, &'static str, fn())]) {
         test();
         println!(" ok");
     }
+
+    sleep(TimerDeadline::Relative(512));
 
     test_exit(TestExitStatus::Success)
 }

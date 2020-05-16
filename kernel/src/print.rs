@@ -1,14 +1,23 @@
+use alloc_crate::string::String;
 use core::fmt;
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::asm;
 use crate::devices::serial;
 use crate::devices::vga;
+use crate::lock::OnceCell;
 use crate::stack_trace;
+use crate::structures::{Channel, Receiver, Sender};
 use crate::task;
+use crate::task::Task;
 
 #[cfg(test)]
 use crate::test;
+
+static LOGGING_TASK_ENABLED: AtomicBool = AtomicBool::new(false);
+static LOGGING_TASK: OnceCell<Task> = OnceCell::new();
+static LOGGING_CHANNEL: OnceCell<Sender<String>> = OnceCell::new();
 
 #[macro_export]
 macro_rules! print {
@@ -21,8 +30,28 @@ macro_rules! println {
     ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
 }
 
+#[macro_export]
+macro_rules! direct_print {
+    ($($arg:tt)*) => ($crate::print::_do_direct_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! direct_println {
+    () => ($crate::direct_print!("\n"));
+    ($($arg:tt)*) => ($crate::direct_print!("{}\n", format_args!($($arg)*)));
+}
+
 #[doc(hidden)]
 pub fn _do_blocking_print(args: fmt::Arguments) {
+    if LOGGING_TASK_ENABLED.load(Ordering::SeqCst) {
+        LOGGING_CHANNEL.get().unwrap().send(format!("{}", args));
+    } else {
+        _do_direct_print(args);
+    }
+}
+
+#[doc(hidden)]
+pub fn _do_direct_print(args: fmt::Arguments) {
     use fmt::Write;
 
     serial::get_default_serial().write_fmt(args).unwrap();
@@ -31,7 +60,42 @@ pub fn _do_blocking_print(args: fmt::Arguments) {
     vga::get_default_vga().write_fmt(args).unwrap();
 }
 
+pub fn logging_task_enabled() -> bool {
+    LOGGING_TASK_ENABLED.load(Ordering::SeqCst)
+}
+
+pub unsafe fn set_logging_task_mode(enabled: bool) {
+    LOGGING_TASK_ENABLED.store(enabled, Ordering::SeqCst);
+}
+
+pub fn initialize() {
+    let (receiver, sender) = Channel::new();
+    if let Err(_) = LOGGING_CHANNEL.set(sender) {
+        panic!("logging already initialized");
+    }
+
+    Task::from_closure(move || {
+        logging_task(receiver);
+        panic!("logging task died");
+    })
+    .expect("could not initialize logging task")
+    .schedule();
+
+    LOGGING_TASK_ENABLED.store(true, Ordering::SeqCst);
+}
+
+fn logging_task(log_recv: Receiver<String>) {
+    for log_msg in log_recv.wait_iter() {
+        serial::get_default_serial().write_str(&log_msg);
+
+        #[cfg(not(test))]
+        vga::get_default_vga().write_str(&log_msg);
+    }
+}
+
 pub unsafe fn break_print_locks() {
+    set_logging_task_mode(false);
+
     serial::force_unlock();
 
     #[cfg(not(test))]

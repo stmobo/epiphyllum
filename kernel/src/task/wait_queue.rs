@@ -1,5 +1,6 @@
 use alloc_crate::boxed::Box;
 use core::future::Future;
+use core::marker::PhantomData;
 use core::pin::Pin;
 use core::ptr::NonNull;
 use core::task::{Context, Poll, Waker};
@@ -75,8 +76,8 @@ impl WaitList {
         }
     }
 
-    // SAFETY: The caller must not deallocate the pushed ListNode without first
-    // acquiring a lock on this list.
+    // SAFETY: The caller must not do anything with the returned ListNode
+    // without first acquiring a lock on this list.
     unsafe fn push_front(&mut self, mut node: NonNull<ListNode>) {
         if let Some(head) = self.head {
             node.as_mut().append(head);
@@ -92,22 +93,28 @@ impl WaitList {
         self.tail = Some(node);
     }
 
-    // returns &ListNode since we don't actually own the node; the push_*
-    // callers do
-    //
-    // SAFETY: The returned &ListNode must not be accessed after releasing
-    // the lock on this list.
-    unsafe fn pop_front(&mut self) -> Option<&mut ListNode> {
-        if let Some(mut head) = self.head {
-            let m = head.as_mut();
-            self.head = m.next;
-            m.unlink();
+    // This is safe, since users of WaitListIter can't get rid of their mut
+    // reference to / lock on this list while they hold returned references
+    // from the iterator.
+    fn iter_mut(&mut self) -> WaitListIter<'_> {
+        WaitListIter(self.head, PhantomData)
+    }
+}
 
-            drop(m);
-            Some(&mut *head.as_ptr())
-        } else {
-            None
-        }
+struct WaitListIter<'a>(Option<NonNull<ListNode>>, PhantomData<&'a mut ListNode>);
+
+impl<'a> Iterator for WaitListIter<'a> {
+    type Item = &'a mut ListNode;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.take().map(|p| {
+            let r: &'a mut ListNode = unsafe { &mut *p.as_ptr() };
+            if r.mode != WaitMode::Exclusive {
+                self.0 = r.next;
+            }
+
+            r
+        })
     }
 }
 
@@ -154,25 +161,17 @@ impl WaitQueue {
     pub fn wake(&self) {
         let mut queue = self.tasks.lock();
 
-        unsafe {
-            let mut cur = queue.pop_front();
-            while cur.is_some() {
-                let node = cur.unwrap();
-                if let Some(waker) = node.waker.take() {
-                    waker.wake();
-                }
-
-                if node.mode == WaitMode::Exclusive {
-                    break;
-                }
-
-                cur = queue.pop_front();
+        for node in queue.iter_mut() {
+            if node.waker.is_some() {
+                node.waker.as_ref().unwrap().wake_by_ref();
             }
         }
 
         drop(queue);
     }
 
+    /// Wait for a condition to become true, sleeping on this queue in the
+    /// meanwhile.
     pub fn wait<F: FnMut() -> bool>(&self, mut condition: F, mode: WaitMode) {
         let h = self.add_waiter(Some(current_task().waker()), mode);
         let p = scheduler().running_task_ptr();
@@ -256,5 +255,99 @@ impl<'a, F: Fn() -> bool> Future for WaitQueueFuture<'a, F> {
         } else {
             Poll::Pending
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task;
+    use crate::task::Task;
+    use crate::timer::{sleep, sleep_async, TimerDeadline};
+    use kernel_test_macro::kernel_test;
+
+    use alloc_crate::sync::Arc;
+    use core::sync::atomic::{spin_loop_hint, AtomicBool, AtomicU64, Ordering};
+
+    // TODO: test for lost-wakeup problems?
+    // How would you do that?
+
+    #[kernel_test]
+    fn basic_sync_test() {
+        let queue = Arc::new(WaitQueue::new());
+        let shared = Arc::new(AtomicU64::new(0));
+
+        let child_queue = queue.clone();
+        let child_shared = shared.clone();
+
+        let child = Task::from_closure(move || {
+            let s = child_shared.clone();
+            child_queue.wait(|| s.load(Ordering::SeqCst) > 5, WaitMode::Default);
+            child_shared.fetch_add(1, Ordering::SeqCst);
+
+            0
+        })
+        .expect("could not spawn subtask");
+        child.schedule();
+
+        sleep(TimerDeadline::Relative(1024)).unwrap();
+        assert_eq!(shared.load(Ordering::SeqCst), 0);
+
+        shared.store(3, Ordering::SeqCst);
+        queue.wake();
+
+        sleep(TimerDeadline::Relative(1024)).unwrap();
+        assert_eq!(shared.load(Ordering::SeqCst), 3);
+
+        shared.store(10, Ordering::SeqCst);
+        queue.wake();
+
+        sleep(TimerDeadline::Relative(1024)).unwrap();
+        assert_eq!(shared.load(Ordering::SeqCst), 11);
+
+        drop(child);
+    }
+
+    async fn basic_async_test_child(
+        child_queue: Arc<WaitQueue>,
+        child_shared: Arc<AtomicU64>,
+    ) -> u64 {
+        let s = child_shared.clone();
+        child_queue
+            .wait_async(|| s.load(Ordering::SeqCst) > 5, WaitMode::Default)
+            .await;
+
+        child_shared.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    #[kernel_test]
+    fn basic_async_test() {
+        let queue = Arc::new(WaitQueue::new());
+        let shared = Arc::new(AtomicU64::new(0));
+
+        let child_queue = queue.clone();
+        let child_shared = shared.clone();
+
+        let child = task::spawn_async(basic_async_test_child(child_queue, child_shared))
+            .expect("could not spawn subtask");
+        child.schedule();
+
+        task::run_future(async {
+            sleep_async(TimerDeadline::Relative(1024)).unwrap().await;
+            assert_eq!(shared.load(Ordering::SeqCst), 0);
+
+            shared.store(3, Ordering::SeqCst);
+            queue.wake();
+
+            sleep_async(TimerDeadline::Relative(1024)).unwrap().await;
+            assert_eq!(shared.load(Ordering::SeqCst), 3);
+
+            shared.store(10, Ordering::SeqCst);
+            queue.wake();
+
+            sleep_async(TimerDeadline::Relative(1024)).unwrap().await;
+            assert_eq!(shared.load(Ordering::SeqCst), 11);
+        });
     }
 }

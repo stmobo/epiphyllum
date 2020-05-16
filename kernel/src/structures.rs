@@ -8,7 +8,7 @@ pub mod vyukov_queue;
 pub use avl_tree::AVLTree;
 pub use bip_buffer::{BipBuffer, BipReader, BipWriter};
 pub use hashbrown::{HashMap, HashSet};
-pub use vyukov_queue::{Queue, QueueReader, QueueWriter};
+pub use vyukov_queue::{Channel, Queue, QueueReader, QueueWriter, Receiver, Sender};
 
 #[cfg(test)]
 mod tests {

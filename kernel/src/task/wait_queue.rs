@@ -80,6 +80,7 @@ impl WaitList {
     // without first acquiring a lock on this list.
     unsafe fn push_front(&mut self, mut node: NonNull<ListNode>) {
         if let Some(head) = self.head {
+            assert_ne!(head, node);
             node.as_mut().append(head);
         }
         self.head = Some(node);
@@ -88,6 +89,7 @@ impl WaitList {
     // SAFETY: See push_front.
     unsafe fn push_back(&mut self, node: NonNull<ListNode>) {
         if let Some(mut tail) = self.tail {
+            assert_ne!(tail, node);
             tail.as_mut().append(node);
         }
         self.tail = Some(node);
@@ -228,9 +230,24 @@ impl<'a> WaiterHandle<'a> {
 
 impl<'a> Drop for WaiterHandle<'a> {
     fn drop(&mut self) {
-        let lock = self.0.tasks.lock();
+        let mut lock = self.0.tasks.lock();
         unsafe {
-            self.1.as_mut().unlink();
+            let p = self.1.as_ptr();
+            let m = self.1.as_mut();
+
+            if let Some(head) = lock.head {
+                if head.as_ptr() == p {
+                    lock.head = m.next;
+                }
+            }
+
+            if let Some(tail) = lock.tail {
+                if tail.as_ptr() == p {
+                    lock.tail = m.prev;
+                }
+            }
+
+            m.unlink();
             drop(Box::from_raw(self.1.as_ptr()));
         }
         drop(lock);

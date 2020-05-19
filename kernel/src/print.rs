@@ -1,11 +1,13 @@
 use alloc_crate::string::String;
 use core::fmt;
 use core::panic::PanicInfo;
+use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::asm;
 use crate::devices::serial;
 use crate::devices::vga;
+use crate::interrupts;
 use crate::lock::OnceCell;
 use crate::stack_trace;
 use crate::structures::{Channel, Receiver, Sender};
@@ -140,6 +142,16 @@ pub fn do_panic(info: &PanicInfo) -> ! {
     println!("\n== [Current Stack Trace] ==");
     for frame in stack_trace::trace_stack() {
         println!("    {:#018x}", frame.frame_ip);
+    }
+
+    let int_ctx = interrupts::get_interrupt_context();
+    if int_ctx != ptr::null_mut() {
+        println!("\n== [Interrupt Context] ==\n{}", unsafe { &*int_ctx });
+
+        println!("\n== [Interrupt Stack Trace] ==");
+        for frame in unsafe { (*int_ctx).trace_stack() } {
+            println!("    {:#018x}", frame.frame_ip);
+        }
     }
 
     if let Some(ctx) = task::current_context() {

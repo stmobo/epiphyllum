@@ -212,6 +212,10 @@ pub fn initialize() {
     }
 }
 
+pub fn scheduler_initialized() -> bool {
+    SCHEDULER.get().is_some()
+}
+
 pub fn scheduler() -> &'static Scheduler {
     SCHEDULER.get().expect("Scheduler not initialized")
 }

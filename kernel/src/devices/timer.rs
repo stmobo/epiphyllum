@@ -53,6 +53,7 @@ impl CalibrationData {
                     unsafe {
                         ports::outb(COMMAND_ADDR, 0b00_11_000_0);
                     }
+
                     return;
                 }
             }
@@ -131,6 +132,7 @@ impl CalibrationData {
      * We need to unregister the ISRs in order to get them to drop their refs.
      */
     fn unregister_handlers(&self) {
+        interrupts::mask_irq(0x20, true).expect("could not mask PIT interrupt");
         interrupts::unregister_handler(0x20, self.pit_isr_id);
         interrupts::unregister_handler(0x30, self.lapic_isr_id);
     }

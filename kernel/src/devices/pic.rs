@@ -2,7 +2,7 @@
 
 use crate::acpica::madt::MADT;
 use crate::asm::{msr, ports};
-use crate::lock::{NoIRQSpinlock, NoIRQSpinlockGuard};
+use crate::lock::{LockedGlobal, NoIRQSpinlock, NoIRQSpinlockGuard};
 use crate::paging;
 
 use alloc_crate::vec::Vec;
@@ -11,6 +11,8 @@ use spin::Once;
 
 static LAPIC_BASE: Once<usize> = Once::new();
 static IO_APICS: Once<Vec<(u8, NoIRQSpinlock<io_apic::IOAPIC>)>> = Once::new();
+static GSI_LIST: LockedGlobal<Vec<io_apic::GSIEntry>> = LockedGlobal::new();
+
 const PIC1: u16 = 0x0020;
 const PIC2: u16 = 0x00A0;
 
@@ -349,6 +351,8 @@ pub mod io_apic {
             let min_irq = self.irq_base;
             let max_irq = self.irq_base + self.max_redirection_entries();
 
+            let mut gsi_list = GSI_LIST.lock();
+
             for irq in madt.irqs.iter() {
                 let gsi = irq.gsi as u8;
 
@@ -363,6 +367,12 @@ pub mod io_apic {
                     entry.set_destination_apic(0);
 
                     self.set_redirection_entry(idx, entry).unwrap();
+
+                    gsi_list.push(GSIEntry {
+                        gsi,
+                        vector: ISA_IRQ_BASE + irq.irq_src,
+                        io_apic_id: self.id(),
+                    });
                 }
             }
         }
@@ -406,6 +416,10 @@ pub mod io_apic {
 
         pub fn irq_base(&self) -> u8 {
             self.irq_base
+        }
+
+        pub fn max_irq(&self) -> u8 {
+            self.irq_base + self.max_redirection_entries()
         }
 
         pub fn id(&self) -> u8 {
@@ -453,10 +467,53 @@ pub mod io_apic {
 
             Ok(())
         }
+
+        pub fn mask_interrupt(irq: u8, masked: bool) -> Result<bool, u8> {
+            let mut gsi_list = GSI_LIST.lock();
+            let entry = gsi_list.iter_mut().find(|e| e.vector == irq).ok_or(irq)?;
+
+            Ok(entry.set_masked(masked))
+        }
     }
 
     unsafe impl Send for IOAPIC {}
     unsafe impl Sync for IOAPIC {}
+
+    pub struct GSIEntry {
+        gsi: u8,
+        vector: u8,
+        io_apic_id: u8,
+    }
+
+    impl GSIEntry {
+        fn get_io_apic(&self) -> Option<NoIRQSpinlockGuard<'static, IOAPIC>> {
+            for (id, lock) in IO_APICS.wait().unwrap() {
+                let apic = lock.lock();
+                if *id == self.io_apic_id {
+                    return Some(apic);
+                }
+            }
+
+            None
+        }
+
+        fn set_masked(&mut self, masked: bool) -> bool {
+            let mut apic = self.get_io_apic().unwrap();
+            let idx = self.gsi - apic.irq_base();
+
+            let mut entry = apic
+                .get_redirection_entry(idx)
+                .expect("could not get redirection entry for IRQ");
+
+            let prev = entry.is_masked();
+            entry.set_masked(masked);
+
+            apic.set_redirection_entry(idx, entry)
+                .expect("could not set redirection entry for IRQ");
+
+            prev
+        }
+    }
 
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
     #[repr(transparent)]
@@ -531,6 +588,7 @@ pub mod io_apic {
     }
 
     pub fn initialize() {
+        GSI_LIST.init(|| Vec::new());
         io_apic::IOAPIC::initialize_all();
         println!("ioapic: I/O APICs initialized");
     }

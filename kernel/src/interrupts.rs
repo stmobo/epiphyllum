@@ -7,12 +7,14 @@ pub use handler::{register_handler, unregister_handler, InterruptHandlerStatus};
 pub use idt::{claim_idt_page, initialize_idt};
 
 use core::fmt;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::ptr;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
+use crate::devices::io_apic::IOAPIC;
 use crate::stack_trace::StackFrameIterator;
 use crate::task;
 
-static INTERRUPT_CONTEXT_FLAG: AtomicBool = AtomicBool::new(false);
+static INTERRUPT_CONTEXT: AtomicPtr<InterruptFrame> = AtomicPtr::new(ptr::null_mut());
 
 #[repr(C)]
 pub struct GeneralRegisterState {
@@ -155,16 +157,27 @@ impl fmt::Display for InterruptFrame {
 }
 
 pub fn in_interrupt_context() -> bool {
-    INTERRUPT_CONTEXT_FLAG.load(Ordering::Relaxed)
+    INTERRUPT_CONTEXT.load(Ordering::SeqCst) != ptr::null_mut()
+}
+
+pub fn get_interrupt_context() -> *mut InterruptFrame {
+    INTERRUPT_CONTEXT.load(Ordering::SeqCst)
+}
+
+pub fn mask_irq(irq: u8, masked: bool) -> Result<bool, u8> {
+    IOAPIC::mask_interrupt(irq, masked)
 }
 
 #[no_mangle]
 pub extern "C" fn kernel_entry(frame: *mut InterruptFrame) -> *mut InterruptFrame {
-    INTERRUPT_CONTEXT_FLAG.store(true, Ordering::SeqCst);
+    INTERRUPT_CONTEXT.store(frame, Ordering::SeqCst);
 
-    task::scheduler().update_cur_context(frame);
+    if task::scheduler_initialized() {
+        task::scheduler().update_cur_context(frame);
+    }
+
     handler::handle_interrupt(unsafe { &mut *frame });
-    INTERRUPT_CONTEXT_FLAG.store(false, Ordering::SeqCst);
+    INTERRUPT_CONTEXT.store(ptr::null_mut(), Ordering::SeqCst);
 
     if let Some(new_ctx) = task::current_context() {
         new_ctx

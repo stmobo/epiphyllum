@@ -8,6 +8,7 @@ use super::heap_pages;
 use super::AllocationError;
 use crate::lock::LockedGlobal;
 use crate::paging::PAGE_MASK;
+use crate::structures::Bitmask64;
 
 static KERNEL_SMA: LockedGlobal<SmallZoneAllocator> = LockedGlobal::new();
 
@@ -25,10 +26,18 @@ static KERNEL_SMA: LockedGlobal<SmallZoneAllocator> = LockedGlobal::new();
 pub struct SmallZone {
     next: *mut SmallZone,
     count: u32,
-    order: u32,
-    /// Ranges from 0-6 (sizes 8 - 512)
-    bitmap: [u64; 8],
+    order: u32,             // Ranges from 0-6 (sizes 8 - 512)
+    bitmap: [Bitmask64; 8], // note: free spaces are stored as 1's
 }
+
+// total slots per order (not incl. space occupied by zone header):
+// 0: 512 (bitmap size 64 bytes)
+// 1: 256
+// 2: 128
+// 3:  64
+// 4:  32
+// 5:  16
+// 6:   8
 
 impl SmallZone {
     /// Creates a new SmallZone header.
@@ -38,12 +47,15 @@ impl SmallZone {
         }
 
         let count = (0x1000u32 >> (order + 3)) - SmallZone::get_reserved_slots(order);
-        SmallZone {
+        let mut ret = SmallZone {
             next: ptr::null_mut(),
             count,
             order,
-            bitmap: [0; 8],
-        }
+            bitmap: [Bitmask64::all_zeros(); 8],
+        };
+        Self::initialize_bitmap(order, &mut ret.bitmap);
+
+        ret
     }
 
     /// Set up this zone to have a new order.
@@ -56,7 +68,8 @@ impl SmallZone {
 
         self.order = new_order;
         self.count = count;
-        self.bitmap = [0; 8];
+        self.bitmap = [Bitmask64::all_zeros(); 8];
+        Self::initialize_bitmap(new_order, &mut self.bitmap);
     }
 
     fn self_addr(&self) -> usize {
@@ -86,6 +99,19 @@ impl SmallZone {
         }) as u32
     }
 
+    fn initialize_bitmap(order: u32, bitmap: &mut [Bitmask64; 8]) {
+        let slots = 0x1000usize >> (order + 3);
+        if order <= 3 {
+            for i in 0..(slots / 64) {
+                bitmap[i] = Bitmask64::all_ones();
+            }
+
+            bitmap[0] = Bitmask64::n_ones(Self::get_reserved_slots(order) as u64).invert();
+        } else {
+            bitmap[0] = Bitmask64::n_ones(slots as u64).set(0, false);
+        }
+    }
+
     fn get_start_slot(&self) -> usize {
         SmallZone::get_reserved_slots(self.order) as usize
     }
@@ -94,24 +120,22 @@ impl SmallZone {
         (0x1000u32 >> (self.order + 3)) - SmallZone::get_reserved_slots(self.order)
     }
 
+    #[inline]
+    /// Split a slot number into a bitmap array index and a bit index.
+    const fn split_slot(slot_no: usize) -> (usize, usize) {
+        (slot_no >> 6, slot_no & 0x3F)
+    }
+
     /// Set whether a given allocation slot is occupied or not.
     fn set_bitmap(&mut self, slot_no: usize, occupied: bool) {
-        let bitmap_idx = slot_no / 64;
-        let bit_idx = slot_no % 64;
-
-        if occupied {
-            self.bitmap[bitmap_idx] |= 1u64 << bit_idx
-        } else {
-            self.bitmap[bitmap_idx] &= !(1u64 << bit_idx)
-        }
+        let (map_idx, bit_idx) = Self::split_slot(slot_no);
+        self.bitmap[map_idx] = self.bitmap[map_idx].set(bit_idx, !occupied);
     }
 
     /// Get whether a given allocation slot is occupied or not.
-    fn get_bitmap(&mut self, slot_no: usize) -> bool {
-        let bitmap_idx = slot_no / 64;
-        let bit_idx = slot_no % 64;
-
-        (self.bitmap[bitmap_idx] & (1u64 << bit_idx)) != 0
+    fn get_bitmap(&self, slot_no: usize) -> bool {
+        let (map_idx, bit_idx) = Self::split_slot(slot_no);
+        !self.bitmap[map_idx].get(bit_idx)
     }
 
     fn find_unset(val: u64, limit: usize) -> Option<usize> {
@@ -128,24 +152,9 @@ impl SmallZone {
     }
 
     fn find_open_slot(&self) -> Option<usize> {
-        let n_slots = self.n_slots();
-        let start_slot = self.get_start_slot();
-        let bm0 = self.bitmap[0] >> start_slot;
-
-        if n_slots <= 64 {
-            if let Some(idx) = SmallZone::find_unset(bm0, n_slots - start_slot) {
-                return Some(idx + start_slot);
-            }
-        } else {
-            if let Some(idx) = SmallZone::find_unset(bm0, 64 - start_slot) {
-                return Some(idx + start_slot);
-            }
-
-            let n_bitmaps = n_slots / 64;
-            for i in 1..n_bitmaps {
-                if let Some(idx) = SmallZone::find_unset(self.bitmap[i], 64) {
-                    return Some((64 * i) + idx);
-                }
+        for (i, bm) in self.bitmap.iter().enumerate() {
+            if let Some(b) = bm.first_set_bit() {
+                return Some((i * 64) + b);
             }
         }
 
@@ -185,27 +194,32 @@ impl SmallZone {
     unsafe fn deallocate(&mut self, address: usize) {
         let self_addr = self.self_addr();
 
-        if cfg!(debug_assertions) && (address <= self_addr || (address - self_addr) >= 0x1000) {
-            panic!(
-                "requested deallocation of invalid address {:#016x} by {:#016x}",
-                address, self_addr
-            );
-        }
+        debug_assert!(
+            (address >= (self_addr + mem::size_of::<SmallZone>()))
+                && ((address - self_addr) < 0x1000),
+            "requested deallocation of invalid address {:#018x} via allocator {:#018x}",
+            address,
+            self_addr
+        );
 
-        let slot = (address - self_addr) / self.get_alloc_size();
-        if cfg!(debug_assertions) && !self.get_bitmap(slot) {
-            panic!("possible free of unallocated memory at {:#016x}", address);
-        }
+        let slot = self.slot_from_address(address);
+
+        debug_assert!(slot >= Self::get_reserved_slots(self.order) as usize);
+        debug_assert!(
+            self.get_bitmap(slot),
+            "possible free of unallocated memory at {:#018x}",
+            address
+        );
 
         self.set_bitmap(slot, false);
         self.count += 1;
 
-        if cfg!(debug_assertions) && self.count > self.get_max_count() {
-            panic!(
-                "possible double free in allocator {:#016x} after freeing address {:#016x}",
-                self_addr, address
-            );
-        }
+        debug_assert!(
+            self.count <= self.get_max_count(),
+            "allocator {:#018x} state corrupt after freeing address {:#018x}",
+            self_addr,
+            address
+        );
     }
 }
 

@@ -2,11 +2,13 @@ extern crate hashbrown;
 
 pub mod avl_tree;
 pub mod bip_buffer;
+pub mod bitmask;
 pub mod node_arena;
 pub mod vyukov_queue;
 
 pub use avl_tree::AVLTree;
 pub use bip_buffer::{BipBuffer, BipReader, BipWriter};
+pub use bitmask::Bitmask64;
 pub use hashbrown::{HashMap, HashSet};
 pub use vyukov_queue::{Channel, Queue, QueueReader, QueueWriter, Receiver, Sender};
 

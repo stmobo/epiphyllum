@@ -10,6 +10,7 @@ use core::mem;
 use core::ops::Bound;
 
 use crate::lock::LockedGlobal;
+use crate::structures::Bitmask64;
 
 use super::{AllocationError, MemoryPageAllocator};
 
@@ -22,10 +23,10 @@ static KERNEL_PMA: LockedGlobal<PhysicalMemoryAllocator> = LockedGlobal::new();
 pub struct BuddyAllocator {
     mem_addr: usize,
     region_end: usize,
-    ord_0_bitmap: [u64; 4],
-    ord_1_bitmap: [u64; 2],
-    ord_2_bitmap: u64,
-    hi_ord_bitmap: u64,
+    ord_0_bitmap: [Bitmask64; 4],
+    ord_1_bitmap: [Bitmask64; 2],
+    ord_2_bitmap: Bitmask64,
+    hi_ord_bitmap: Bitmask64,
     n_blocks: [u16; 9],
     free_bytes: usize,
     usage_list_idx: usize,
@@ -53,10 +54,10 @@ impl BuddyAllocator {
         let mut allocator = BuddyAllocator {
             mem_addr: addr,
             region_end: addr + region_len,
-            ord_0_bitmap: [0; 4],
-            ord_1_bitmap: [0; 2],
-            ord_2_bitmap: 0,
-            hi_ord_bitmap: 0,
+            ord_0_bitmap: [Bitmask64::all_zeros(); 4],
+            ord_1_bitmap: [Bitmask64::all_zeros(); 2],
+            ord_2_bitmap: Bitmask64::all_zeros(),
+            hi_ord_bitmap: Bitmask64::all_zeros(),
             n_blocks: [0; 9],
             free_bytes: 0,
             usage_list_idx: 0,
@@ -96,13 +97,34 @@ impl BuddyAllocator {
     }
 
     fn find_free_block_single(&self, order: u64) -> Option<usize> {
-        for i in 0..(1 << (8 - order)) {
-            if self.get_block_state(order, i) {
-                return Some(i);
-            }
-        }
+        match order {
+            0 => {
+                for (i, bm) in self.ord_0_bitmap.iter().enumerate() {
+                    if let Some(b) = bm.first_set_bit() {
+                        return Some((i * 64) + b);
+                    }
+                }
 
-        None
+                None
+            }
+            1 => {
+                for (i, bm) in self.ord_1_bitmap.iter().enumerate() {
+                    if let Some(b) = bm.first_set_bit() {
+                        return Some((i * 64) + b);
+                    }
+                }
+
+                None
+            }
+            2 => self.ord_2_bitmap.first_set_bit(),
+            3..=8 => {
+                let n_positions = 1u64 << (8 - order);
+                let bm =
+                    Bitmask64((self.hi_ord_bitmap.0 >> n_positions) & ((1u64 << n_positions) - 1));
+                bm.first_set_bit()
+            }
+            _ => panic!("invalid order {} for buddy allocator", order),
+        }
     }
 
     fn allocate_block(&mut self, order: u64) -> Option<usize> {
@@ -204,6 +226,7 @@ impl BuddyAllocator {
             self.set_block_state(order, index, true);
         }
     }
+
     fn get_block_for_addr(&self, addr: usize, order: u64) -> usize {
         let offset = addr - self.mem_addr;
         offset / (0x1000usize << order)
@@ -215,14 +238,16 @@ impl BuddyAllocator {
     }
 
     fn get_block_state(&self, order: u64, index: usize) -> bool {
+        let bit_idx = index & 0x3F;
+
         match order {
-            0 => (self.ord_0_bitmap[index / 64] & (1u64 << (index % 64))) != 0,
-            1 => (self.ord_1_bitmap[index / 64] & (1u64 << (index % 64))) != 0,
-            2 => (self.ord_2_bitmap & (1u64 << index % 64)) != 0,
+            0 => self.ord_0_bitmap[index >> 6].get(bit_idx),
+            1 => self.ord_1_bitmap[index >> 6].get(bit_idx),
+            2 => self.ord_2_bitmap.get(bit_idx),
             3..=8 => {
-                let t = (1u64 << (8 - order)) - 1;
-                let bit = t + ((index as u64) & t);
-                (self.hi_ord_bitmap & (1 << bit)) != 0
+                let n_positions = 1u64 << (8 - order);
+                let bit = n_positions + ((index as u64) & (n_positions - 1));
+                self.hi_ord_bitmap.get(bit as usize)
             }
             _ => panic!("invalid order {} for buddy allocator", order),
         }
@@ -236,37 +261,17 @@ impl BuddyAllocator {
             self.n_blocks[order as usize] -= 1;
             self.free_bytes -= (0x1000 << order) as usize;
         }
+        let bm_idx = index >> 6;
+        let bit_idx = index & 0x3F;
 
         match order {
-            0 => {
-                if state {
-                    self.ord_0_bitmap[index / 64] |= 1u64 << (index % 64);
-                } else {
-                    self.ord_0_bitmap[index / 64] &= !(1u64 << (index % 64));
-                }
-            }
-            1 => {
-                if state {
-                    self.ord_1_bitmap[index / 64] |= 1u64 << (index % 64);
-                } else {
-                    self.ord_1_bitmap[index / 64] &= !(1u64 << (index % 64));
-                }
-            }
-            2 => {
-                if state {
-                    self.ord_2_bitmap |= 1u64 << index % 64;
-                } else {
-                    self.ord_2_bitmap &= !(1u64 << index % 64);
-                }
-            }
+            0 => self.ord_0_bitmap[bm_idx] = self.ord_0_bitmap[bm_idx].set(bit_idx, state),
+            1 => self.ord_1_bitmap[bm_idx] = self.ord_1_bitmap[bm_idx].set(bit_idx, state),
+            2 => self.ord_2_bitmap = self.ord_2_bitmap.set(bit_idx, state),
             3..=8 => {
-                let t = 1u64 << (8 - order);
-                let bit = (t - 1) + ((index as u64) % t);
-                if state {
-                    self.hi_ord_bitmap |= 1u64 << bit;
-                } else {
-                    self.hi_ord_bitmap &= !(1u64 << bit);
-                }
+                let n_positions = 1u64 << (8 - order);
+                let bit = n_positions + ((index as u64) & (n_positions - 1));
+                self.hi_ord_bitmap = self.hi_ord_bitmap.set(bit as usize, state);
             }
             _ => panic!("invalid order {} for buddy allocator", order),
         }

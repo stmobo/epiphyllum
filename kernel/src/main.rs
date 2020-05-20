@@ -18,6 +18,7 @@
 #![feature(alloc_layout_extra)]
 #![feature(weak_into_raw)]
 #![feature(deque_make_contiguous)]
+#![feature(leading_trailing_ones)]
 #![test_runner(crate::test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![allow(dead_code)]
@@ -120,8 +121,6 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         malloc::large_zone_alloc::initialize(lza_start, lza_pages as usize);
     }
 
-    paging::init_paging_metadata();
-
     malloc::physical_mem::initialize();
     if let Some(mmap) = mb.get_memory_info() {
         println!("Memory map:");
@@ -158,6 +157,8 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     unsafe {
         malloc::virtual_mem::initialize(boot_info.heap_pages);
     }
+
+    paging::init_paging_metadata(&mb);
 
     println!("Heap virtual memory allocator initialized.");
 

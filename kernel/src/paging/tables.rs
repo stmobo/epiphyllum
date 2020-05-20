@@ -250,6 +250,10 @@ pub enum MappingError {
     AlreadyMapped,
 }
 
+pub struct PageTableMetadata {
+    refcount: u64,
+}
+
 #[derive(Copy, Clone)]
 struct Resolved(PhysicalPointer<PageTable>, PageLevel);
 

@@ -5,14 +5,15 @@ use x86_64::VirtAddr;
 
 use crate::asm;
 use crate::asm::cpuid::FeatureFlags;
-use crate::lock::LockedGlobal;
 use crate::malloc::{physical_mem, AllocationError, PhysicalMemory, VirtualMemory};
-use crate::structures::AVLTree;
+use crate::multiboot::MultibootInfo;
 
 mod index;
+mod structs;
 mod tables;
 
 pub use index::PageHierarchyIndex;
+pub use structs::PageData;
 pub use tables::{PageTable, PageTableEntry};
 
 pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
@@ -30,9 +31,6 @@ const KERNEL_BASE_PML4_IDX: usize = 0b110_001_000;
 const KERNEL_HEAP_PML4_IDX: usize = 0b110_000_001;
 const PHYSICAL_MAP_PML4_IDX: usize = 0b100_000_010;
 const HIGHER_HALF_PML4_IDX: usize = 0b100_000_000;
-
-static PAGING_METADATA: LockedGlobal<AVLTree<PageHierarchyIndex, PageTableMetadata>> =
-    LockedGlobal::new();
 
 pub fn is_page_aligned<T: Into<usize>>(value: T) -> bool {
     let v: usize = value.into();
@@ -53,79 +51,13 @@ pub fn round_to_prev_page<T: Into<usize>>(value: T) -> usize {
     v & PAGE_MASK
 }
 
-pub fn init_paging_metadata() {
-    PAGING_METADATA.init(|| AVLTree::new());
+pub fn init_paging_metadata<'a>(mb: &'a MultibootInfo) {
+    structs::initialize(mb);
 }
 
 #[derive(Debug, Clone)]
 pub struct PageTableMetadata {
     ref_count: u16,
-}
-
-fn add_page_table_ref(index: PageHierarchyIndex) {
-    if index == PageHierarchyIndex::PML4T {
-        return;
-    }
-
-    let mut metadata_tree = PAGING_METADATA.lock();
-    if let Some(mut node) = metadata_tree.get_mut(&index) {
-        node.ref_count += 1;
-    } else {
-        metadata_tree
-            .insert(index, PageTableMetadata { ref_count: 1 })
-            .expect("could not add page table metadata to tree");
-
-        if let Some(parent) = index.parent() {
-            if parent != PageHierarchyIndex::PML4T {
-                drop(metadata_tree);
-                return add_page_table_ref(parent);
-            }
-        }
-    }
-}
-
-fn remove_page_table_ref(index: PageHierarchyIndex) {
-    if !index.is_valid() || index == PageHierarchyIndex::PML4T {
-        return;
-    }
-
-    let mut metadata_tree = PAGING_METADATA.lock();
-    let mut should_delete = false;
-
-    if let Some(mut node) = metadata_tree.get_mut(&index) {
-        node.ref_count -= 1;
-        should_delete = node.ref_count == 0;
-    }
-
-    if should_delete {
-        metadata_tree.remove(&index);
-        let parent = index.parent().unwrap();
-        let table = index.get_table().unwrap();
-        let parent_table = parent.get_table().unwrap();
-
-        match parent {
-            PageHierarchyIndex::PML4T => parent_table
-                .unmap_entry(index.pml4t_index().unwrap())
-                .unwrap(),
-            PageHierarchyIndex::PDPT(_) => parent_table
-                .unmap_entry(index.pdpt_index().unwrap())
-                .unwrap(),
-            PageHierarchyIndex::PD(_) => {
-                parent_table.unmap_entry(index.pd_index().unwrap()).unwrap()
-            }
-            _ => unreachable!(),
-        };
-
-        let paddr = table.table_addr();
-        unsafe {
-            physical_mem::deallocate(paddr, 0x1000);
-        }
-
-        if parent != PageHierarchyIndex::PML4T {
-            drop(metadata_tree);
-            return remove_page_table_ref(parent);
-        }
-    }
 }
 
 pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
@@ -206,13 +138,8 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
         return true;
     }
 
-    let replaced_mapping = entry.present();
     pt.map_addr(pt_offset, phys_addr)
         .expect("failed to map page");
-
-    if !replaced_mapping {
-        add_page_table_ref(table_index);
-    }
 
     if tlb_reload_required {
         tlb::flush_all();
@@ -229,7 +156,6 @@ pub fn unmap_virtual_address(virt_addr: usize) {
         let pt_offset = (virt_addr >> 12) & 0x1FF;
         table.unmap_entry(pt_offset).expect("failed to unmap page");
 
-        remove_page_table_ref(table_index);
         tlb::flush(VirtAddr::new(virt_addr as u64));
     }
 }
@@ -287,68 +213,30 @@ pub fn remap_boot_identity_paging() {
 #[allow(unused_must_use)]
 pub fn reserve_bootstrap_physical_pages() {
     unsafe {
-        let mut metadata_tree = PAGING_METADATA.lock();
-
         let pml4t = PageTable::get_pml4t();
-        let mut pml4t_rc = 0;
-
         for (pml4_idx, ent) in pml4t
             .iter()
             .enumerate()
             .skip(HIGHER_HALF_PML4_IDX - 1)
             .filter(|p| p.1.present())
         {
-            pml4t_rc += 1;
-
             physical_mem::allocate_at(ent.physical_address(), 0x1000);
             let pdpt = PageTable::get_pdpt(pml4_idx);
-            let mut pdpt_rc = 0;
 
             for (pdpt_idx, ent) in pdpt.iter().enumerate().filter(|e| e.1.present()) {
-                pdpt_rc += 1;
-
                 physical_mem::allocate_at(ent.physical_address(), 0x1000);
                 let pd = PageTable::get_pd(pml4_idx, pdpt_idx);
-                let mut pd_rc = 0;
 
                 for (pd_idx, ent) in pd.iter().enumerate().filter(|e| e.1.present()) {
-                    pd_rc += 1;
-
                     physical_mem::allocate_at(ent.physical_address(), 0x1000);
                     let pt = PageTable::get_pt(pml4_idx, pdpt_idx, pd_idx);
-                    let mut pt_rc = 0;
 
                     for ent in pt.iter().filter(|e| e.present()) {
-                        pt_rc += 1;
                         physical_mem::allocate_at(ent.physical_address(), 0x1000);
                     }
-
-                    let index =
-                        PageHierarchyIndex::pt(pml4_idx as u32, pdpt_idx as u32, pd_idx as u32);
-
-                    let metadata = PageTableMetadata { ref_count: pt_rc };
-
-                    metadata_tree.insert(index, metadata);
                 }
-
-                let index = PageHierarchyIndex::pd(pml4_idx as u32, pdpt_idx as u32);
-                let metadata = PageTableMetadata { ref_count: pd_rc };
-
-                metadata_tree.insert(index, metadata);
             }
-
-            let index = PageHierarchyIndex::pdpt(pml4_idx as u16);
-            let metadata = PageTableMetadata { ref_count: pdpt_rc };
-
-            metadata_tree.insert(index, metadata);
         }
-
-        let index = PageHierarchyIndex::PML4T;
-        let metadata = PageTableMetadata {
-            ref_count: pml4t_rc,
-        };
-
-        metadata_tree.insert(index, metadata);
     }
 }
 

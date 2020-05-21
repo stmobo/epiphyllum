@@ -1,6 +1,7 @@
 use super::bindings::*;
 use crate::lock::LockedGlobal;
 use crate::paging;
+use crate::paging::PhysicalPointer;
 
 use alloc_crate::alloc::Layout;
 use alloc_crate::boxed::Box;
@@ -123,28 +124,25 @@ pub extern "C" fn AcpiOsGetPhysicalAddress(
     LogicalAddress: *mut cty::c_void,
     PhysicalAddress: *mut ACPI_PHYSICAL_ADDRESS,
 ) -> ACPI_STATUS {
-    use paging::PageTableEntry;
-
     if LogicalAddress == ptr::null_mut() || PhysicalAddress == ptr::null_mut() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
     let vaddr = LogicalAddress as usize;
-    let page_start = paging::round_to_prev_page(vaddr);
-    let entry: Option<PageTableEntry> = paging::get_mapping(page_start);
+    if let Some((level, entry)) = paging::get_page_mapping(vaddr) {
+        if entry.present() {
+            let page_offset = vaddr & level.alignment_mask().unwrap();
+            let paddr = entry.physical_address();
 
-    if entry.is_none() {
-        return AcpiError::AE_ERROR.into();
+            unsafe {
+                (*PhysicalAddress) = (paddr + page_offset) as ACPI_PHYSICAL_ADDRESS;
+            }
+
+            return AE_OK;
+        }
     }
 
-    let paddr = entry.unwrap().physical_address();
-    let page_offset = vaddr - page_start;
-
-    unsafe {
-        (*PhysicalAddress) = (paddr + page_offset) as ACPI_PHYSICAL_ADDRESS;
-    }
-
-    AE_OK
+    AcpiError::AE_ERROR.into()
 }
 
 #[no_mangle]
@@ -155,7 +153,7 @@ pub extern "C" fn AcpiOsReadable(Pointer: *mut cty::c_void, Length: ACPI_SIZE) -
 
     for i in 0..n_pages {
         let address = start + (0x1000 * i);
-        if paging::get_mapping(address).is_none() {
+        if paging::get_page_mapping(address).is_none() {
             return false as BOOLEAN;
         }
     }
@@ -171,7 +169,7 @@ pub extern "C" fn AcpiOsWritable(Pointer: *mut cty::c_void, Length: ACPI_SIZE) -
 
     for i in 0..n_pages {
         let address = start + (0x1000 * i);
-        if let Some(entry) = paging::get_mapping(address) {
+        if let Some((_, entry)) = paging::get_page_mapping(address) {
             if !entry.writable() {
                 return false as BOOLEAN;
             }
@@ -284,28 +282,26 @@ pub fn AcpiOsReadMemory(
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
-    let vaddr = paging::offset_direct_map(Address as usize);
-    let virt_page = paging::round_to_prev_page(vaddr);
-    let phys_page = paging::round_to_prev_page(Address as usize);
-
-    if !paging::map_virtual_address(virt_page, phys_page) {
-        return AcpiError::AE_NO_MEMORY.into();
-    }
-
     unsafe {
-        let ret = match Width {
-            8 => ptr::read_unaligned(vaddr as *const u8) as u64,
-            16 => ptr::read_unaligned(vaddr as *const u16) as u64,
-            32 => ptr::read_unaligned(vaddr as *const u32) as u64,
-            64 => ptr::read_unaligned(vaddr as *const u64) as u64,
+        let v = match Width {
+            8 => PhysicalPointer::<u8>::new(Address as usize)
+                .map(|p| p.as_ptr().read_unaligned() as u64),
+            16 => PhysicalPointer::<u16>::new(Address as usize)
+                .map(|p| p.as_ptr().read_unaligned() as u64),
+            32 => PhysicalPointer::<u32>::new(Address as usize)
+                .map(|p| p.as_ptr().read_unaligned() as u64),
+            64 => {
+                PhysicalPointer::<u64>::new(Address as usize).map(|p| p.as_ptr().read_unaligned())
+            }
             _ => return AcpiError::AE_BAD_PARAMETER.into(),
         };
 
-        *Value = ret;
-
-        paging::unmap_virtual_address(virt_page);
-
-        AE_OK
+        if let Some(value) = v {
+            *Value = value;
+            AE_OK
+        } else {
+            AcpiError::AE_BAD_PARAMETER.into()
+        }
     }
 }
 
@@ -319,26 +315,42 @@ pub fn AcpiOsWriteMemory(
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
-    let vaddr = paging::offset_direct_map(Address as usize);
-    let virt_page = paging::round_to_prev_page(vaddr);
-    let phys_page = paging::round_to_prev_page(Address as usize);
-
-    if !paging::map_virtual_address(virt_page, phys_page) {
-        return AcpiError::AE_NO_MEMORY.into();
-    }
-
     unsafe {
         match Width {
-            8 => ptr::write_unaligned(vaddr as *mut u8, (Value & 0xFF) as u8),
-            16 => ptr::write_unaligned(vaddr as *mut u16, (Value & 0xFFFF) as u16),
-            32 => ptr::write_unaligned(vaddr as *mut u32, (Value & 0xFFFF_FFFF) as u32),
-            64 => ptr::write_unaligned(vaddr as *mut u64, Value),
-            _ => return AcpiError::AE_BAD_PARAMETER.into(),
-        };
-
-        paging::unmap_virtual_address(virt_page);
-
-        AE_OK
+            8 => {
+                if let Some(p) = PhysicalPointer::<u8>::new(Address as usize) {
+                    p.as_mut_ptr().write_unaligned((Value & 0xFF) as u8);
+                    AE_OK
+                } else {
+                    AcpiError::AE_BAD_PARAMETER.into()
+                }
+            }
+            16 => {
+                if let Some(p) = PhysicalPointer::<u16>::new(Address as usize) {
+                    p.as_mut_ptr().write_unaligned((Value & 0xFFFF) as u16);
+                    AE_OK
+                } else {
+                    AcpiError::AE_BAD_PARAMETER.into()
+                }
+            }
+            32 => {
+                if let Some(p) = PhysicalPointer::<u32>::new(Address as usize) {
+                    p.as_mut_ptr().write_unaligned((Value & 0xFFFF_FFFF) as u32);
+                    AE_OK
+                } else {
+                    AcpiError::AE_BAD_PARAMETER.into()
+                }
+            }
+            64 => {
+                if let Some(p) = PhysicalPointer::<u64>::new(Address as usize) {
+                    p.as_mut_ptr().write_unaligned(Value);
+                    AE_OK
+                } else {
+                    AcpiError::AE_BAD_PARAMETER.into()
+                }
+            }
+            _ => AcpiError::AE_BAD_PARAMETER.into(),
+        }
     }
 }
 

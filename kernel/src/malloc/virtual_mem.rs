@@ -1,8 +1,9 @@
 use alloc_crate::vec::Vec;
 use core::cmp::Ordering;
+use core::mem;
 use core::ops::Bound;
 
-use super::{AllocationError, MemoryPageAllocator};
+use super::AllocationError;
 use crate::lock::LockedGlobal;
 use crate::paging::{is_page_aligned, round_to_next_page, round_to_prev_page};
 use crate::structures::AVLTree;
@@ -44,7 +45,7 @@ impl VirtualMemoryRange {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct FreeListEntry {
     size: usize,
     address: usize,
@@ -79,6 +80,14 @@ impl Ord for FreeListEntry {
     }
 }
 
+impl PartialEq for FreeListEntry {
+    fn eq(&self, other: &FreeListEntry) -> bool {
+        (self.size == other.size) && (self.address == other.address)
+    }
+}
+
+impl Eq for FreeListEntry {}
+
 pub struct VirtualMemoryAllocator {
     regions: AVLTree<usize, VirtualMemoryRange>, /* indexed by address */
     free: Vec<FreeListEntry>,
@@ -93,7 +102,6 @@ impl VirtualMemoryAllocator {
     }
 
     /// Adds a region to the region tree and to the free list (if necessary).
-    /// The caller is responsible for re-sorting the list afterwards!
     fn add_range(&mut self, mut range: VirtualMemoryRange, free: bool) {
         if free {
             self.free.push(FreeListEntry::new(&range));
@@ -110,8 +118,9 @@ impl VirtualMemoryAllocator {
     }
 
     /// Remove an entry from the free list.
-    /// The caller is responsible for re-sorting the list afterwards!
     fn remove_free_list_entry(&mut self, range: &VirtualMemoryRange) {
+        self.sort_free_list();
+
         let entry = FreeListEntry::new(range);
         let idx = self
             .free
@@ -125,11 +134,13 @@ impl VirtualMemoryAllocator {
         let start = round_to_next_page(start);
         let end = round_to_prev_page(end);
         self.add_range(VirtualMemoryRange::new(start, end), true);
-        self.free.sort_unstable();
+        self.sort_free_list();
     }
 
     pub fn allocate(&mut self, size: usize) -> Result<usize, AllocationError> {
         let alloc_sz = round_to_next_page(size);
+
+        self.sort_free_list();
 
         if self.free.len() == 0 || self.free[0].size < size {
             return Err(AllocationError::NoFreeVirtualMemory);
@@ -160,8 +171,6 @@ impl VirtualMemoryAllocator {
             self.add_range(new_range, true);
         }
 
-        self.free.sort_unstable();
-
         Ok(alloc_start)
     }
 
@@ -182,7 +191,7 @@ impl VirtualMemoryAllocator {
 
         let (key, range) = opt.unwrap();
         if !range.free || range.end < end {
-            return Err(AllocationError::ReservedMemory);
+            return Err(AllocationError::AlreadyAllocated);
         }
 
         let key = *key;
@@ -206,7 +215,6 @@ impl VirtualMemoryAllocator {
 
         /* Add the allocated region itself. */
         self.add_range(range, false);
-        self.free.sort_unstable();
 
         Ok(start)
     }
@@ -250,9 +258,15 @@ impl VirtualMemoryAllocator {
         }
 
         if let Some((_, prev)) = self.regions.upper_bound_mut(Bound::Excluded(&start)) {
-            /* Remove middle range: */
+            /* Possibly remove middle range: */
             if prev.free && prev.end == range.start {
+                let mut clone = prev.clone();
                 prev.end = range.end;
+                drop(prev);
+
+                self.remove_free_list_entry(&clone);
+                clone.end = range.end;
+                self.free.push(FreeListEntry::new(&clone));
             } else {
                 self.add_range(range, true);
             }
@@ -260,8 +274,6 @@ impl VirtualMemoryAllocator {
             /* Insert middle range back into region tree / free list: */
             self.add_range(range, true);
         }
-
-        self.free.sort_unstable();
     }
 }
 
@@ -302,29 +314,68 @@ pub fn allocate_at(start: usize, end: usize) -> Result<usize, AllocationError> {
 /// Deallocate virtual memory pages from the kernel heap.
 ///
 /// The allocation memory address and size must match a previous call
-/// to [allocate_kernel_heap_pages] or []
+/// to allocate!
 pub fn deallocate(addr: usize, size: usize) {
     KERNEL_VMA.lock().deallocate(addr, size);
 }
 
-impl MemoryPageAllocator for VirtualMemoryAllocator {
-    fn allocate(size: usize) -> Result<usize, AllocationError> {
-        allocate(size)
+/// Represents an owned, allocated block of contiguous virtual memory.
+///
+/// This can be used as a safer interface to the virtual memory allocator;
+/// deallocation is handled automatically via Drop.
+pub struct VirtualMemory {
+    addr: usize,
+    len: usize,
+}
+
+impl VirtualMemory {
+    pub fn new(size: usize) -> Result<VirtualMemory, AllocationError> {
+        let len = round_to_next_page(size);
+
+        allocate(len).map(|addr| VirtualMemory { addr, len })
     }
 
-    unsafe fn allocate_at(addr: usize, size: usize) -> Result<usize, AllocationError> {
-        allocate_at(addr, size)
+    pub fn new_at(addr: usize, size: usize) -> Result<VirtualMemory, AllocationError> {
+        let start_addr = round_to_prev_page(addr);
+        let len = round_to_next_page(size);
+
+        allocate_at(start_addr, len).map(|addr| VirtualMemory { addr, len })
     }
 
-    unsafe fn deallocate(addr: usize, size: usize) {
-        deallocate(addr, size)
+    pub fn address(&self) -> usize {
+        self.addr
+    }
+
+    pub fn size(&self) -> usize {
+        self.len
+    }
+
+    pub fn into_raw(self) -> (usize, usize) {
+        let addr = self.addr;
+        let sz = self.len;
+        mem::forget(self);
+
+        (addr, sz)
+    }
+
+    pub fn into_address(self) -> usize {
+        self.into_raw().0
+    }
+
+    pub fn leak(self) {
+        mem::forget(self);
+    }
+}
+
+impl Drop for VirtualMemory {
+    fn drop(&mut self) {
+        deallocate(self.addr, self.len);
     }
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::malloc;
     use crate::malloc::tests::TestAlloc;
     use crate::rng::MersenneTwister64;
     use crate::test::TEST_SEED;
@@ -372,9 +423,7 @@ pub mod tests {
         }
 
         for alloc in allocs {
-            unsafe {
-                deallocate(alloc.addr, alloc.size);
-            }
+            deallocate(alloc.addr, alloc.size);
         }
     }
 }

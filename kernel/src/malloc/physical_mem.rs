@@ -1,18 +1,16 @@
-use crate::paging;
-use crate::paging::PAGE_MASK;
-use crate::structures::AVLTree;
-
 use alloc_crate::rc::Rc;
 use alloc_crate::vec::Vec;
-use core::cell::{Ref, RefCell, RefMut};
+use core::cell::RefCell;
 use core::cmp::Ordering;
 use core::mem;
-use core::ops::Bound;
+use core::ops::{Bound, Range};
 
+use super::AllocationError;
 use crate::lock::LockedGlobal;
+use crate::paging;
+use crate::paging::{PhysicalPointer, PAGE_MASK};
+use crate::structures::AVLTree;
 use crate::structures::Bitmask64;
-
-use super::{AllocationError, MemoryPageAllocator};
 
 const BUDDY_ALLOC_MAX_SIZE: usize = 0x1000usize << 8; // bytes
 const BUDDY_ALLOC_ALIGN_MASK: usize = !(BUDDY_ALLOC_MAX_SIZE - 1);
@@ -20,7 +18,7 @@ const BUDDY_ALLOC_ALIGN_MASK: usize = !(BUDDY_ALLOC_MAX_SIZE - 1);
 static KERNEL_PMA: LockedGlobal<PhysicalMemoryAllocator> = LockedGlobal::new();
 
 #[derive(Debug, Clone)]
-pub struct BuddyAllocator {
+struct BuddyAllocator {
     mem_addr: usize,
     region_end: usize,
     ord_0_bitmap: [Bitmask64; 4],
@@ -29,11 +27,10 @@ pub struct BuddyAllocator {
     hi_ord_bitmap: Bitmask64,
     n_blocks: [u16; 9],
     free_bytes: usize,
-    usage_list_idx: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BuddyAllocatorError {
+enum BuddyAllocatorError {
     RegionTooSmall(usize),
     RegionTooLarge(usize),
 }
@@ -42,7 +39,7 @@ impl BuddyAllocator {
     fn new(addr: usize, region_len: usize) -> Result<BuddyAllocator, BuddyAllocatorError> {
         if region_len < 0x1000 {
             return Err(BuddyAllocatorError::RegionTooSmall(region_len));
-        } else if region_len > (0x1000 * 1024) {
+        } else if region_len > (0x1000 * 256) {
             return Err(BuddyAllocatorError::RegionTooLarge(region_len));
         }
 
@@ -60,7 +57,6 @@ impl BuddyAllocator {
             hi_ord_bitmap: Bitmask64::all_zeros(),
             n_blocks: [0; 9],
             free_bytes: 0,
-            usage_list_idx: 0,
         };
 
         while remaining_region_size > 0 {
@@ -90,6 +86,8 @@ impl BuddyAllocator {
                 index, order
             );
         }
+
+        debug_assert!(self.get_block_state(order, index));
 
         self.set_block_state(order, index, false);
         self.set_block_state(order - 1, index << 1, true);
@@ -130,6 +128,7 @@ impl BuddyAllocator {
     fn allocate_block(&mut self, order: u64) -> Option<usize> {
         if self.n_blocks[order as usize] > 0 {
             if let Some(idx) = self.find_free_block_single(order) {
+                debug_assert!(self.get_block_state(order, idx));
                 self.set_block_state(order, idx, false);
 
                 return Some(idx);
@@ -143,10 +142,13 @@ impl BuddyAllocator {
             for ord in (order + 1)..9 {
                 if self.n_blocks[ord as usize] > 0 {
                     let n_levels = ord - order;
+                    let hi_block = self.find_free_block_single(ord).unwrap();
+                    let mut cur_block = hi_block;
+
                     for i in 0..n_levels {
                         let cur_lvl = ord - i;
-                        let block = self.find_free_block_single(cur_lvl).unwrap();
-                        self.split_block(cur_lvl, block);
+                        self.split_block(cur_lvl, cur_block);
+                        cur_block <<= 1;
                     }
 
                     break;
@@ -154,6 +156,7 @@ impl BuddyAllocator {
             }
 
             if let Some(idx) = self.find_free_block_single(order) {
+                debug_assert!(self.get_block_state(order, idx));
                 self.set_block_state(order, idx, false);
                 Some(idx)
             } else {
@@ -221,6 +224,8 @@ impl BuddyAllocator {
             if self.get_block_state(order, buddy) {
                 self.set_block_state(order, buddy, false);
                 self.free_block(order + 1, index >> 1);
+            } else {
+                self.set_block_state(order, index, true);
             }
         } else {
             self.set_block_state(order, index, true);
@@ -287,7 +292,7 @@ impl BuddyAllocator {
         9
     }
 
-    pub fn allocate(&mut self, order: u64) -> Option<usize> {
+    fn allocate(&mut self, order: u64) -> Option<usize> {
         if order > 8 {
             return None;
         }
@@ -299,7 +304,7 @@ impl BuddyAllocator {
         ret
     }
 
-    pub fn allocate_at(&mut self, addr: usize, order: u64) -> Option<usize> {
+    fn allocate_at(&mut self, addr: usize, order: u64) -> Option<usize> {
         if order > 8 {
             return None;
         }
@@ -312,368 +317,99 @@ impl BuddyAllocator {
         }
     }
 
-    pub fn deallocate(&mut self, addr: usize, order: u64) {
+    fn deallocate(&mut self, addr: usize, order: u64) {
         if order > 8 {
-            return;
+            panic!("invalid order {} for deallocation", order);
         }
 
         let block_idx = self.get_block_for_addr(addr, order);
         self.free_block(order, block_idx);
     }
 
-    pub fn get_range(allocator: &BuddyAllocator) -> (usize, usize) {
-        (allocator.mem_addr, allocator.region_end)
-    }
-}
-
-#[derive(Debug)]
-pub struct FreeMemoryRange {
-    range_start: usize,
-    range_end: usize,
-}
-
-impl FreeMemoryRange {
-    fn new(range_start: usize, range_end: usize) -> FreeMemoryRange {
-        FreeMemoryRange {
-            range_start,
-            range_end,
-        }
-    }
-
-    fn size(&self) -> usize {
-        self.range_end - self.range_start
-    }
-}
-
-impl PartialOrd for FreeMemoryRange {
-    fn partial_cmp(&self, other: &FreeMemoryRange) -> Option<Ordering> {
-        Some(self.size().cmp(&other.size()).reverse())
-    }
-}
-
-impl Ord for FreeMemoryRange {
-    fn cmp(&self, other: &FreeMemoryRange) -> Ordering {
-        self.size().cmp(&other.size()).reverse()
-    }
-}
-
-impl PartialEq for FreeMemoryRange {
-    fn eq(&self, other: &FreeMemoryRange) -> bool {
-        self.size() == other.size()
-    }
-}
-
-impl Eq for FreeMemoryRange {}
-
-#[derive(Debug, Clone)]
-#[repr(transparent)]
-pub struct BuddyAllocatorWrapper {
-    allocator: Rc<RefCell<BuddyAllocator>>,
-}
-
-impl BuddyAllocatorWrapper {
-    fn new(addr: usize, region_len: usize) -> BuddyAllocatorWrapper {
-        BuddyAllocatorWrapper {
-            allocator: Rc::new(RefCell::new(BuddyAllocator::new(addr, region_len).unwrap())),
-        }
-    }
-
-    fn borrow(&self) -> Ref<'_, BuddyAllocator> {
-        self.allocator.borrow()
-    }
-
-    fn borrow_mut(&self) -> RefMut<'_, BuddyAllocator> {
-        self.allocator.borrow_mut()
-    }
-
-    fn usage_list_idx(&self) -> usize {
-        self.allocator.borrow().usage_list_idx
-    }
-
-    fn set_usage_idx(&self, idx: usize) {
-        let mut l = self.allocator.borrow_mut();
-        l.usage_list_idx = idx;
-    }
-
-    fn swap_usage_indices(&self, other: &BuddyAllocatorWrapper) {
-        use core::ptr;
-
-        if ptr::eq(self, other) {
-            return;
-        }
-
-        let mut r1 = self.borrow_mut();
-        let mut r2 = other.borrow_mut();
-
-        mem::swap(&mut r1.usage_list_idx, &mut r2.usage_list_idx);
-    }
-
-    fn free_bytes(&self) -> usize {
-        self.allocator.borrow().free_bytes
-    }
-
-    fn start_address(&self) -> usize {
-        self.allocator.borrow().mem_addr
-    }
-
-    fn get_range(&self) -> (usize, usize) {
-        let l = self.borrow();
-        (l.mem_addr, l.region_end)
-    }
-
-    fn allocate(&self, order: u64) -> Option<usize> {
-        self.borrow_mut().allocate(order)
-    }
-
-    fn allocate_at(&self, addr: usize, order: u64) -> Option<usize> {
-        self.borrow_mut().allocate_at(addr, order)
-    }
-
-    fn deallocate(&self, addr: usize, order: u64) {
-        self.borrow_mut().deallocate(addr, order)
-    }
-}
-
-#[derive(Debug)]
-pub struct PhysicalMemoryRange {
-    range_start: usize,
-    range_end: usize,
-    free: Vec<FreeMemoryRange>,
-    allocator_tree: AVLTree<usize, BuddyAllocatorWrapper>, /* Organized by memory range address */
-    allocator_usage_list: Vec<BuddyAllocatorWrapper>,      /* Sorted by free space amount. */
-}
-
-impl PhysicalMemoryRange {
-    fn new(addr: usize, len: usize) -> PhysicalMemoryRange {
-        if addr & 0x1000 != 0 {
-            panic!(
-                "attempted to create unaligned physical memory range at {:#016x}",
-                addr
-            );
-        }
-
-        let new_range = PhysicalMemoryRange {
-            range_start: addr,
-            range_end: addr + len,
-            free: vec![FreeMemoryRange::new(addr, addr + len)],
-            allocator_tree: AVLTree::<usize, BuddyAllocatorWrapper>::new(),
-            allocator_usage_list: Vec::new(),
-        };
-
-        new_range
-    }
-
-    fn add_allocator(&mut self, wrapper: BuddyAllocatorWrapper) {
-        let idx = self.allocator_usage_list.len();
-        wrapper.set_usage_idx(idx);
-
-        self.allocator_usage_list.push(wrapper.clone());
-        self.usage_list_sift_up(idx);
-
-        self.allocator_tree
-            .insert(wrapper.start_address(), wrapper)
-            .expect("could not add allocator for physical memory range");
-    }
-
-    fn usage_list_sift_up(&mut self, idx: usize) {
-        if idx == 0 {
-            return;
-        }
-
-        let parent_idx = (idx - 1) >> 1;
-        let parent = &self.allocator_usage_list[parent_idx];
-        let child = &self.allocator_usage_list[idx];
-
-        if child.free_bytes() > parent.free_bytes() {
-            child.swap_usage_indices(parent);
-
-            drop(parent);
-            drop(child);
-
-            self.allocator_usage_list.swap(idx, parent_idx);
-            return self.usage_list_sift_up(parent_idx);
-        }
-    }
-
-    fn usage_list_sift_down(&mut self, idx: usize) {
-        if self.allocator_usage_list.len() >= idx {
-            return;
-        }
-
-        let mut swap_idx = idx;
-        let mut swap_child: &BuddyAllocatorWrapper = &self.allocator_usage_list[idx];
-
-        if let Some(c1) = self.allocator_usage_list.get((idx << 1) + 1) {
-            if c1.free_bytes() > swap_child.free_bytes() {
-                swap_idx = (idx << 1) + 1;
-                swap_child = &self.allocator_usage_list[swap_idx];
+    fn has_order_available(&self, order: u64) -> bool {
+        for i in (order as usize)..=8 {
+            if self.n_blocks[i] > 0 {
+                return true;
             }
         }
 
-        if let Some(c2) = self.allocator_usage_list.get((idx << 1) + 2) {
-            if c2.free_bytes() > swap_child.free_bytes() {
-                swap_idx = (idx << 1) + 2;
-                swap_child = &self.allocator_usage_list[swap_idx];
-            }
-        }
-
-        if swap_idx != idx {
-            self.allocator_usage_list[idx].swap_usage_indices(swap_child);
-            drop(swap_child);
-
-            self.allocator_usage_list.swap(swap_idx, idx);
-            return self.usage_list_sift_down(swap_idx);
-        }
+        false
     }
 
-    /// Allocate a specific range of addresses within this PhysicalMemoryRange.
-    ///
-    /// Buffers allocated at specific addresses must not cross megabyte boundaries!
-    pub fn allocate_at(
-        &mut self,
-        range_start: usize,
-        range_end: usize,
-    ) -> Result<usize, AllocationError> {
-        let allocators_start =
-            self.range_start + ((range_start - self.range_start) & BUDDY_ALLOC_ALIGN_MASK);
-
-        let order = BuddyAllocator::round_allocation_size(range_end - range_start);
-
-        if let Some((_, node)) = self
-            .allocator_tree
-            .upper_bound_mut(Bound::Included(&range_start))
-        {
-            let (start_address, end_address) = node.get_range();
-            if start_address <= range_start && end_address >= range_end {
-                let ret = node.allocate_at(range_start, order);
-                let idx = node.usage_list_idx();
-                drop(node);
-
-                self.usage_list_sift_down(idx);
-
-                return ret.ok_or(AllocationError::NoFreePhysicalMemory);
-            }
-        }
-
-        let allocators_end: usize;
-        if allocators_start + BUDDY_ALLOC_MAX_SIZE <= self.range_end {
-            allocators_end = allocators_start + BUDDY_ALLOC_MAX_SIZE;
-        } else {
-            allocators_end = self.range_end;
-        }
-
-        /* Sweep through the free list and see if any currently-free areas
-         * intersect the range.
-         */
-        let mut intersect_range: Option<usize> = None;
-        for (i, cur) in self.free.iter().enumerate() {
-            if cur.range_start <= allocators_start && cur.range_end >= allocators_end {
-                intersect_range = Some(i);
-                break;
-            }
-
-            /* We don't handle partial overlaps for now. */
-        }
-
-        if intersect_range.is_none() {
-            return Err(AllocationError::InvalidAllocation);
-        }
-
-        let range = self.free.swap_remove(intersect_range.unwrap());
-        if range.range_start < allocators_start && allocators_start - range.range_start >= 0x1000 {
-            self.free
-                .push(FreeMemoryRange::new(range.range_start, allocators_start));
-        }
-
-        if allocators_end < range.range_end && range.range_end - allocators_end >= 0x1000 {
-            self.free
-                .push(FreeMemoryRange::new(allocators_end, range.range_end));
-        }
-
-        self.free.sort_unstable();
-
-        /* Insert our new allocator. */
-        let wrapper =
-            BuddyAllocatorWrapper::new(allocators_start, allocators_end - allocators_start);
-        let ret = wrapper.allocate_at(range_start, order);
-        self.add_allocator(wrapper);
-
-        return ret.ok_or(AllocationError::NoFreePhysicalMemory);
+    fn region_end(&self) -> usize {
+        self.region_end
     }
 
-    pub fn allocate(&mut self, size: usize) -> Result<usize, AllocationError> {
-        let order = BuddyAllocator::round_allocation_size(size);
-
-        if let Some(wrapper) = self.allocator_usage_list.get(0) {
-            let mut allocator = wrapper.borrow_mut();
-            if let Some(addr) = allocator.allocate(order) {
-                let idx = allocator.usage_list_idx;
-                drop(allocator);
-                drop(wrapper);
-
-                self.usage_list_sift_down(idx);
-                return Ok(addr);
-            }
-        }
-
-        if let Some(cur_free_head) = self.free.get_mut(0) {
-            let mut new_allocator_sz = cur_free_head.range_end - cur_free_head.range_start;
-            if new_allocator_sz > BUDDY_ALLOC_MAX_SIZE {
-                new_allocator_sz = BUDDY_ALLOC_MAX_SIZE;
-            }
-
-            let start_addr = cur_free_head.range_start;
-            cur_free_head.range_start += new_allocator_sz;
-            if cur_free_head.range_start >= cur_free_head.range_end {
-                drop(cur_free_head);
-
-                self.free.swap_remove(0);
-                self.free.sort_unstable();
-            }
-
-            let wrapper = BuddyAllocatorWrapper::new(start_addr, new_allocator_sz);
-            let ret = wrapper.allocate(order);
-            self.add_allocator(wrapper);
-
-            return ret.ok_or(AllocationError::NoFreePhysicalMemory);
-        }
-
-        Err(AllocationError::NoFreePhysicalMemory)
-    }
-
-    pub fn deallocate(&mut self, addr: usize, size: usize) {
-        if self.allocator_tree.is_empty() {
-            return;
-        }
-
-        let order = BuddyAllocator::round_allocation_size(size);
-        if let Some((_, wrapper)) = self.allocator_tree.upper_bound_mut(Bound::Included(&addr)) {
-            wrapper.deallocate(addr, order);
-            let idx = wrapper.usage_list_idx();
-
-            drop(wrapper);
-            self.usage_list_sift_up(idx);
-        }
+    fn region_start(&self) -> usize {
+        self.mem_addr
     }
 }
 
-#[derive(Debug)]
-pub struct PhysicalMemoryAllocator {
-    ranges: Vec<PhysicalMemoryRange>,
+struct PhysicalMemoryAllocator {
+    allocators: AVLTree<usize, Rc<RefCell<BuddyAllocator>>>, // indexed by address
+    free: Vec<Rc<RefCell<BuddyAllocator>>>,
 }
 
 impl PhysicalMemoryAllocator {
-    pub fn new() -> PhysicalMemoryAllocator {
-        PhysicalMemoryAllocator { ranges: Vec::new() }
+    fn new() -> PhysicalMemoryAllocator {
+        PhysicalMemoryAllocator {
+            allocators: AVLTree::new(),
+            free: Vec::new(),
+        }
     }
 
-    pub unsafe fn register_range(&mut self, addr: usize, len: usize) {
-        self.ranges.push(PhysicalMemoryRange::new(addr, len));
+    fn free_list_cmp(a: &Rc<RefCell<BuddyAllocator>>, b: &Rc<RefCell<BuddyAllocator>>) -> Ordering {
+        a.borrow().free_bytes.cmp(&b.borrow().free_bytes).reverse()
     }
 
-    pub fn allocate(&mut self, size: usize) -> Result<usize, AllocationError> {
-        for r in self.ranges.iter_mut() {
-            if let Ok(addr) = r.allocate(size) {
+    fn sort_free_list(&mut self) {
+        self.free.sort_unstable_by(Self::free_list_cmp);
+    }
+
+    fn new_allocator(&mut self, addr: usize, len: usize) {
+        debug_assert!(len <= (0x1000 * 256));
+
+        let rc = Rc::new(RefCell::new(
+            BuddyAllocator::new(addr, len).expect("could not create buddy allocator"),
+        ));
+
+        self.allocators
+            .insert(addr, rc.clone())
+            .expect("allocator already present");
+        self.free.push(rc);
+    }
+
+    fn register_range(&mut self, addr: usize, len: usize) {
+        let mut cur_len = len;
+        let mut cur_addr = addr;
+
+        while cur_len >= (0x1000 * 256) {
+            self.new_allocator(cur_addr, 0x1000 * 256);
+            cur_addr += 0x1000 * 256;
+            cur_len -= 0x1000 * 256;
+        }
+
+        if cur_len >= 0x1000 {
+            self.new_allocator(cur_addr, cur_len);
+        }
+
+        self.sort_free_list();
+    }
+
+    fn allocate_block(&mut self, order: u64) -> Result<usize, AllocationError> {
+        debug_assert!(order <= 8);
+
+        for allocator in self.free.iter() {
+            let mut m = allocator.borrow_mut();
+            if m.has_order_available(order) {
+                let addr = m
+                    .allocate(order)
+                    .expect("inconsistent buddy allocator state");
+
+                drop(m);
+                drop(allocator);
+
+                self.sort_free_list();
                 return Ok(addr);
             }
         }
@@ -681,21 +417,40 @@ impl PhysicalMemoryAllocator {
         Err(AllocationError::NoFreePhysicalMemory)
     }
 
-    pub fn allocate_at(&mut self, addr: usize, size: usize) -> Result<usize, AllocationError> {
-        for r in self.ranges.iter_mut() {
-            if r.range_start <= addr && r.range_end >= (addr + size) {
-                return r.allocate_at(addr, addr + size);
-            }
-        }
+    fn deallocate_block(&mut self, addr: usize, order: u64) {
+        let (_, allocator) = self
+            .allocators
+            .upper_bound(Bound::Included(&addr))
+            .expect("could not find originating allocator for deallocation request");
 
-        Err(AllocationError::ReservedMemory)
+        let mut m = allocator.borrow_mut();
+        debug_assert!(m.region_start() <= addr);
+        debug_assert!(m.region_end() > addr);
+
+        m.deallocate(addr, order);
+        drop(m);
+
+        self.sort_free_list();
     }
 
-    pub fn deallocate(&mut self, addr: usize, size: usize) {
-        for r in self.ranges.iter_mut() {
-            if addr >= r.range_start && addr < r.range_end {
-                r.deallocate(addr, size);
-            }
+    fn allocate_block_at(&mut self, addr: usize, order: u64) -> Result<usize, AllocationError> {
+        let (_, allocator) = self
+            .allocators
+            .upper_bound(Bound::Included(&addr))
+            .ok_or(AllocationError::ReservedMemory)?;
+
+        let mut m = allocator.borrow_mut();
+        if m.region_end() < addr {
+            return Err(AllocationError::ReservedMemory);
+        }
+
+        if let Some(addr) = m.allocate_at(addr, order) {
+            drop(m);
+
+            self.sort_free_list();
+            Ok(addr)
+        } else {
+            Err(AllocationError::AlreadyAllocated)
         }
     }
 }
@@ -711,63 +466,196 @@ pub unsafe fn register(addr: usize, len: usize) {
     KERNEL_PMA.lock().register_range(addr, len);
 }
 
-/// Allocate a given amount of physical memory in bytes.
-///
-/// The given size must be a multiple of the page size!
-pub fn allocate(size: usize) -> Result<usize, AllocationError> {
-    KERNEL_PMA.lock().allocate(size)
+fn pfn_range(addr: usize, order: u64) -> Range<usize> {
+    let pfn_count: usize = 1 << (order as usize);
+    let pfn_start = addr >> 12;
+    pfn_start..(pfn_start + pfn_count)
 }
 
-/// Allocate a given amount of physical memory in bytes at a specific address.
+/// Allocate a block of physical memory pages.
 ///
-/// The given size must be a multiple of the page size, and the allocated
-/// buffer must not cross a megabyte boundary.
-pub unsafe fn allocate_at(addr: usize, size: usize) -> Result<usize, AllocationError> {
-    KERNEL_PMA.lock().allocate_at(addr, size)
-}
-
-/// Deallocate a previously-allocated physical memory range.
-///
-/// The size passed to this function must be the same size as
-/// passed to the original allocation call!
-pub unsafe fn deallocate(addr: usize, size: usize) {
-    KERNEL_PMA.lock().deallocate(addr, size);
-}
-
-impl MemoryPageAllocator for PhysicalMemoryAllocator {
-    fn allocate(size: usize) -> Result<usize, AllocationError> {
-        allocate(size)
+/// The order is a buddy allocator order; the number of memory pages actually
+/// allocated is (1 << order).
+pub fn allocate(order: u64) -> Result<usize, AllocationError> {
+    if order > 8 {
+        return Err(AllocationError::InvalidAllocation);
     }
 
-    unsafe fn allocate_at(addr: usize, size: usize) -> Result<usize, AllocationError> {
-        let order = BuddyAllocator::round_allocation_size(paging::round_to_next_page(size));
-        let alloc_end = addr + (0x1000usize << order);
+    KERNEL_PMA.lock().allocate_block(order)
+}
 
-        if (addr & BUDDY_ALLOC_ALIGN_MASK) != (alloc_end & BUDDY_ALLOC_ALIGN_MASK) {
-            panic!("physical address allocation request for {:#016x} ({:#08x} bytes) crosses megabyte boundaries", addr, size);
+/// Allocate a block of physical memory pages at a specific address.
+///
+/// The order is a buddy allocator order; the number of memory pages actually
+/// allocated is (1 << order).
+pub fn allocate_at(addr: usize, order: u64) -> Result<usize, AllocationError> {
+    if order > 8 {
+        return Err(AllocationError::InvalidAllocation);
+    }
+
+    KERNEL_PMA.lock().allocate_block_at(addr, order)
+}
+
+/// Mark a block of physical memory pages as being free.
+pub unsafe fn deallocate(addr: usize, order: u64) {
+    if let Some(page_data) = paging::page_metadata() {
+        for pfn in pfn_range(addr, order) {
+            page_data[pfn].clear_refs();
+        }
+    }
+
+    KERNEL_PMA.lock().deallocate_block(addr, order);
+}
+
+/// Deallocates a specific page frame by its number.
+pub unsafe fn deallocate_pfn(pfn: usize) {
+    KERNEL_PMA.lock().deallocate_block(pfn << 12, 0);
+}
+
+/// Represents an owned, allocated block of contiguous physical memory.
+///
+/// This can be used as a safer interface to the physical memory allocator;
+/// deallocation is handled automatically via Drop.
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
+pub struct PhysicalMemory {
+    addr: usize,
+    order: u64,
+}
+
+impl PhysicalMemory {
+    /// Allocate a new block of physical memory.
+    ///
+    /// The order is a buddy allocator order; the number of memory pages
+    /// actually allocated is (1 << order).
+    pub fn new(order: u64) -> Result<PhysicalMemory, AllocationError> {
+        let addr = allocate(order)?;
+
+        if let Some(page_data) = paging::page_metadata() {
+            for pfn in pfn_range(addr, order) {
+                unsafe { page_data[pfn].increment_refs() };
+            }
         }
 
-        allocate_at(addr, size)
+        Ok(PhysicalMemory { addr, order })
     }
 
-    unsafe fn deallocate(addr: usize, size: usize) {
-        deallocate(addr, size)
+    /// Allocate a new block of physical memory at a specific address.
+    ///
+    /// The order is a buddy allocator order; the number of memory pages
+    /// actually allocated is (1 << order).
+    pub fn new_at(addr: usize, order: u64) -> Result<PhysicalMemory, AllocationError> {
+        allocate_at(addr, order)?;
+        Ok(PhysicalMemory { addr, order })
+    }
+
+    /// Allocate an arbitrary number of (non-contiguous) pages by splitting
+    /// the allocation into chunks.
+    pub fn allocate_many(n_pages: usize) -> Result<Vec<PhysicalMemory>, AllocationError> {
+        let mut pmem: Vec<PhysicalMemory> = Vec::new();
+        let mut cur_order: usize = 8;
+        let mut cur_page_ct = n_pages;
+
+        while cur_page_ct > 0 {
+            if cur_page_ct >= (1 << cur_order) {
+                pmem.push(PhysicalMemory::new(cur_order as u64)?);
+                cur_page_ct -= 1 << cur_order;
+            } else {
+                cur_order -= 1;
+            }
+        }
+
+        Ok(pmem)
+    }
+
+    /// Get the address of this physical memory block.
+    pub fn address(&self) -> usize {
+        self.addr
+    }
+
+    /// Get the budy allocator order of this physical memory block.
+    pub fn order(&self) -> u64 {
+        self.order
+    }
+
+    /// Get the number of pages owned by this physical memory block.
+    pub fn n_pages(&self) -> usize {
+        1 << (self.order as u64)
+    }
+
+    /// Get a PhysicalPointer to the start of this memory block.
+    pub fn as_ptr<T>(&self) -> PhysicalPointer<T> {
+        unsafe { PhysicalPointer::new_unchecked(self.addr) }
+    }
+
+    /// Get the range of pageframe numbers owned by this block.
+    pub fn pfns(&self) -> impl Iterator<Item = usize> {
+        pfn_range(self.addr, self.order)
+    }
+
+    /// Map this block of physical memory to contiguous virtual memory, starting
+    /// at the virtual address `start`.
+    ///
+    /// If any page fails to be mapped, the entire target virtual address range
+    /// will be unmapped.
+    ///
+    /// ## Safety
+    /// The caller must ensure that the virtual memory range from `start` to
+    /// `start + (self.n_pages() * 0x1000)` can be safely mapped or remapped.
+    pub unsafe fn map_to(&self, start: usize) -> bool {
+        for (i, pfn) in self.pfns().enumerate() {
+            let paddr = pfn << 12;
+            let vaddr = start + (i << 12);
+
+            if !paging::map_virtual_address(vaddr, paddr) {
+                paging::unmap_pages(start, (vaddr - start) >> 12).expect("could not unmap pages");
+                return false;
+            }
+        }
+
+        true
+    }
+
+    pub fn into_raw(self) -> (usize, u64) {
+        let addr = self.addr;
+        let order = self.order;
+        mem::forget(self);
+
+        (addr, order)
+    }
+
+    pub fn into_address(self) -> usize {
+        self.into_raw().0
+    }
+
+    pub fn leak(self) {
+        mem::forget(self);
+    }
+}
+
+impl Drop for PhysicalMemory {
+    fn drop(&mut self) {
+        if let Some(page_data) = paging::page_metadata() {
+            for pfn in self.pfns() {
+                unsafe { page_data[pfn].decrement_refs() };
+            }
+        } else {
+            unsafe { deallocate(self.addr, self.order) };
+        }
     }
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::malloc;
     use crate::malloc::tests::TestAlloc;
+    use crate::paging;
     use crate::rng::MersenneTwister64;
     use crate::test::TEST_SEED;
 
     use alloc_crate::vec::Vec;
     use kernel_test_macro::kernel_test;
 
-    const PMA_TEST_ALLOCS: usize = 500;
-    const PMA_TEST_MAX_PAGE_ALLOC: u64 = 20;
+    const PMA_TEST_ALLOCS: usize = 100;
 
     #[kernel_test]
     fn test_pma() {
@@ -775,24 +663,26 @@ pub mod tests {
         let mut allocs: Vec<TestAlloc> = Vec::with_capacity(PMA_TEST_ALLOCS);
 
         for i in 0..PMA_TEST_ALLOCS {
-            let n_pages = rng.generate() % PMA_TEST_MAX_PAGE_ALLOC;
-            let size = (n_pages as usize) * 0x1000;
+            let order = rng.generate() % 6;
 
-            let addr = match allocate(size) {
+            let addr = match allocate(order) {
                 Ok(a) => a,
                 Err(e) => panic!(
-                    "alloc {} failed (seed: {:#x}, size {:#x}) - {:?}",
-                    i, TEST_SEED, size, e
+                    "alloc {} failed (seed: {:#x}, order {}) - {:?}",
+                    i, TEST_SEED, order, e
                 ),
             };
 
-            allocs.push(TestAlloc { addr, size });
+            allocs.push(TestAlloc {
+                addr,
+                size: order as usize,
+            });
         }
 
         allocs.sort();
         for i in 0..(allocs.len() - 1) {
             // ensure this alloc does not overlap the next one
-            let this_end = allocs[i].addr + allocs[i].size;
+            let this_end = allocs[i].addr + (0x1000 << allocs[i].size);
             let next_start = allocs[i + 1].addr;
 
             // next_start >= allocs[i].0 is guaranteed because we sorted the
@@ -807,8 +697,88 @@ pub mod tests {
 
         for alloc in allocs {
             unsafe {
-                deallocate(alloc.addr, alloc.size);
+                deallocate(alloc.addr, alloc.size as u64);
             }
+        }
+    }
+
+    #[kernel_test]
+    fn test_refcount() {
+        let pmem = PhysicalMemory::new(0).unwrap();
+        let paddr = pmem.address();
+        let pfn = paddr >> 12;
+
+        unsafe {
+            // Ensure that the allocator is keeping track of things correctly
+            // and that the refcount was properly incremented by the PhysicalMemory
+            // constructor:
+            let page_data = paging::page_metadata().unwrap();
+            assert_eq!(page_data[pfn].refcount(), 1, "incorrect refcount for page");
+
+            let alloc_test = allocate_at(paddr, 0);
+            assert_eq!(
+                alloc_test,
+                Err(AllocationError::AlreadyAllocated),
+                "incorrectly overwrote test allocation"
+            );
+
+            // Test refcount >1:
+            page_data[pfn].increment_refs();
+            assert_eq!(page_data[pfn].refcount(), 2, "incorrect refcount for page");
+
+            // Ensure that PhysicalMemory's drop implementation decrements the
+            // refcount:
+            drop(pmem);
+            assert_eq!(page_data[pfn].refcount(), 1, "incorrect refcount for page");
+
+            // Ensure that the drop implementation does _not_ fully deallocate
+            // the page:
+            let alloc_test = allocate_at(paddr, 0);
+            assert_eq!(
+                alloc_test,
+                Err(AllocationError::AlreadyAllocated),
+                "incorrectly overwrote test allocation"
+            );
+
+            // Now drop the last ref to the page:
+            page_data[pfn].decrement_refs();
+            assert_eq!(page_data[pfn].refcount(), 0, "incorrect refcount for page");
+
+            // Ensure that the page was freed:
+            let alloc_test = allocate_at(paddr, 0);
+            assert_eq!(
+                alloc_test,
+                Ok(paddr),
+                "could not re-allocate test allocation"
+            );
+
+            // Clean up:
+            deallocate(paddr, 0);
+            assert_eq!(page_data[pfn].refcount(), 0, "incorrect refcount for page");
+        }
+    }
+
+    #[kernel_test]
+    fn test_into_address() {
+        let pmem = PhysicalMemory::new(0).unwrap();
+        let paddr = pmem.address();
+        let pfn = paddr >> 12;
+
+        unsafe {
+            // Ensure that the allocator is keeping track of things correctly
+            // and that the refcount was properly incremented by the PhysicalMemory
+            // constructor:
+            let page_data = paging::page_metadata().unwrap();
+            assert_eq!(page_data[pfn].refcount(), 1, "incorrect refcount for page");
+
+            // Should consume the PhysicalMemory object without messing with
+            // the refcount:
+            let paddr = pmem.into_address();
+            assert_eq!(page_data[pfn].refcount(), 1, "incorrect refcount for page");
+
+            // Clean up:
+            deallocate(paddr, 0);
+            assert_eq!(page_data[pfn].refcount(), 0, "incorrect refcount for page");
         }
     }
 }

@@ -1,6 +1,4 @@
 use alloc_crate::alloc::{GlobalAlloc, Layout};
-use core::marker::PhantomData;
-use core::mem;
 use core::ptr;
 
 pub mod large_zone_alloc;
@@ -8,14 +6,14 @@ pub mod physical_mem;
 pub mod small_zone_alloc;
 pub mod virtual_mem;
 
-use crate::paging;
 pub use crate::paging::KERNEL_HEAP_BASE;
-pub type PhysicalMemory = PageBlock<physical_mem::PhysicalMemoryAllocator>;
-pub type VirtualMemory = PageBlock<virtual_mem::VirtualMemoryAllocator>;
+pub use physical_mem::PhysicalMemory;
+pub use virtual_mem::VirtualMemory;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AllocationError {
     ReservedMemory,
+    AlreadyAllocated,
     NoFreeVirtualMemory,
     NoFreePhysicalMemory,
     InvalidAllocation,
@@ -63,6 +61,14 @@ pub mod global_allocator {
                 return ptr::null_mut();
             }
 
+            if let Err(e) = res {
+                direct_println!(
+                    "malloc: errored allocating {} bytes ({:?})",
+                    layout.size(),
+                    e
+                );
+            }
+
             res.map_or(ptr::null_mut(), |addr| addr as *mut u8)
         }
 
@@ -90,88 +96,10 @@ pub mod global_allocator {
     }
 }
 
-pub trait MemoryPageAllocator {
-    fn allocate(size: usize) -> Result<usize, AllocationError>;
-    unsafe fn allocate_at(addr: usize, size: usize) -> Result<usize, AllocationError>;
-    unsafe fn deallocate(addr: usize, size: usize);
-}
-
-/// Represents an owned, allocated block of contiguous pages, which can be
-/// either physical or virtual.
-///
-/// This can be used as a safer interface to the physical memory allocator;
-/// deallocating physical memory correctly is handled automatically via
-/// Drop.
-#[derive(Debug)]
-pub struct PageBlock<T: MemoryPageAllocator + 'static> {
-    address: usize,
-    size: usize,
-    _marker: PhantomData<&'static T>,
-}
-
-impl<T: MemoryPageAllocator + 'static> PageBlock<T> {
-    pub fn new(size: usize) -> Result<PageBlock<T>, AllocationError> {
-        let alloc_sz = paging::round_to_next_page(size);
-
-        T::allocate(alloc_sz).map(|address| PageBlock {
-            address,
-            size: alloc_sz,
-            _marker: PhantomData,
-        })
-    }
-
-    pub fn new_at(addr: usize, size: usize) -> Result<PageBlock<T>, AllocationError> {
-        let addr = paging::round_to_prev_page(addr);
-        let alloc_sz = paging::round_to_next_page(size);
-
-        unsafe {
-            T::allocate_at(addr, alloc_sz).map(|address| PageBlock {
-                address,
-                size: alloc_sz,
-                _marker: PhantomData,
-            })
-        }
-    }
-
-    pub fn address(&self) -> usize {
-        self.address
-    }
-
-    pub fn size(&self) -> usize {
-        self.size
-    }
-
-    pub fn as_u64(&self) -> u64 {
-        self.address() as u64
-    }
-
-    pub fn into_raw(self) -> (usize, usize) {
-        let addr = self.address;
-        let sz = self.size;
-        mem::forget(self);
-
-        (addr, sz)
-    }
-
-    pub fn into_address(self) -> usize {
-        self.into_raw().0
-    }
-
-    pub fn leak(self) {
-        mem::forget(self);
-    }
-}
-
-impl<T: MemoryPageAllocator + 'static> Drop for PageBlock<T> {
-    fn drop(&mut self) {
-        unsafe { T::deallocate(self.address(), self.size()) }
-    }
-}
-
 pub mod heap_pages {
-    use super::physical_mem;
     use super::virtual_mem;
     use super::AllocationError;
+    use super::{PhysicalMemory, VirtualMemory};
     use crate::paging;
 
     /// Allocates virtual memory pages from the kernel heap and maps them to
@@ -182,36 +110,31 @@ pub mod heap_pages {
     /// multiple of the page size, it will be rounded up accordingly.
     pub unsafe fn allocate(size: usize) -> Result<usize, AllocationError> {
         let alloc_sz = paging::round_to_next_page(size);
-        let n_pages = alloc_sz / 0x1000;
+        let n_pages = alloc_sz >> 12;
 
-        let paddr = physical_mem::allocate(alloc_sz)?;
-        let vaddr = virtual_mem::allocate(alloc_sz);
+        let pmem = PhysicalMemory::allocate_many(n_pages)?;
+        let vmem = VirtualMemory::new(alloc_sz)?;
+        let mut vaddr = vmem.address();
+        let mut vspace = paging::AddressSpace::current();
 
-        if vaddr.is_err() {
-            physical_mem::deallocate(paddr, alloc_sz);
-            return vaddr;
-        }
+        for phys_block in pmem.iter() {
+            if vspace
+                .map_page_range(vaddr, phys_block.address(), phys_block.n_pages())
+                .is_err()
+            {
+                let start_addr = vmem.address();
+                drop(pmem);
+                drop(vmem);
+                vspace.unmap_page_range(start_addr, vaddr).unwrap();
+                direct_println!("could not map address for {:#018x}", vaddr);
 
-        let vaddr = vaddr.unwrap();
-        let mut status = Ok(vaddr);
-
-        for i in 0..n_pages {
-            if !paging::map_virtual_address(vaddr + (0x1000 * i), paddr + (0x1000 * i)) {
-                status = Err(AllocationError::CouldNotMapAddress);
-                break;
+                return Err(AllocationError::CouldNotMapAddress);
             }
+
+            vaddr += phys_block.n_pages() << 12;
         }
 
-        if status.is_err() {
-            /* Something was unsuccessful. Clean up everything. */
-            for i in 0..n_pages {
-                paging::unmap_virtual_address(vaddr + (0x1000 * i));
-            }
-            virtual_mem::deallocate(vaddr, alloc_sz);
-            physical_mem::deallocate(paddr, alloc_sz);
-        }
-
-        status
+        Ok(vmem.into_address())
     }
 
     /// Deallocates virtual and physical memory previously acquired by a call to
@@ -220,21 +143,14 @@ pub mod heap_pages {
     /// As usual, the address and size passed here must correspond to a previous
     /// `allocate` call!
     pub unsafe fn deallocate(vaddr: usize, size: usize) {
-        use paging::PageTableEntry;
-
         let alloc_sz = paging::round_to_next_page(size);
-        let entry: PageTableEntry =
-            paging::get_mapping(vaddr).expect("attempted to free unallocated memory");
+        let start_addr = paging::round_to_prev_page(vaddr);
 
-        let paddr = entry.physical_address();
-        let n_pages = alloc_sz / 0x1000;
-
-        for i in 0..n_pages {
-            paging::unmap_virtual_address(vaddr + (i * 0x1000));
-        }
-
+        let mut vspace = paging::AddressSpace::current();
+        vspace
+            .unmap_page_range(start_addr, alloc_sz >> 12)
+            .expect("could not unmap pages");
         virtual_mem::deallocate(vaddr, alloc_sz);
-        physical_mem::deallocate(paddr, alloc_sz);
     }
 }
 

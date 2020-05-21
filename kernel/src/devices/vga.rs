@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(glyph, c);
     }
 
-    #[test_case]
+    #[kernel_test]
     fn test_write_str_basic() {
         print!("VGA - write_str_basic ... ");
 
@@ -228,7 +228,7 @@ mod tests {
         assert_display_char_eq(&mut d, 2, 0, b'o');
     }
 
-    #[test_case]
+    #[kernel_test]
     fn test_scroll() {
         print!("VGA - test_scroll ... ");
 

@@ -180,6 +180,7 @@ pub extern "C" fn kernel_entry(frame: *mut InterruptFrame) -> *mut InterruptFram
     INTERRUPT_CONTEXT.store(ptr::null_mut(), Ordering::SeqCst);
 
     if let Some(new_ctx) = task::current_context() {
+        unsafe { task::scheduling::prepare_context_switch() };
         new_ctx
     } else {
         frame

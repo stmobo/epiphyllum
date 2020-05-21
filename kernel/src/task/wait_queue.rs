@@ -284,7 +284,7 @@ mod tests {
     use kernel_test_macro::kernel_test;
 
     use alloc_crate::sync::Arc;
-    use core::sync::atomic::{spin_loop_hint, AtomicBool, AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicU64, Ordering};
 
     // TODO: test for lost-wakeup problems?
     // How would you do that?
@@ -297,7 +297,7 @@ mod tests {
         let child_queue = queue.clone();
         let child_shared = shared.clone();
 
-        let child = Task::from_closure(move || {
+        let child = Task::from_closure(true, move || {
             let s = child_shared.clone();
             child_queue.wait(|| s.load(Ordering::SeqCst) > 5, WaitMode::Default);
             child_shared.fetch_add(1, Ordering::SeqCst);
@@ -346,7 +346,7 @@ mod tests {
         let child_queue = queue.clone();
         let child_shared = shared.clone();
 
-        let child = task::spawn_async(basic_async_test_child(child_queue, child_shared))
+        let child = task::spawn_async(true, basic_async_test_child(child_queue, child_shared))
             .expect("could not spawn subtask");
         child.schedule();
 

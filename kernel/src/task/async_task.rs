@@ -9,6 +9,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use super::scheduling;
 use super::{ExitStatus, Task, TaskHandle, TaskSpawnError, TaskStatus};
 use crate::lock::NoIRQSpinlock;
+use crate::paging::AddressSpace;
 
 const TASK_WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(clone_task, wake_task, wake_task_ref, drop_task);
@@ -72,10 +73,19 @@ pub fn run_future<T>(mut future: impl Future<Output = T>) -> T {
 }
 
 pub fn spawn_async<T: Future<Output = u64> + Send + 'static>(
+    shared_address_space: bool,
     future: T,
 ) -> Result<TaskHandle, TaskSpawnError> {
+    let address_space: Arc<NoIRQSpinlock<AddressSpace>>;
+    if shared_address_space {
+        address_space = scheduling::cur_address_space_handle();
+    } else {
+        let space = AddressSpace::new().map_err(|e| TaskSpawnError::AllocationError(e))?;
+        address_space = Arc::new(NoIRQSpinlock::new(space));
+    }
+
     let data = Box::into_raw(Box::new(future)) as usize;
-    let res = unsafe { Task::new_raw(async_task_runner::<T> as usize, data as u64) };
+    let res = unsafe { Task::new_raw(async_task_runner::<T> as usize, data as u64, address_space) };
 
     match res {
         Ok(h) => Ok(h),

@@ -62,6 +62,13 @@ pub unsafe fn set_cr4(reg: u64) {
     llvm_asm!("mov $0, %cr4" :: "r"(reg) :: "volatile");
 }
 
+pub fn invlpg(page: usize) {
+    let page = page as u64;
+    unsafe {
+        llvm_asm!("invlpg ($0)" :: "r"(page) :: "volatile");
+    }
+}
+
 pub fn initialize_sse() {
     unsafe {
         let mut cr0 = get_cr0();

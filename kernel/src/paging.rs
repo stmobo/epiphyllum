@@ -7,14 +7,15 @@ use crate::asm;
 use crate::asm::cpuid::FeatureFlags;
 use crate::malloc::{physical_mem, AllocationError, PhysicalMemory, VirtualMemory};
 use crate::multiboot::MultibootInfo;
+use crate::task;
 
 mod index;
 mod structs;
 mod tables;
 
 pub use index::PageHierarchyIndex;
-pub use structs::PageData;
-pub use tables::{PageTable, PageTableEntry};
+pub use structs::{add_page_ref, metadata_initialized, page_metadata, remove_page_ref, PageData};
+pub use tables::{AddressSpace, MappingError, PageLevel, PageTable, PageTableEntry};
 
 pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
 
@@ -72,7 +73,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
 
     let pdpt;
     if !pml4t.get_entry(pml4t_idx).unwrap().present() {
-        let table_addr = physical_mem::allocate(0x1000);
+        let table_addr = physical_mem::allocate(0);
         if table_addr.is_err() {
             return false;
         }
@@ -93,7 +94,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
 
     let pd;
     if !pdpt.get_entry(pdpt_idx).unwrap().present() {
-        let table_addr = physical_mem::allocate(0x1000);
+        let table_addr = physical_mem::allocate(0);
         if table_addr.is_err() {
             return false;
         }
@@ -113,7 +114,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
 
     let pt: &'static mut PageTable;
     if !pd.get_entry(pd_idx).unwrap().present() {
-        let table_addr = physical_mem::allocate(0x1000);
+        let table_addr = physical_mem::allocate(0);
         if table_addr.is_err() {
             return false;
         }
@@ -157,6 +158,26 @@ pub fn unmap_virtual_address(virt_addr: usize) {
         table.unmap_entry(pt_offset).expect("failed to unmap page");
 
         tlb::flush(VirtAddr::new(virt_addr as u64));
+    }
+}
+
+pub fn map_pages(vaddr: usize, paddr: usize, n_pages: usize) -> Result<(), MappingError> {
+    if task::scheduler_initialized() {
+        let mut space = task::current_address_space();
+        space.map_page_range(vaddr, paddr, n_pages)
+    } else {
+        let mut space = unsafe { AddressSpace::current() };
+        space.map_page_range(vaddr, paddr, n_pages)
+    }
+}
+
+pub fn unmap_pages(vaddr: usize, n_pages: usize) -> Result<(), PageLevel> {
+    if task::scheduler_initialized() {
+        let mut space = task::current_address_space();
+        space.unmap_page_range(vaddr, n_pages)
+    } else {
+        let mut space = unsafe { AddressSpace::current() };
+        space.unmap_page_range(vaddr, n_pages)
     }
 }
 
@@ -220,28 +241,35 @@ pub fn reserve_bootstrap_physical_pages() {
             .skip(HIGHER_HALF_PML4_IDX - 1)
             .filter(|p| p.1.present())
         {
-            physical_mem::allocate_at(ent.physical_address(), 0x1000);
+            physical_mem::allocate_at(ent.physical_address(), 0);
             let pdpt = PageTable::get_pdpt(pml4_idx);
 
             for (pdpt_idx, ent) in pdpt.iter().enumerate().filter(|e| e.1.present()) {
-                physical_mem::allocate_at(ent.physical_address(), 0x1000);
+                physical_mem::allocate_at(ent.physical_address(), 0);
                 let pd = PageTable::get_pd(pml4_idx, pdpt_idx);
 
                 for (pd_idx, ent) in pd.iter().enumerate().filter(|e| e.1.present()) {
-                    physical_mem::allocate_at(ent.physical_address(), 0x1000);
+                    physical_mem::allocate_at(ent.physical_address(), 0);
                     let pt = PageTable::get_pt(pml4_idx, pdpt_idx, pd_idx);
 
                     for ent in pt.iter().filter(|e| e.present()) {
-                        physical_mem::allocate_at(ent.physical_address(), 0x1000);
+                        physical_mem::allocate_at(ent.physical_address(), 0);
                     }
                 }
             }
         }
+
+        // reserve the bootstrap PML4T itself as well
+        let cr3 = asm::get_cr3();
+        physical_mem::allocate_at(cr3, 0);
+
+        // ensure the zero page is not allocated
+        physical_mem::allocate_at(0, 0);
     }
 }
 
 fn init_physical_map_gb_pages(window: VirtualMemory) -> Result<usize, AllocationError> {
-    let pdpt = PhysicalMemory::new(0x1000)?;
+    let pdpt = PhysicalMemory::new(0)?;
 
     if !map_virtual_address(window.address(), pdpt.address()) {
         return Err(AllocationError::CouldNotMapAddress);
@@ -266,7 +294,7 @@ fn init_physical_map_gb_pages(window: VirtualMemory) -> Result<usize, Allocation
 }
 
 fn init_physical_map_mb_pages(window: VirtualMemory) -> Result<usize, AllocationError> {
-    let pdpt = PhysicalMemory::new(0x1000)?;
+    let pdpt = PhysicalMemory::new(0)?;
 
     // allocate page directories in chunks of 128 pages (= 0.5 MiB)
     let table = window.address() as *mut PageTable;
@@ -274,7 +302,7 @@ fn init_physical_map_mb_pages(window: VirtualMemory) -> Result<usize, Allocation
 
     // create mappings within each page directory
     for chunk in 0..4 {
-        let block = PhysicalMemory::new(128 * 0x1000)?;
+        let block = PhysicalMemory::new(7)?;
         let block_addr = block.address();
 
         for chunk_page in 0..128usize {
@@ -286,7 +314,7 @@ fn init_physical_map_mb_pages(window: VirtualMemory) -> Result<usize, Allocation
                     let addr = *addr;
                     if addr != 0 {
                         unsafe {
-                            physical_mem::deallocate(addr, 128 * 0x1000);
+                            physical_mem::deallocate(addr, 7);
                         }
                     }
                 }
@@ -349,8 +377,10 @@ pub fn initialize_direct_physical_mappings() -> Result<(), AllocationError> {
         .map_err(|_| AllocationError::CouldNotMapAddress)?;
     asm::reload_cr3();
 
-    // clean up old physical mappings
+    // init stuff for tables and clean up old physical mappings
     unsafe {
+        tables::initialize(pdpt);
+
         let pdpt_addr = old_pdpt.physical_address();
         let old_pdpt: *mut PageTable = old_pdpt.page().unwrap().as_mut_ptr() as *mut PageTable;
 
@@ -368,15 +398,17 @@ pub fn initialize_direct_physical_mappings() -> Result<(), AllocationError> {
                 }
 
                 let pt_addr = pde.physical_address();
-                physical_mem::deallocate(pt_addr, 0x1000);
+                physical_mem::deallocate(pt_addr, 0);
             }
 
             let pd_addr = pdpe.physical_address();
-            physical_mem::deallocate(pd_addr, 0x1000);
+            physical_mem::deallocate(pd_addr, 0);
         }
 
-        physical_mem::deallocate(pdpt_addr, 0x1000);
+        physical_mem::deallocate(pdpt_addr, 0);
     }
+
+    println!("paging: initialized direct physical memory map");
 
     Ok(())
 }
@@ -427,11 +459,11 @@ impl<T> PhysicalPointer<T> {
     }
 
     pub unsafe fn as_ref(&self) -> &T {
-        &*(self.0.as_ptr() as *const T)
+        &*self.as_ptr()
     }
 
     pub unsafe fn as_mut(&mut self) -> &mut T {
-        &mut *(self.0.as_ptr() as *mut T)
+        &mut *self.as_mut_ptr()
     }
 }
 
@@ -442,12 +474,6 @@ impl<T> Clone for PhysicalPointer<T> {
 }
 
 impl<T> Copy for PhysicalPointer<T> {}
-
-impl<T> From<PhysicalMemory> for PhysicalPointer<T> {
-    fn from(mem_block: PhysicalMemory) -> Self {
-        unsafe { Self::new_unchecked(mem_block.into_address()) }
-    }
-}
 
 impl<T> TryFrom<PageTableEntry> for PhysicalPointer<T> {
     type Error = PageTableEntry;
@@ -472,13 +498,13 @@ impl<T> TryFrom<usize> for PhysicalPointer<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::malloc::{physical_mem, AllocationError, PhysicalMemory, VirtualMemory};
+    use crate::malloc::{PhysicalMemory, VirtualMemory};
     use core::ptr;
     use kernel_test_macro::kernel_test;
 
     #[kernel_test]
     fn test_physical_mapping() {
-        let phys = PhysicalMemory::new(0x1000).unwrap();
+        let phys = PhysicalMemory::new(0).unwrap();
         let virt = VirtualMemory::new(0x1000).unwrap();
 
         if !map_virtual_address(virt.address(), phys.address()) {
@@ -489,7 +515,7 @@ mod tests {
             );
         }
 
-        let p: PhysicalPointer<u64> = phys.address().try_into().unwrap();
+        let p: PhysicalPointer<u64> = phys.as_ptr();
         let virt_p = p.as_mut_ptr();
         unsafe {
             ptr::write_volatile(virt_p, 0xA5A5DEADC0DEA5A5);

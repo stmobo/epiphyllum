@@ -5,7 +5,8 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use super::structs::{Task, TaskHandle, TaskStatus};
 use crate::asm::interrupts;
 use crate::interrupts::InterruptFrame;
-use crate::lock::{NoIRQSpinlock, OnceCell};
+use crate::lock::{NoIRQSpinlock, NoIRQSpinlockGuard, OnceCell};
+use crate::paging::AddressSpace;
 use crate::structures::{Queue, QueueReader, QueueWriter};
 use crate::timer::get_kernel_ticks;
 
@@ -49,7 +50,7 @@ pub struct Scheduler {
 
 impl Scheduler {
     fn new() -> Scheduler {
-        let default_task = Task::new(idle_task, 0).expect("could not create idle task");
+        let default_task = Task::new(idle_task, 0, false).expect("could not create idle task");
         let p = Arc::into_raw(default_task.clone());
         let running_task = AtomicPtr::new(p as *mut Task);
         let (reader, writer) = Queue::new();
@@ -98,6 +99,7 @@ impl Scheduler {
     /// valid context to switch to, otherwise _very_ undefined behavior will
     /// happen.
     pub unsafe fn force_context_switch(&self) -> ! {
+        (*self.running_task_ptr()).load_address_space();
         let ctx = self.cur_context();
         switch_context(ctx)
     }
@@ -222,6 +224,22 @@ pub fn scheduler() -> &'static Scheduler {
 
 pub fn current_context() -> Option<*mut InterruptFrame> {
     SCHEDULER.get().map(|s| s.cur_context())
+}
+
+pub fn cur_address_space_handle() -> Arc<NoIRQSpinlock<AddressSpace>> {
+    unsafe { (*scheduler().running_task_ptr()).clone_address_space() }
+}
+
+// probably the wrong lifetime for this, but it's close enough
+pub fn current_address_space() -> NoIRQSpinlockGuard<'static, AddressSpace> {
+    unsafe { (*scheduler().running_task_ptr()).address_space() }
+}
+
+pub unsafe fn prepare_context_switch() {
+    if let Some(sched) = SCHEDULER.get() {
+        let task = sched.running_task_ptr();
+        (*task).load_address_space();
+    }
 }
 
 pub fn current_task() -> TaskHandle {

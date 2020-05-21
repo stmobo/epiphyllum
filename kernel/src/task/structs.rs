@@ -9,14 +9,16 @@ use super::async_task;
 use super::scheduling;
 use super::scheduling::SchedulerData;
 use crate::interrupts::InterruptFrame;
-use crate::lock::{LockedGlobal, OnceCell};
-use crate::malloc::{physical_mem, virtual_mem, AllocationError, PhysicalMemory, VirtualMemory};
+use crate::lock::{LockedGlobal, NoIRQSpinlock, NoIRQSpinlockGuard, OnceCell};
+use crate::malloc::{virtual_mem, AllocationError, PhysicalMemory, VirtualMemory};
 use crate::paging;
+use crate::paging::AddressSpace;
 use crate::structures::{AVLTree, Queue};
 
 use crossbeam::atomic::AtomicCell;
 
-const TASK_STACK_PAGES: usize = 32;
+const TASK_STACK_ORDER: u64 = 5;
+const TASK_STACK_PAGES: usize = 1 << (TASK_STACK_ORDER as usize);
 const TASK_STACK_SIZE: usize = TASK_STACK_PAGES * 0x1000;
 
 pub static TASKS: LockedGlobal<AVLTree<u64, TaskHandle>> = LockedGlobal::new();
@@ -52,10 +54,15 @@ pub struct Task {
     scheduler_data: SchedulerData,
     exit_status: OnceCell<ExitStatus>,
     exit_callbacks: Queue<Box<dyn FnOnce() + Send + 'static>>,
+    address_space: Arc<NoIRQSpinlock<AddressSpace>>,
 }
 
 impl Task {
-    fn new_common(entry: usize, init_arg: u64) -> Result<TaskHandle, TaskSpawnError> {
+    fn new_common(
+        entry: usize,
+        init_arg: u64,
+        address_space: Arc<NoIRQSpinlock<AddressSpace>>,
+    ) -> Result<TaskHandle, TaskSpawnError> {
         let stack_end =
             Self::allocate_stack_pages().map_err(|e| TaskSpawnError::AllocationError(e))?;
 
@@ -82,6 +89,7 @@ impl Task {
             scheduler_data: SchedulerData::new(),
             exit_status: OnceCell::new(),
             exit_callbacks: Queue::new_direct(),
+            address_space,
         });
 
         unsafe {
@@ -98,15 +106,36 @@ impl Task {
         Ok(task)
     }
 
-    pub fn new(entry: fn(u64) -> u64, init_arg: u64) -> Result<TaskHandle, TaskSpawnError> {
-        Self::new_common(entry as usize, init_arg)
+    pub fn new(
+        entry: fn(u64) -> u64,
+        init_arg: u64,
+        shared_address_space: bool,
+    ) -> Result<TaskHandle, TaskSpawnError> {
+        let address_space: Arc<NoIRQSpinlock<AddressSpace>>;
+        if shared_address_space {
+            address_space = scheduling::cur_address_space_handle();
+        } else {
+            let space = AddressSpace::new().map_err(|e| TaskSpawnError::AllocationError(e))?;
+            address_space = Arc::new(NoIRQSpinlock::new(space));
+        }
+
+        Self::new_common(entry as usize, init_arg, address_space)
     }
 
     pub fn from_closure<T: FnOnce() -> u64 + Send + 'static>(
+        shared_address_space: bool,
         entry: T,
     ) -> Result<TaskHandle, TaskSpawnError> {
+        let address_space: Arc<NoIRQSpinlock<AddressSpace>>;
+        if shared_address_space {
+            address_space = scheduling::cur_address_space_handle();
+        } else {
+            let space = AddressSpace::new().map_err(|e| TaskSpawnError::AllocationError(e))?;
+            address_space = Arc::new(NoIRQSpinlock::new(space));
+        }
+
         let p = (Box::into_raw(Box::new(entry)) as usize) as u64;
-        match Self::new_common(boxed_func_task::<T> as usize, p) {
+        match Self::new_common(boxed_func_task::<T> as usize, p, address_space) {
             Ok(h) => Ok(h),
             Err(e) => {
                 let p = (p as usize) as *mut T;
@@ -116,39 +145,31 @@ impl Task {
         }
     }
 
-    pub unsafe fn new_raw(entry: usize, init_arg: u64) -> Result<TaskHandle, TaskSpawnError> {
-        Self::new_common(entry, init_arg)
+    pub unsafe fn new_raw(
+        entry: usize,
+        init_arg: u64,
+        address_space: Arc<NoIRQSpinlock<AddressSpace>>,
+    ) -> Result<TaskHandle, TaskSpawnError> {
+        Self::new_common(entry, init_arg, address_space)
     }
 
     fn allocate_stack_pages() -> Result<usize, AllocationError> {
         // Allocate one page on both sides of the task stack.
-        let phys_sz = TASK_STACK_PAGES * 0x1000;
-        let virt_sz = phys_sz + 0x2000;
+        let virt_sz = TASK_STACK_SIZE + 0x2000;
 
-        let paddr = PhysicalMemory::new(phys_sz)?;
-        let vaddr = VirtualMemory::new(virt_sz)?;
+        let pmem = PhysicalMemory::new(TASK_STACK_ORDER)?;
+        let vmem = VirtualMemory::new(virt_sz)?;
+        let mut vspace = unsafe { paging::AddressSpace::current() };
 
-        paging::unmap_virtual_address(vaddr.address());
-        paging::unmap_virtual_address(vaddr.address() + TASK_STACK_SIZE + 0x1000);
+        vspace
+            .unmap_page_range(vmem.address(), TASK_STACK_PAGES + 2)
+            .or(Err(AllocationError::CouldNotMapAddress))?;
 
-        for i in 0..TASK_STACK_PAGES {
-            let p = paddr.address() + (0x1000 * i);
-            let v = vaddr.address() + (0x1000 * i) + 0x1000;
+        vspace
+            .map_page_range(vmem.address() + 0x1000, pmem.address(), TASK_STACK_PAGES)
+            .or(Err(AllocationError::CouldNotMapAddress))?;
 
-            if !paging::map_virtual_address(v, p) {
-                // clean up mappings and bail
-                for j in 0..i {
-                    let v = vaddr.address() + (0x1000 * j);
-                    paging::unmap_virtual_address(v);
-                }
-
-                return Err(AllocationError::CouldNotMapAddress);
-            }
-        }
-
-        mem::forget(paddr);
-        let (vaddr, _) = vaddr.into_raw();
-        Ok(vaddr + 0x1000)
+        Ok(vmem.into_address() + 0x1000)
     }
 
     pub fn get_context(&self) -> *mut InterruptFrame {
@@ -157,6 +178,18 @@ impl Task {
 
     pub fn set_context(&self, ctx: *mut InterruptFrame) {
         self.kernel_stack_head.store(ctx, Ordering::SeqCst)
+    }
+
+    pub unsafe fn load_address_space(&self) {
+        self.address_space.lock().load();
+    }
+
+    pub fn address_space(&self) -> NoIRQSpinlockGuard<'_, AddressSpace> {
+        self.address_space.lock()
+    }
+
+    pub fn clone_address_space(&self) -> Arc<NoIRQSpinlock<AddressSpace>> {
+        self.address_space.clone()
     }
 
     pub fn id(&self) -> u64 {
@@ -252,17 +285,13 @@ impl Task {
 impl Drop for Task {
     fn drop(&mut self) {
         unsafe {
-            let vaddr = self.kernel_stack_base - TASK_STACK_SIZE - 0x1000;
-            let entry: paging::PageTableEntry =
-                paging::get_mapping(vaddr + 0x1000).expect("task structure corrupted");
+            let vaddr = self.kernel_stack_base - TASK_STACK_SIZE;
+            let mut vspace = paging::AddressSpace::current();
+            vspace
+                .unmap_page_range(vaddr, TASK_STACK_PAGES)
+                .expect("could not unmap pages");
 
-            let paddr = entry.physical_address();
-            for i in 0..TASK_STACK_PAGES {
-                paging::unmap_virtual_address(vaddr + (i * 0x1000));
-            }
-
-            physical_mem::deallocate(paddr, TASK_STACK_SIZE);
-            virtual_mem::deallocate(vaddr, TASK_STACK_SIZE + 0x2000);
+            virtual_mem::deallocate(vaddr - 0x1000, TASK_STACK_SIZE + 0x2000);
         }
     }
 }

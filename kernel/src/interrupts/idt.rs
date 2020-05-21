@@ -77,8 +77,5 @@ pub unsafe fn initialize_idt(idt_addr: usize) {
 }
 
 pub fn claim_idt_page(addr: usize) {
-    unsafe {
-        malloc::physical_mem::allocate_at(addr, 0x1000)
-            .expect("could not claim IDT physical memory page");
-    }
+    malloc::physical_mem::allocate_at(addr, 0).expect("could not claim IDT physical memory page");
 }

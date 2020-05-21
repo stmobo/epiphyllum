@@ -49,10 +49,12 @@ mod timer;
 #[cfg(test)]
 mod test;
 
+use alloc_crate::sync::Arc;
 use core::panic::PanicInfo;
 
 use x86_64::structures::idt::InterruptDescriptorTable;
 
+use lock::NoIRQSpinlock;
 use multiboot::{MemoryType, MultibootInfo};
 
 #[derive(Debug, Clone)]
@@ -158,9 +160,17 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
         malloc::virtual_mem::initialize(boot_info.heap_pages);
     }
 
+    println!("Heap virtual memory allocator initialized.");
+
+    paging::initialize_direct_physical_mappings()
+        .expect("could not initialize direct physical page mapping");
+
     paging::init_paging_metadata(&mb);
 
-    println!("Heap virtual memory allocator initialized.");
+    // Get a reference to the boot address space to ensure that it doesn't
+    // unexpectedly go away, and also since we're going to be passing it to the
+    // initial task.
+    let space = unsafe { paging::AddressSpace::current() };
 
     const EXTRA_PAGES: usize = 512;
     unsafe {
@@ -170,17 +180,16 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
             malloc::small_zone_alloc::add_page(sma_alloc);
         }
 
+        println!("SMA bootstrap complete.");
+
         for _ in 0..(EXTRA_PAGES / 2) {
             let lza_alloc = malloc::heap_pages::allocate(0x2000)
                 .expect("Could not allocate extra space for LZA");
             malloc::large_zone_alloc::add_page(lza_alloc);
         }
 
-        println!("SMA/LZA bootstrap complete.");
+        println!("LZA bootstrap complete.");
     }
-
-    paging::initialize_direct_physical_mappings()
-        .expect("could not initialize direct physical page mapping");
 
     acpica::initialize().expect("could not initialize ACPICA");
 
@@ -189,9 +198,17 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     task::initialize();
 
-    let h = task::Task::new(kernel_stage2_main, 10).expect("could not spawn initial task");
-    h.schedule();
     unsafe {
+        let h = task::Task::new_raw(
+            kernel_stage2_main as usize,
+            10,
+            Arc::new(NoIRQSpinlock::new(space)),
+        )
+        .expect("could not spawn initial task");
+
+        h.schedule();
+        drop(h);
+
         task::scheduler().force_context_switch();
     }
 }
@@ -212,11 +229,11 @@ fn kernel_stage2_main(arg: u64) -> u64 {
     #[cfg(test)]
     test_main();
 
-    let h = task::Task::new(test_task, 0).expect("could not spawn task");
+    let h = task::Task::new(test_task, 0, false).expect("could not spawn task");
     h.schedule();
 
     let foo = 25;
-    task::Task::from_closure(move || {
+    task::Task::from_closure(true, move || {
         println!("hello from closure task, foo = {}", foo);
         0
     })

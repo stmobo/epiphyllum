@@ -1,6 +1,5 @@
 use super::bindings::*;
 use crate::lock::LockedGlobal;
-use crate::malloc::{physical_mem, virtual_mem};
 use crate::paging;
 
 use alloc_crate::alloc::Layout;
@@ -110,79 +109,13 @@ pub extern "C" fn AcpiOsPhysicalTableOverride(
 }
 
 #[no_mangle]
-pub extern "C" fn AcpiOsMapMemory(
-    Where: ACPI_PHYSICAL_ADDRESS,
-    Length: ACPI_SIZE,
-) -> *mut cty::c_void {
-    let alloc_start = paging::round_to_prev_page(Where as usize);
-    let alloc_sz = paging::round_to_next_page(Length as usize);
-    let n_pages = alloc_sz / 0x1000;
-
-    let vaddr = virtual_mem::allocate(alloc_sz);
-    if vaddr.is_err() {
-        return ptr::null_mut();
-    }
-
-    let paddr;
-    unsafe {
-        paddr = physical_mem::allocate_at(alloc_start, alloc_sz);
-    }
-
-    if paddr.is_err() { /* Ignore it for now */ }
-
-    let vaddr = vaddr.unwrap();
-    let paddr = paddr.unwrap_or(alloc_start);
-    let mut success = true;
-
-    for i in 0..n_pages {
-        if !paging::map_virtual_address(vaddr + (0x1000 * i), paddr + (0x1000 * i)) {
-            println!(
-                "acpi: failed to map physical page {:#016x}",
-                alloc_start + (0x1000 * i)
-            );
-
-            success = false;
-            break;
-        }
-    }
-
-    if !success {
-        /* Clean up mappings. */
-        for i in 0..n_pages {
-            paging::unmap_virtual_address(vaddr + (0x1000 * i));
-        }
-
-        virtual_mem::deallocate(vaddr, alloc_sz);
-
-        return ptr::null_mut();
-    }
-
-    let page_offset = (Where as usize) - alloc_start;
-    (vaddr + page_offset) as *mut cty::c_void
+pub extern "C" fn AcpiOsMapMemory(Where: ACPI_PHYSICAL_ADDRESS, _: ACPI_SIZE) -> *mut cty::c_void {
+    paging::offset_direct_map(Where as usize) as *mut cty::c_void
 }
 
 #[no_mangle]
-pub extern "C" fn AcpiOsUnmapMemory(LogicalAddress: *mut cty::c_void, Size: ACPI_SIZE) {
-    use paging::PageTableEntry;
-
-    let alloc_start = paging::round_to_prev_page(LogicalAddress as usize);
-    let alloc_sz = paging::round_to_next_page(Size as usize);
-
-    let entry: PageTableEntry =
-        paging::get_mapping(alloc_start).expect("attempted to free unallocated memory");
-
-    let paddr = entry.physical_address();
-    let n_pages = alloc_sz / 0x1000;
-
-    for i in 0..n_pages {
-        paging::unmap_virtual_address(alloc_start + (i * 0x1000));
-    }
-
-    unsafe {
-        physical_mem::deallocate(paddr, alloc_sz);
-    }
-
-    virtual_mem::deallocate(alloc_start, alloc_sz);
+pub extern "C" fn AcpiOsUnmapMemory(_: *mut cty::c_void, _: ACPI_SIZE) {
+    return;
 }
 
 #[no_mangle]

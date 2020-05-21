@@ -404,7 +404,7 @@ mod tests {
                 let n_deallocs = (rng.generate() as usize) % allocs.len();
 
                 // deallocate random blocks
-                for i in 0..n_deallocs {
+                for _ in 0..n_deallocs {
                     let idx = (rng.generate() as usize) % allocs.len();
                     let (addr, layout) = allocs.swap_remove(idx);
 

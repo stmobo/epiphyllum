@@ -488,7 +488,7 @@ pub mod tests {
             let mut alloc_no = slots;
             drop(slice);
 
-            for i in 0..25 {
+            for _ in 0..25 {
                 let blk_cnt = v.len();
                 let free_cnt = slots - blk_cnt;
 
@@ -509,7 +509,7 @@ pub mod tests {
                     (*p).deallocate(addr);
                 }
 
-                for j in 0..n_alloc {
+                for _ in 0..n_alloc {
                     let addr = match (*p).allocate() {
                         Ok(a) => a,
                         Err(e) => panic!(

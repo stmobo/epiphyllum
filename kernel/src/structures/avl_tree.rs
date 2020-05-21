@@ -378,10 +378,15 @@ impl<K: Ord, V> AVLTree<K, V> {
                     let sibling = self.nodes[parent_idx].right.unwrap();
                     let sibling_bal = self.nodes[sibling].balance;
 
-                    self.rebalance(parent_idx);
+                    let pivot = self.rebalance(parent_idx);
                     if sibling_bal == 0 {
                         break;
                     }
+
+                    // continue from new subtree root
+                    cur_node = pivot;
+                    parent = self.parent(pivot);
+                    continue;
                 }
             } else {
                 self.nodes[parent_idx].balance -= 1;
@@ -389,10 +394,14 @@ impl<K: Ord, V> AVLTree<K, V> {
                     let sibling = self.nodes[parent_idx].left.unwrap();
                     let sibling_bal = self.nodes[sibling].balance;
 
-                    self.rebalance(parent_idx);
+                    let pivot = self.rebalance(parent_idx);
                     if sibling_bal == 0 {
                         break;
                     }
+
+                    cur_node = pivot;
+                    parent = self.parent(pivot);
+                    continue;
                 }
             }
 
@@ -751,19 +760,19 @@ impl<K: Ord + Debug, V> AVLTree<K, V> {
     #[allow(dead_code)]
     fn print_recursive<F>(&self, fmt: &F, level: usize, node: usize)
     where
-        F: Fn(&K) -> alloc_crate::string::String,
+        F: Fn(&K, usize) -> alloc_crate::string::String,
     {
         if let Some(idx) = self.nodes[node].right {
             self.print_recursive(fmt, level + 1, idx);
         }
 
         for _ in 0..level {
-            print!("       ");
+            direct_print!("       ");
         }
 
-        println!(
+        direct_println!(
             "{} ({})",
-            fmt(&self.nodes[node].key),
+            fmt(&self.nodes[node].key, node),
             self.nodes[node].balance
         );
 
@@ -775,10 +784,81 @@ impl<K: Ord + Debug, V> AVLTree<K, V> {
     #[allow(dead_code)]
     pub fn print<F>(&self, fmt: F)
     where
-        F: Fn(&K) -> alloc_crate::string::String,
+        F: Fn(&K, usize) -> alloc_crate::string::String,
     {
-        println!("");
+        direct_println!("");
         return self.print_recursive(&fmt, 0, self.root);
+    }
+
+    fn height(&self, node: usize) -> isize {
+        let left_height;
+        let right_height;
+        if let Some(i) = self.nodes[node].left {
+            left_height = self.height(i);
+        } else {
+            left_height = 0;
+        }
+
+        if let Some(i) = self.nodes[node].right {
+            right_height = self.height(i);
+        } else {
+            right_height = 0;
+        }
+
+        if left_height > right_height {
+            return 1 + left_height;
+        } else {
+            return 1 + right_height;
+        }
+    }
+
+    fn balance(&self, node: usize) -> i8 {
+        let left_height;
+        let right_height;
+        if let Some(i) = self.nodes[node].left {
+            left_height = self.height(i);
+        } else {
+            left_height = 0;
+        }
+
+        if let Some(i) = self.nodes[node].right {
+            right_height = self.height(i);
+        } else {
+            right_height = 0;
+        }
+
+        (right_height - left_height) as i8
+    }
+
+    fn recursive_validate_balance(&self, node: usize) -> Option<(usize, i8, i8)> {
+        if let Some(idx) = self.nodes[node].left {
+            let r = self.recursive_validate_balance(idx);
+            if r.is_some() {
+                return r;
+            }
+        }
+
+        let b = self.balance(node);
+        if b != self.nodes[node].balance {
+            return Some((node, b, self.nodes[node].balance));
+        }
+
+        if let Some(idx) = self.nodes[node].right {
+            let r = self.recursive_validate_balance(idx);
+            if r.is_some() {
+                return r;
+            }
+        }
+
+        None
+    }
+
+    pub fn validate_balance(&self) -> Option<(usize, i8, i8)> {
+        if self.is_empty() {
+            return None;
+        }
+
+        self.recursive_validate_balance(self.root)
     }
 }
 
@@ -972,6 +1052,12 @@ mod tests {
         }
     }
 
+    fn assert_consistency(tree: &AVLTree<i32, i32>) {
+        if let Some((node, b1, b2)) = tree.validate_balance() {
+            panic!("node {} is inconsistent: balance {} != {}", node, b1, b2);
+        }
+    }
+
     #[allow(dead_code)]
     fn print_recursive(tree: &AVLTree<i32, i32>, level: usize, node: usize) {
         if let Some(idx) = tree.nodes[node].right {
@@ -998,6 +1084,8 @@ mod tests {
         assert_eq!(tree.root, 0, "invalid root index");
         assert_eq!(tree.nodes[0].key, 5, "incorrect root key");
         assert_eq!(tree.nodes[0].val, 7, "incorrect root value");
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1024,6 +1112,8 @@ mod tests {
 
         assert_eq!(tree.nodes[4].key, 20, "incorrect node 4 key");
         assert_eq!(tree.nodes[4].val, 20, "incorrect node 4 value");
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1042,6 +1132,8 @@ mod tests {
 
         assert_link(&tree, 2, None, true);
         assert_link(&tree, 2, None, false);
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1060,6 +1152,8 @@ mod tests {
 
         assert_link(&tree, 2, None, true);
         assert_link(&tree, 2, None, false);
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1078,6 +1172,8 @@ mod tests {
 
         assert_link(&tree, 2, None, true);
         assert_link(&tree, 2, None, false);
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1096,6 +1192,8 @@ mod tests {
 
         assert_link(&tree, 1, None, true);
         assert_link(&tree, 1, None, false);
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1114,6 +1212,8 @@ mod tests {
 
         assert_link(&tree, 1, None, true);
         assert_link(&tree, 1, None, false);
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1149,6 +1249,8 @@ mod tests {
 
         assert_link(&tree, 1, None, true);
         assert_link(&tree, 1, None, false);
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1173,6 +1275,8 @@ mod tests {
 
         assert_link(&tree, 1, None, true);
         assert_link(&tree, 1, None, false);
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1204,6 +1308,8 @@ mod tests {
 
         assert_link(&tree, 2, None, true);
         assert_link(&tree, 2, None, false);
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1235,6 +1341,8 @@ mod tests {
 
         assert_link(&tree, 2, None, true);
         assert_link(&tree, 2, None, false);
+
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1282,63 +1390,8 @@ mod tests {
 
         assert_link(&tree, 4, None, true);
         assert_link(&tree, 4, None, false);
-    }
 
-    fn height<K: Ord, T>(tree: &AVLTree<K, T>, node: usize) -> isize {
-        let left_height;
-        let right_height;
-        if let Some(i) = tree.nodes[node].left {
-            left_height = height(tree, i);
-        } else {
-            left_height = 0;
-        }
-
-        if let Some(i) = tree.nodes[node].right {
-            right_height = height(tree, i);
-        } else {
-            right_height = 0;
-        }
-
-        if left_height > right_height {
-            return 1 + left_height;
-        } else {
-            return 1 + right_height;
-        }
-    }
-
-    fn validate_balance<K: Ord, T>(tree: &AVLTree<K, T>, node: usize) {
-        let left_height;
-        let right_height;
-        if let Some(i) = tree.nodes[node].left {
-            left_height = height(tree, i);
-        } else {
-            left_height = 0;
-        }
-
-        if let Some(i) = tree.nodes[node].right {
-            right_height = height(tree, i);
-        } else {
-            right_height = 0;
-        }
-
-        let balance = right_height - left_height;
-        assert_eq!(
-            tree.nodes[node].balance as isize, balance,
-            "incorrect balance for node {}",
-            node
-        );
-    }
-
-    fn recursive_validate<K: Ord, T>(tree: &AVLTree<K, T>, node: usize) {
-        if let Some(idx) = tree.nodes[node].left {
-            recursive_validate(tree, idx);
-        }
-
-        validate_balance(tree, node);
-
-        if let Some(idx) = tree.nodes[node].right {
-            recursive_validate(tree, idx);
-        }
+        assert_consistency(&tree);
     }
 
     #[kernel_test]
@@ -1348,7 +1401,7 @@ mod tests {
             tree.insert(i, i).unwrap();
         }
 
-        recursive_validate(&tree, tree.root);
+        assert_consistency(&tree);
     }
 
     #[kernel_test]

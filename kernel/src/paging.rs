@@ -84,7 +84,7 @@ pub unsafe fn direct_map_virtual_address(virt_addr: usize, phys_addr: usize) -> 
 
         tlb_reload_required = true;
     } else {
-        pdpt = unsafe { PageTable::get_pdpt(pml4t_idx) };
+        pdpt = PageTable::get_pdpt(pml4t_idx);
     }
 
     let pd;
@@ -97,14 +97,14 @@ pub unsafe fn direct_map_virtual_address(virt_addr: usize, phys_addr: usize) -> 
         pdpt.map_addr(pdpt_idx, table_addr.unwrap())
             .expect("failed to map PD");
 
-        pd = unsafe { PageTable::get_pd(pml4t_idx, pdpt_idx) };
+        pd = PageTable::get_pd(pml4t_idx, pdpt_idx);
         asm::invlpg((pd as *mut PageTable) as usize);
 
         pd.clear();
 
         tlb_reload_required = true;
     } else {
-        pd = unsafe { PageTable::get_pd(pml4t_idx, pdpt_idx) };
+        pd = PageTable::get_pd(pml4t_idx, pdpt_idx);
     }
 
     let pt: &'static mut PageTable;
@@ -117,14 +117,14 @@ pub unsafe fn direct_map_virtual_address(virt_addr: usize, phys_addr: usize) -> 
         pd.map_addr(pd_idx, table_addr.unwrap())
             .expect("failed to map PT");
 
-        pt = unsafe { PageTable::get_pt(pml4t_idx, pdpt_idx, pd_idx) };
+        pt = PageTable::get_pt(pml4t_idx, pdpt_idx, pd_idx);
         asm::invlpg((pt as *mut PageTable) as usize);
 
         pt.clear();
 
         tlb_reload_required = true;
     } else {
-        pt = unsafe { PageTable::get_pt(pml4t_idx, pdpt_idx, pd_idx) };
+        pt = PageTable::get_pt(pml4t_idx, pdpt_idx, pd_idx);
     }
 
     let entry = pt.get_entry(pt_offset).unwrap();
@@ -157,15 +157,15 @@ pub unsafe fn direct_unmap_virtual_address(virt_addr: usize) {
 
     let pml4t = PageTable::get_pml4t();
     if pml4t.get_entry(pml4_idx).unwrap().present() {
-        let pdpt = unsafe { PageTable::get_pdpt(pml4_idx) };
+        let pdpt = PageTable::get_pdpt(pml4_idx);
         let pdpe = pdpt.get_entry(pdp_idx).unwrap();
 
         if pdpe.present() && !pdpe.page_size() {
-            let pd = unsafe { PageTable::get_pd(pml4_idx, pdp_idx) };
+            let pd = PageTable::get_pd(pml4_idx, pdp_idx);
             let pde = pd.get_entry(pd_idx).unwrap();
 
             if pde.present() && !pde.page_size() {
-                let pt = unsafe { PageTable::get_pt(pml4_idx, pdp_idx, pd_idx) };
+                let pt = PageTable::get_pt(pml4_idx, pdp_idx, pd_idx);
                 pt.clear_entry(pt_idx).expect("failed to unmap page");
                 asm::invlpg(virt_addr);
             }
@@ -183,13 +183,13 @@ pub unsafe fn direct_get_mapping(virt_addr: usize) -> Option<PageTableEntry> {
 
     let pml4t = PageTable::get_pml4t();
     if pml4t.get_entry(pml4_idx).unwrap().present() {
-        let pdpt = unsafe { PageTable::get_pdpt(pml4_idx) };
+        let pdpt = PageTable::get_pdpt(pml4_idx);
 
         if pdpt.get_entry(pdp_idx).unwrap().present() {
-            let pd = unsafe { PageTable::get_pd(pml4_idx, pdp_idx) };
+            let pd = PageTable::get_pd(pml4_idx, pdp_idx);
 
             if pd.get_entry(pd_idx).unwrap().present() {
-                let pt = unsafe { PageTable::get_pt(pml4_idx, pdp_idx, pd_idx) };
+                let pt = PageTable::get_pt(pml4_idx, pdp_idx, pd_idx);
 
                 return pt.get_entry(pt_idx).ok();
             }
@@ -201,10 +201,10 @@ pub unsafe fn direct_get_mapping(virt_addr: usize) -> Option<PageTableEntry> {
 
 pub fn get_page_mapping(vaddr: usize) -> Option<(PageLevel, PageTableEntry)> {
     if task::scheduler_initialized() {
-        let mut space = task::current_address_space();
+        let space = task::current_address_space();
         space.get_mapping(vaddr)
     } else {
-        let mut space = unsafe { AddressSpace::current() };
+        let space = unsafe { AddressSpace::current() };
         space.get_mapping(vaddr)
     }
 }
@@ -302,13 +302,12 @@ fn init_physical_map_gb_pages(window: VirtualMemory) -> Result<usize, Allocation
 
         for i in 0..512usize {
             let phys_addr = i << 30;
-            unsafe {
-                let mut pte = PageTableEntry::new();
-                pte.set_physical_address(phys_addr);
-                pte.set_present(true);
-                pte.set_page_size(true);
-                (*table).set_entry(i, pte).unwrap();
-            }
+
+            let mut pte = PageTableEntry::new();
+            pte.set_physical_address(phys_addr);
+            pte.set_present(true);
+            pte.set_page_size(true);
+            (*table).set_entry(i, pte).unwrap();
         }
 
         direct_unmap_virtual_address(window.address());

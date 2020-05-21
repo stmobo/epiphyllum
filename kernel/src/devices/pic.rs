@@ -3,7 +3,7 @@
 use crate::acpica::madt::MADT;
 use crate::asm::{msr, ports};
 use crate::lock::{LockedGlobal, NoIRQSpinlock, NoIRQSpinlockGuard};
-use crate::paging;
+
 use crate::paging::PhysicalPointer;
 
 use alloc_crate::vec::Vec;

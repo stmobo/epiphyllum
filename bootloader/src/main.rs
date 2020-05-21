@@ -222,7 +222,6 @@ pub extern "C" fn rust_start(multiboot_struct: *const MultibootInfo) -> ! {
 
     println!("Initialization complete, calling kernel entry point...");
 
-    let idt_phys: usize = unsafe { (&long_mode_idt as *const InterruptDescriptorTable) as usize };
     let loader_info = KernelLoaderInfo {
         multiboot_info: &mb,
         idt_phys: unsafe { &mut long_mode_idt as *mut InterruptDescriptorTable },

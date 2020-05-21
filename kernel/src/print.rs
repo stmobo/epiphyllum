@@ -6,13 +6,15 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::asm;
 use crate::devices::serial;
-use crate::devices::vga;
 use crate::interrupts;
 use crate::lock::OnceCell;
 use crate::stack_trace;
 use crate::structures::{Channel, Receiver, Sender};
 use crate::task;
 use crate::task::Task;
+
+#[cfg(not(test))]
+use crate::devices::vga;
 
 #[cfg(test)]
 use crate::test;
@@ -76,7 +78,7 @@ pub fn initialize() {
         panic!("logging already initialized");
     }
 
-    Task::from_closure(move || {
+    Task::from_closure(true, move || {
         logging_task(receiver);
         panic!("logging task died");
     })
@@ -120,6 +122,7 @@ fn print_control_regs() {
 
 pub fn do_panic(info: &PanicInfo) -> ! {
     unsafe {
+        asm::interrupts::set_if(false);
         break_print_locks();
     };
 

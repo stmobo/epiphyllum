@@ -27,7 +27,7 @@ pub fn test_runner(tests: &[&(&'static str, &'static str, fn())]) {
         println!(" ok");
     }
 
-    sleep(TimerDeadline::Relative(512));
+    sleep(TimerDeadline::Relative(512)).unwrap();
 
     test_exit(TestExitStatus::Success)
 }

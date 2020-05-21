@@ -592,29 +592,6 @@ impl PhysicalMemory {
         pfn_range(self.addr, self.order)
     }
 
-    /// Map this block of physical memory to contiguous virtual memory, starting
-    /// at the virtual address `start`.
-    ///
-    /// If any page fails to be mapped, the entire target virtual address range
-    /// will be unmapped.
-    ///
-    /// ## Safety
-    /// The caller must ensure that the virtual memory range from `start` to
-    /// `start + (self.n_pages() * 0x1000)` can be safely mapped or remapped.
-    pub unsafe fn map_to(&self, start: usize) -> bool {
-        for (i, pfn) in self.pfns().enumerate() {
-            let paddr = pfn << 12;
-            let vaddr = start + (i << 12);
-
-            if !paging::map_virtual_address(vaddr, paddr) {
-                paging::unmap_pages(start, (vaddr - start) >> 12).expect("could not unmap pages");
-                return false;
-            }
-        }
-
-        true
-    }
-
     pub fn into_raw(self) -> (usize, u64) {
         let addr = self.addr;
         let order = self.order;

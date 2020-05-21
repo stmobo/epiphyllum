@@ -44,8 +44,8 @@ impl Iterator for StackFrameIterator {
                 return None;
             }
 
-            if paging::get_mapping(frame_bp).is_some() {
-                unsafe {
+            unsafe {
+                if paging::direct_get_mapping(frame_bp).is_some() {
                     let next_frame = frame_bp as *const usize;
                     let next_bp = *next_frame;
 

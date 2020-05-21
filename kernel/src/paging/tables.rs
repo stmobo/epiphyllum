@@ -278,19 +278,19 @@ impl PageLevel {
     }
 }
 
-const fn pt_idx(vaddr: usize) -> usize {
+pub const fn pt_idx(vaddr: usize) -> usize {
     (vaddr >> 12) & 0x1FF
 }
 
-const fn pd_idx(vaddr: usize) -> usize {
+pub const fn pd_idx(vaddr: usize) -> usize {
     (vaddr >> 21) & 0x1FF
 }
 
-const fn pdp_idx(vaddr: usize) -> usize {
+pub const fn pdp_idx(vaddr: usize) -> usize {
     (vaddr >> 30) & 0x1FF
 }
 
-const fn pml4_idx(vaddr: usize) -> usize {
+pub const fn pml4_idx(vaddr: usize) -> usize {
     (vaddr >> 39) & 0x1FF
 }
 

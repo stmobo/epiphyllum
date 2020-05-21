@@ -112,24 +112,25 @@ pub fn initialize<'a>(mb: &'a MultibootInfo) {
 
     let array_addr = vmem.address();
     let mut vaddr = vmem.into_address();
-    for phys_mem in pmem {
-        let n_pages = phys_mem.n_pages();
-        let paddr = phys_mem.into_address();
-
-        for i in 0..n_pages {
-            if !super::map_virtual_address(vaddr + (i << 12), paddr + (i << 12)) {
-                panic!(
-                    "could not map virtual address {:#018x} => {:#018x}",
-                    vaddr + (i << 12),
-                    paddr + (i << 12)
-                );
-            }
-        }
-
-        vaddr += n_pages << 12;
-    }
 
     unsafe {
+        for phys_mem in pmem {
+            let n_pages = phys_mem.n_pages();
+            let paddr = phys_mem.into_address();
+
+            for i in 0..n_pages {
+                if !super::direct_map_virtual_address(vaddr + (i << 12), paddr + (i << 12)) {
+                    panic!(
+                        "could not map virtual address {:#018x} => {:#018x}",
+                        vaddr + (i << 12),
+                        paddr + (i << 12)
+                    );
+                }
+            }
+
+            vaddr += n_pages << 12;
+        }
+
         let uninit = array_addr as *mut PageData;
         for pfn in 0..pfn_count {
             uninit.offset(pfn as isize).write(PageData {

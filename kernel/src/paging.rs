@@ -1,7 +1,6 @@
 use core::convert::{TryFrom, TryInto};
 use core::ptr::NonNull;
 use x86_64::instructions::tlb;
-use x86_64::VirtAddr;
 
 use crate::asm;
 use crate::asm::cpuid::FeatureFlags;
@@ -56,17 +55,13 @@ pub fn init_paging_metadata<'a>(mb: &'a MultibootInfo) {
     structs::initialize(mb);
 }
 
-#[derive(Debug, Clone)]
-pub struct PageTableMetadata {
-    ref_count: u16,
-}
-
-pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
-    let table_index = PageHierarchyIndex::from_vaddr(virt_addr);
-    let pml4t_idx = table_index.pml4t_index().unwrap();
-    let pdpt_idx = table_index.pdpt_index().unwrap();
-    let pd_idx = table_index.pd_index().unwrap();
-    let pt_offset = (virt_addr >> 12) & 0x1FF;
+/// Maps a 4K page into the current virtual address space directly, using the
+/// recursive page table mappings.
+pub unsafe fn direct_map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
+    let pml4t_idx = tables::pml4_idx(virt_addr);
+    let pdpt_idx = tables::pdp_idx(virt_addr);
+    let pd_idx = tables::pd_idx(virt_addr);
+    let pt_offset = tables::pt_idx(virt_addr);
 
     let pml4t = PageTable::get_pml4t();
     let mut tlb_reload_required = false;
@@ -82,8 +77,8 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
             .map_addr(pml4t_idx, table_addr.unwrap())
             .expect("failed to map PDPT");
 
-        pdpt = unsafe { PageTable::get_pdpt(pml4t_idx) };
-        tlb::flush(VirtAddr::new(((pdpt as *mut PageTable) as usize) as u64));
+        pdpt = PageTable::get_pdpt(pml4t_idx);
+        asm::invlpg((pdpt as *mut PageTable) as usize);
 
         pdpt.clear();
 
@@ -103,7 +98,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
             .expect("failed to map PD");
 
         pd = unsafe { PageTable::get_pd(pml4t_idx, pdpt_idx) };
-        tlb::flush(VirtAddr::new(((pd as *mut PageTable) as usize) as u64));
+        asm::invlpg((pd as *mut PageTable) as usize);
 
         pd.clear();
 
@@ -123,7 +118,7 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
             .expect("failed to map PT");
 
         pt = unsafe { PageTable::get_pt(pml4t_idx, pdpt_idx, pd_idx) };
-        tlb::flush(VirtAddr::new(((pt as *mut PageTable) as usize) as u64));
+        asm::invlpg((pt as *mut PageTable) as usize);
 
         pt.clear();
 
@@ -143,21 +138,74 @@ pub fn map_virtual_address(virt_addr: usize, phys_addr: usize) -> bool {
         .expect("failed to map page");
 
     if tlb_reload_required {
-        tlb::flush_all();
+        asm::reload_cr3();
     } else {
-        tlb::flush(VirtAddr::new(virt_addr as u64));
+        asm::invlpg(virt_addr);
     }
 
     return true;
 }
 
-pub fn unmap_virtual_address(virt_addr: usize) {
-    let table_index = PageHierarchyIndex::from_vaddr(virt_addr);
-    if let Some(table) = table_index.get_table() {
-        let pt_offset = (virt_addr >> 12) & 0x1FF;
-        table.unmap_entry(pt_offset).expect("failed to unmap page");
+/// Unmaps a 4K page from the current virtual address space directly, using the
+/// recursive page table mappings.
+pub unsafe fn direct_unmap_virtual_address(virt_addr: usize) {
+    let virt_addr = virt_addr & PAGE_MASK;
+    let pml4_idx = tables::pml4_idx(virt_addr);
+    let pdp_idx = tables::pdp_idx(virt_addr);
+    let pd_idx = tables::pd_idx(virt_addr);
+    let pt_idx = tables::pt_idx(virt_addr);
 
-        tlb::flush(VirtAddr::new(virt_addr as u64));
+    let pml4t = PageTable::get_pml4t();
+    if pml4t.get_entry(pml4_idx).unwrap().present() {
+        let pdpt = unsafe { PageTable::get_pdpt(pml4_idx) };
+        let pdpe = pdpt.get_entry(pdp_idx).unwrap();
+
+        if pdpe.present() && !pdpe.page_size() {
+            let pd = unsafe { PageTable::get_pd(pml4_idx, pdp_idx) };
+            let pde = pd.get_entry(pd_idx).unwrap();
+
+            if pde.present() && !pde.page_size() {
+                let pt = unsafe { PageTable::get_pt(pml4_idx, pdp_idx, pd_idx) };
+                pt.clear_entry(pt_idx).expect("failed to unmap page");
+                asm::invlpg(virt_addr);
+            }
+        }
+    }
+}
+
+pub unsafe fn direct_get_mapping(virt_addr: usize) -> Option<PageTableEntry> {
+    let virt_addr = virt_addr & PAGE_MASK;
+
+    let pml4_idx = tables::pml4_idx(virt_addr);
+    let pdp_idx = tables::pdp_idx(virt_addr);
+    let pd_idx = tables::pd_idx(virt_addr);
+    let pt_idx = tables::pt_idx(virt_addr);
+
+    let pml4t = PageTable::get_pml4t();
+    if pml4t.get_entry(pml4_idx).unwrap().present() {
+        let pdpt = unsafe { PageTable::get_pdpt(pml4_idx) };
+
+        if pdpt.get_entry(pdp_idx).unwrap().present() {
+            let pd = unsafe { PageTable::get_pd(pml4_idx, pdp_idx) };
+
+            if pd.get_entry(pd_idx).unwrap().present() {
+                let pt = unsafe { PageTable::get_pt(pml4_idx, pdp_idx, pd_idx) };
+
+                return pt.get_entry(pt_idx).ok();
+            }
+        }
+    }
+
+    None
+}
+
+pub fn get_page_mapping(vaddr: usize) -> Option<(PageLevel, PageTableEntry)> {
+    if task::scheduler_initialized() {
+        let mut space = task::current_address_space();
+        space.get_mapping(vaddr)
+    } else {
+        let mut space = unsafe { AddressSpace::current() };
+        space.get_mapping(vaddr)
     }
 }
 
@@ -179,32 +227,6 @@ pub fn unmap_pages(vaddr: usize, n_pages: usize) -> Result<(), PageLevel> {
         let mut space = unsafe { AddressSpace::current() };
         space.unmap_page_range(vaddr, n_pages)
     }
-}
-
-pub fn get_mapping(virt_addr: usize) -> Option<PageTableEntry> {
-    let virt_addr = virt_addr & PAGE_MASK;
-
-    let pml4_idx: usize = (virt_addr >> 39) & 0x1FF;
-    let pdp_idx: usize = (virt_addr >> 30) & 0x1FF;
-    let pd_idx: usize = (virt_addr >> 21) & 0x1FF;
-    let pt_idx: usize = (virt_addr >> 12) & 0x1FF;
-
-    let pml4t = PageTable::get_pml4t();
-    if pml4t.get_entry(pml4_idx).unwrap().present() {
-        let pdpt = unsafe { PageTable::get_pdpt(pml4_idx) };
-
-        if pdpt.get_entry(pdp_idx).unwrap().present() {
-            let pd = unsafe { PageTable::get_pd(pml4_idx, pdp_idx) };
-
-            if pd.get_entry(pd_idx).unwrap().present() {
-                let pt = unsafe { PageTable::get_pt(pml4_idx, pdp_idx, pd_idx) };
-
-                return pt.get_entry(pt_idx).ok();
-            }
-        }
-    }
-
-    None
 }
 
 pub fn remap_boot_identity_paging() {
@@ -271,24 +293,26 @@ pub fn reserve_bootstrap_physical_pages() {
 fn init_physical_map_gb_pages(window: VirtualMemory) -> Result<usize, AllocationError> {
     let pdpt = PhysicalMemory::new(0)?;
 
-    if !map_virtual_address(window.address(), pdpt.address()) {
-        return Err(AllocationError::CouldNotMapAddress);
-    }
-
-    let table = window.address() as *mut PageTable;
-
-    for i in 0..512usize {
-        let phys_addr = i << 30;
-        unsafe {
-            let mut pte = PageTableEntry::new();
-            pte.set_physical_address(phys_addr);
-            pte.set_present(true);
-            pte.set_page_size(true);
-            (*table).set_entry(i, pte).unwrap();
+    unsafe {
+        if !direct_map_virtual_address(window.address(), pdpt.address()) {
+            return Err(AllocationError::CouldNotMapAddress);
         }
-    }
 
-    unmap_virtual_address(window.address());
+        let table = window.address() as *mut PageTable;
+
+        for i in 0..512usize {
+            let phys_addr = i << 30;
+            unsafe {
+                let mut pte = PageTableEntry::new();
+                pte.set_physical_address(phys_addr);
+                pte.set_present(true);
+                pte.set_page_size(true);
+                (*table).set_entry(i, pte).unwrap();
+            }
+        }
+
+        direct_unmap_virtual_address(window.address());
+    }
 
     Ok(pdpt.into_address())
 }
@@ -309,16 +333,16 @@ fn init_physical_map_mb_pages(window: VirtualMemory) -> Result<usize, Allocation
             let pdp_no = (chunk * 128) + chunk_page;
             let pd_addr = block_addr + (chunk_page * 0x1000);
 
-            if !map_virtual_address(window.address(), pd_addr) {
-                for addr in chunk_addrs.iter() {
-                    let addr = *addr;
-                    if addr != 0 {
-                        unsafe {
+            unsafe {
+                if !direct_map_virtual_address(window.address(), pd_addr) {
+                    for addr in chunk_addrs.iter() {
+                        let addr = *addr;
+                        if addr != 0 {
                             physical_mem::deallocate(addr, 7);
                         }
                     }
+                    return Err(AllocationError::CouldNotMapAddress);
                 }
-                return Err(AllocationError::CouldNotMapAddress);
             }
 
             for pd_offset in 0..512usize {
@@ -337,24 +361,25 @@ fn init_physical_map_mb_pages(window: VirtualMemory) -> Result<usize, Allocation
         chunk_addrs[chunk] = block.into_address();
     }
 
-    // create mappings within the PDPT
-    if !map_virtual_address(window.address(), pdpt.address()) {
-        return Err(AllocationError::CouldNotMapAddress);
-    }
+    unsafe {
+        // create mappings within the PDPT
+        if !direct_map_virtual_address(window.address(), pdpt.address()) {
+            return Err(AllocationError::CouldNotMapAddress);
+        }
 
-    for pdp_no in 0..512usize {
-        let chunk = pdp_no / 128;
-        let chunk_page = pdp_no % 128;
-        let pd_addr = chunk_addrs[chunk] + (chunk_page * 0x1000);
+        for pdp_no in 0..512usize {
+            let chunk = pdp_no / 128;
+            let chunk_page = pdp_no % 128;
+            let pd_addr = chunk_addrs[chunk] + (chunk_page * 0x1000);
 
-        unsafe {
             (*table)
                 .map_addr(pdp_no, pd_addr)
                 .map_err(|_| AllocationError::CouldNotMapAddress)?;
         }
+
+        direct_unmap_virtual_address(window.address());
     }
 
-    unmap_virtual_address(window.address());
     Ok(pdpt.into_address())
 }
 
@@ -507,23 +532,22 @@ mod tests {
         let phys = PhysicalMemory::new(0).unwrap();
         let virt = VirtualMemory::new(0x1000).unwrap();
 
-        if !map_virtual_address(virt.address(), phys.address()) {
-            panic!(
-                "could not map virtual address {:#018x} => {:#018x}",
-                virt.address(),
-                phys.address()
-            );
-        }
-
-        let p: PhysicalPointer<u64> = phys.as_ptr();
-        let virt_p = p.as_mut_ptr();
         unsafe {
+            if !direct_map_virtual_address(virt.address(), phys.address()) {
+                panic!(
+                    "could not map virtual address {:#018x} => {:#018x}",
+                    virt.address(),
+                    phys.address()
+                );
+            }
+
+            let p: PhysicalPointer<u64> = phys.as_ptr();
+            let virt_p = p.as_mut_ptr();
+
             ptr::write_volatile(virt_p, 0xA5A5DEADC0DEA5A5);
             drop(virt_p);
-        }
 
-        let mapped_p = virt.address() as *const u64;
-        unsafe {
+            let mapped_p = virt.address() as *const u64;
             assert_eq!(
                 ptr::read_volatile(mapped_p),
                 0xA5A5DEADC0DEA5A5,
@@ -531,8 +555,8 @@ mod tests {
                 virt.address(),
                 p.virtual_address()
             );
-        };
 
-        unmap_virtual_address(virt.address());
+            direct_unmap_virtual_address(virt.address());
+        }
     }
 }

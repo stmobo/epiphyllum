@@ -4,6 +4,7 @@ use crate::acpica::madt::MADT;
 use crate::asm::{msr, ports};
 use crate::lock::{LockedGlobal, NoIRQSpinlock, NoIRQSpinlockGuard};
 use crate::paging;
+use crate::paging::PhysicalPointer;
 
 use alloc_crate::vec::Vec;
 use core::ptr;
@@ -72,19 +73,13 @@ pub mod local_apic {
                 let base_phys_addr: usize =
                     unsafe { msr::rdmsr(0x1B) & 0xFFFF_FFFF_FFFF_F000 } as usize;
 
-                let vaddr = paging::offset_direct_map(base_phys_addr);
-                if !paging::map_virtual_address(vaddr, base_phys_addr) {
-                    panic!("lapic: could not map LAPIC base address into virtual memory");
-                } else {
-                    println!("lapic: LAPIC base address is {:#016x}", base_phys_addr);
-                }
+                println!("lapic: LAPIC base address is {:#016x}", base_phys_addr);
 
-                vaddr
+                base_phys_addr
             });
 
-            LocalAPIC {
-                base: base_addr as *mut u32,
-            }
+            let base = unsafe { PhysicalPointer::<u32>::new_unchecked(base_addr).as_mut_ptr() };
+            LocalAPIC { base }
         }
 
         pub fn processor_id(&self) -> u8 {
@@ -383,12 +378,11 @@ pub mod io_apic {
 
             for io_apic in madt.io_apics.iter() {
                 let paddr = io_apic.address as usize;
-
-                let vaddr = paging::offset_direct_map(paddr);
-                paging::map_virtual_address(vaddr, paddr);
+                let base_addr =
+                    unsafe { PhysicalPointer::<u32>::new_unchecked(paddr).as_mut_ptr() };
 
                 let mut s = IOAPIC {
-                    base_addr: vaddr as *mut u32,
+                    base_addr,
                     irq_base: io_apic.gsi_base as u8,
                 };
 

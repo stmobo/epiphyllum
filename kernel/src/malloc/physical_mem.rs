@@ -634,6 +634,141 @@ pub mod tests {
 
     const PMA_TEST_ALLOCS: usize = 100;
 
+    fn assert_allocator_block_states(allocator: &BuddyAllocator, states: &[u64]) {
+        for (order, st) in states.iter().enumerate() {
+            let n_states: usize;
+            if order >= 3 {
+                n_states = 1usize << (8 - order);
+            } else {
+                n_states = 64;
+            }
+
+            let bitmask = Bitmask64(*st);
+            for i in 0..n_states {
+                assert_eq!(
+                    allocator.get_block_state(order as u64, i),
+                    bitmask.get(i),
+                    "incorrect state for block {}, order {}",
+                    i,
+                    order
+                );
+            }
+        }
+    }
+
+    #[kernel_test]
+    fn test_buddy_split_merge() {
+        let mut allocator = BuddyAllocator::new(0, 0x4000).unwrap();
+
+        // In the following diagrams of block allocator state, the lowest level
+        // of symbols indicates order-0 blocks (pages).
+        // # indicates a free block. 'O' indicates an unavailable block.
+        // X indicates an allocated block.
+
+        // #        O
+        // O O   -> X #
+        // OOOO     OOOO
+        assert_allocator_block_states(&allocator, &[0b0000, 0b00, 1]);
+        assert_eq!(
+            allocator.free_bytes, 0x4000,
+            "incorrect free byte count for allocator"
+        );
+
+        assert_eq!(allocator.allocate_at(0, 1), Some(0));
+
+        assert_allocator_block_states(&allocator, &[0b0000, 0b10, 0]);
+        assert_eq!(
+            allocator.free_bytes, 0x2000,
+            "incorrect free byte count for allocator"
+        );
+
+        // O        O
+        // X #   -> X O
+        // OOOO     OO#X
+        assert_eq!(allocator.allocate_at(0x3000, 0), Some(0x3000));
+        assert_allocator_block_states(&allocator, &[0b0100, 0b00, 0]);
+        assert_eq!(
+            allocator.free_bytes, 0x1000,
+            "incorrect free byte count for allocator"
+        );
+
+        // Test deallocating a block via its constituent blocks:
+        // O        O        O
+        // X O   -> O O   -> # O
+        // OO#X     #X#X     OO#X
+        allocator.deallocate(0, 0);
+        assert_allocator_block_states(&allocator, &[0b0101, 0b00, 0]);
+        assert_eq!(
+            allocator.free_bytes, 0x2000,
+            "incorrect free byte count for allocator"
+        );
+
+        allocator.deallocate(0x1000, 0);
+        assert_allocator_block_states(&allocator, &[0b0100, 0b01, 0]);
+        assert_eq!(
+            allocator.free_bytes, 0x3000,
+            "incorrect free byte count for allocator"
+        );
+
+        // O        #
+        // # O   -> O O
+        // OO#X     OOOO
+        allocator.deallocate(0x3000, 0);
+        assert_allocator_block_states(&allocator, &[0b0000, 0b00, 1]);
+        assert_eq!(
+            allocator.free_bytes, 0x4000,
+            "incorrect free byte count for allocator"
+        );
+    }
+
+    #[kernel_test]
+    fn test_allocation_overlaps() {
+        let mut allocator = BuddyAllocator::new(0, 0x4000).unwrap();
+        let addr = allocator.allocate(1).unwrap();
+
+        // Make sure we can't overlap the next two pages and can overlap the third:
+        assert_eq!(
+            allocator.allocate_at(addr, 0),
+            None,
+            "incorrectly overlapped allocation"
+        );
+
+        assert_eq!(
+            allocator.allocate_at(addr + 0x1000, 0),
+            None,
+            "incorrectly overlapped allocation"
+        );
+
+        assert_eq!(
+            allocator.allocate_at(addr + 0x2000, 0),
+            Some(addr + 0x2000),
+            "could not allocate non-overlapping allocation"
+        );
+
+        allocator.deallocate(addr + 0x2000, 0);
+
+        // Make sure we can't overlap with higher-order blocks either:
+        assert_eq!(
+            allocator.allocate(2),
+            None,
+            "incorrectly overlapped allocation"
+        );
+
+        assert_eq!(
+            allocator.allocate_at(0, 2),
+            None,
+            "incorrectly overlapped allocation"
+        );
+
+        allocator.deallocate(addr, 1);
+
+        assert_eq!(
+            allocator.allocate_at(0, 2),
+            Some(0),
+            "could not allocate non-overlapping allocation"
+        );
+    }
+
     #[kernel_test]
     fn test_pma() {
         let mut rng = MersenneTwister64::new(TEST_SEED);

@@ -6,6 +6,7 @@ pub mod bindings {
     #![allow(non_upper_case_globals)]
     #![allow(non_camel_case_types)]
     #![allow(non_snake_case)]
+    #![allow(clippy::all)]
     use core::convert::TryFrom;
     use core::ops::{Deref, DerefMut, Try};
     use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -159,11 +160,7 @@ pub mod bindings {
             if val == 0 {
                 AcpiStatus(Ok(()))
             } else {
-                if let Ok(err_code) = AcpiError::try_from(val) {
-                    AcpiStatus(Err(err_code))
-                } else {
-                    AcpiStatus(Err(AcpiError::AE_ERROR))
-                }
+                AcpiStatus(Err(AcpiError::try_from(val).unwrap_or(AcpiError::AE_ERROR)))
             }
         }
     }

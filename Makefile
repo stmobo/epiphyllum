@@ -12,3 +12,6 @@ run: bootloader grub.cfg
 
 test: bootloader grub.cfg
 	cd kernel && RUST_TARGET_PATH=`pwd` xargo +nightly -Zfeatures=all test --target x86_64-epiphyllum
+
+clippy: bootloader grub.cfg
+	cd kernel && RUST_TARGET_PATH=`pwd` xargo +nightly -Zfeatures=all clippy --target x86_64-epiphyllum 2>&1 | tee clippy.log

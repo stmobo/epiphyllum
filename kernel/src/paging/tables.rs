@@ -68,9 +68,9 @@ impl PageTableEntry {
 
     pub fn set_present(&mut self, present: bool) {
         if present {
-            self.entry = self.entry | 1;
+            self.entry |= 1;
         } else {
-            self.entry = self.entry & !1;
+            self.entry &= !1;
         }
     }
 
@@ -80,9 +80,9 @@ impl PageTableEntry {
 
     pub fn set_writable(&mut self, writable: bool) {
         if writable {
-            self.entry = self.entry | 2;
+            self.entry |= 2;
         } else {
-            self.entry = self.entry & !2;
+            self.entry &= !2;
         }
     }
 
@@ -139,7 +139,7 @@ impl PageTable {
             return Err(index);
         }
 
-        unsafe { Ok(self.table_ptr().offset(index as isize).read_volatile()) }
+        unsafe { Ok(self.table_ptr().add(index).read_volatile()) }
     }
 
     pub fn set_entry(&mut self, index: usize, entry: PageTableEntry) -> Result<(), usize> {
@@ -148,8 +148,7 @@ impl PageTable {
         }
 
         unsafe {
-            self.table_mut_ptr()
-                .offset(index as isize)
+            self.table_mut_ptr().add(index)
                 .write_volatile(entry);
         }
 
@@ -463,7 +462,7 @@ impl AddressSpace {
         mut cur: PhysicalPointer<PageTable>,
         index: usize,
     ) -> Result<PhysicalPointer<PageTable>, MappingError> {
-        let child_table = PageTable::new().map_err(|e| MappingError::AllocationFailure(e))?;
+        let child_table = PageTable::new().map_err(MappingError::AllocationFailure)?;
 
         unsafe {
             let cur_table = cur.as_mut();
@@ -540,10 +539,8 @@ impl AddressSpace {
         if let Some(page_data) = super::page_metadata() {
             if level == PageLevel::PT || pte.page_size() {
                 Self::decrement_pte_refs(pte, level, page_data);
-            } else {
-                if let Ok(ptr) = PhysicalPointer::<PageTable>::try_from(pte) {
-                    Self::decrement_table_refs(ptr, level, page_data);
-                }
+            } else if let Ok(ptr) = PhysicalPointer::<PageTable>::try_from(pte) {
+                Self::decrement_table_refs(ptr, level, page_data);
             }
         }
     }

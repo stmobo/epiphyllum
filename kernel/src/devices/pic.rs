@@ -580,7 +580,7 @@ pub mod io_apic {
     }
 
     pub fn initialize() {
-        GSI_LIST.init(|| Vec::new());
+        GSI_LIST.init(Vec::new);
         io_apic::IOAPIC::initialize_all();
         println!("ioapic: I/O APICs initialized");
     }

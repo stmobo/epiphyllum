@@ -26,7 +26,7 @@ pub extern "C" fn AcpiOsPrintf() {}
 #[no_mangle]
 pub extern "C" fn AcpiOsVprintf() {}
 
-const RSDP_SIGNATURE: &'static [u8] = b"RSD PTR ";
+const RSDP_SIGNATURE: &[u8] = b"RSD PTR ";
 
 fn do_rsdp_search(start_addr: usize, end_addr: usize) -> Option<usize> {
     let mut addr = paging::offset_direct_map(start_addr) & !0xF;
@@ -39,7 +39,7 @@ fn do_rsdp_search(start_addr: usize, end_addr: usize) -> Option<usize> {
 
         for i in 0..RSDP_SIGNATURE.len() {
             unsafe {
-                if *(p.offset(i as isize)) != RSDP_SIGNATURE[i] {
+                if *p.add(i) != RSDP_SIGNATURE[i] {
                     is_match = false;
                     break;
                 }
@@ -116,7 +116,7 @@ pub extern "C" fn AcpiOsMapMemory(Where: ACPI_PHYSICAL_ADDRESS, _: ACPI_SIZE) ->
 
 #[no_mangle]
 pub extern "C" fn AcpiOsUnmapMemory(_: *mut cty::c_void, _: ACPI_SIZE) {
-    return;
+    
 }
 
 #[no_mangle]
@@ -183,7 +183,7 @@ pub extern "C" fn AcpiOsWritable(Pointer: *mut cty::c_void, Length: ACPI_SIZE) -
 
 static ACPI_ALLOC_MAP: LockedGlobal<BTreeMap<usize, Layout>> = LockedGlobal::new();
 pub fn init_alloc_map() {
-    ACPI_ALLOC_MAP.init(|| BTreeMap::new());
+    ACPI_ALLOC_MAP.init(BTreeMap::new);
 }
 
 #[no_mangle]
@@ -457,7 +457,7 @@ pub extern "C" fn AcpiOsAcquireMutex(Handle: *mut cty::c_void, _Timeout: UINT16)
         mem::forget((*b).lock());
     }
 
-    return AE_OK;
+    AE_OK
 }
 
 #[no_mangle]
@@ -518,7 +518,7 @@ pub extern "C" fn AcpiOsAcquireLock(Handle: *mut cty::c_void, _Timeout: UINT16) 
         mem::forget(l);
     }
 
-    return AE_OK;
+    AE_OK
 }
 
 #[no_mangle]
@@ -585,7 +585,7 @@ pub extern "C" fn AcpiOsSignalSemaphore(Handle: *mut cty::c_void, _Units: UINT32
 
 #[no_mangle]
 pub extern "C" fn AcpiOsGetThreadId() -> UINT64 {
-    return 0;
+    0
 }
 
 #[no_mangle]
@@ -611,7 +611,7 @@ pub extern "C" fn AcpiOsGetTimer() -> UINT64 {
 
 static ACPI_ISR_MAP: LockedGlobal<BTreeMap<usize, u64>> = LockedGlobal::new();
 pub fn init_isr_map() {
-    ACPI_ISR_MAP.init(|| BTreeMap::new());
+    ACPI_ISR_MAP.init(BTreeMap::new);
 }
 
 #[no_mangle]
@@ -634,9 +634,9 @@ pub extern "C" fn AcpiOsInstallInterruptHandler(
         move || -> interrupts::InterruptHandlerStatus {
             unsafe {
                 if isr(ctx.0) == ACPI_INTERRUPT_HANDLED {
-                    return interrupts::InterruptHandlerStatus::Handled;
+                    interrupts::InterruptHandlerStatus::Handled
                 } else {
-                    return interrupts::InterruptHandlerStatus::NotHandled;
+                    interrupts::InterruptHandlerStatus::NotHandled
                 }
             }
         },
@@ -668,9 +668,9 @@ pub extern "C" fn AcpiOsRemoveInterruptHandler(
         interrupts::unregister_handler(InterruptNumber as u8, isr_id);
         map.remove(&isr);
 
-        return AE_OK;
+        AE_OK
     } else {
-        return AcpiError::AE_NOT_EXIST.into();
+        AcpiError::AE_NOT_EXIST.into()
     }
 }
 

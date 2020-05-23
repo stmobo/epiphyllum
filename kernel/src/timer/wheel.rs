@@ -218,7 +218,7 @@ impl TimerWheel {
 static TIMER_WHEEL: LockedGlobal<TimerWheel> = LockedGlobal::new();
 
 pub fn init_timer_wheel() {
-    TIMER_WHEEL.init(|| TimerWheel::new());
+    TIMER_WHEEL.init(TimerWheel::new);
 }
 
 pub fn update_timers(n_ticks: u64) -> u64 {

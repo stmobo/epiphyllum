@@ -34,14 +34,14 @@ impl VirtualMemoryRange {
         }
 
         VirtualMemoryRange {
-            start: start,
-            end: end,
+            start,
+            end,
             free: false,
         }
     }
 
     fn size(&self) -> usize {
-        return self.end - self.start;
+        self.end - self.start
     }
 }
 
@@ -142,7 +142,7 @@ impl VirtualMemoryAllocator {
 
         self.sort_free_list();
 
-        if self.free.len() == 0 || self.free[0].size < size {
+        if self.free.is_empty() || self.free[0].size < size {
             return Err(AllocationError::NoFreeVirtualMemory);
         }
 
@@ -282,7 +282,7 @@ unsafe impl Sync for VirtualMemoryAllocator {}
 
 pub unsafe fn initialize(boot_heap_pages: u64) {
     use crate::paging::{KERNEL_BASE, KERNEL_HEAP_BASE};
-    let mut l = KERNEL_VMA.init(|| VirtualMemoryAllocator::new()).lock();
+    let mut l = KERNEL_VMA.init(VirtualMemoryAllocator::new).lock();
 
     l.register_memory(KERNEL_HEAP_BASE, KERNEL_BASE);
     let mut cur_addr = KERNEL_HEAP_BASE;

@@ -341,7 +341,7 @@ pub unsafe fn initialize(init_addr: usize, n_pages: usize) {
         panic!("number of pages for LZA init must be divisible by 2");
     }
 
-    let mut lock = KERNEL_LZA.init(|| LargeZoneAllocator::new()).lock();
+    let mut lock = KERNEL_LZA.init(LargeZoneAllocator::new).lock();
     for i in 0..(n_pages / 2) {
         let addr = init_addr + (i * 0x2000);
         lock.zone_list = LargeZone::init_at(addr, lock.zone_list);
@@ -400,7 +400,7 @@ mod tests {
         let mut allocs: Vec<(usize, Layout)> = Vec::with_capacity(16);
 
         for _ in 0..TEST_REPS {
-            if allocs.len() > 0 {
+            if !allocs.is_empty() {
                 let n_deallocs = (rng.generate() as usize) % allocs.len();
 
                 // deallocate random blocks

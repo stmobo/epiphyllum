@@ -9,7 +9,7 @@ fn get_flags() -> u64 {
         llvm_asm!("pushfq; popq $0" : "=r"(flags) ::: "volatile");
     }
 
-    return flags;
+    flags
 }
 
 /// Gets the current value of CR0 (Control Register 0) on the current processor.

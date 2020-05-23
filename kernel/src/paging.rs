@@ -141,7 +141,7 @@ pub unsafe fn direct_map_virtual_address(virt_addr: usize, phys_addr: usize) -> 
         asm::invlpg(virt_addr);
     }
 
-    return true;
+    true
 }
 
 /// Unmaps a 4K page from the current virtual address space directly, using the

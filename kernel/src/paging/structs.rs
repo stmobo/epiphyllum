@@ -133,7 +133,7 @@ pub fn initialize<'a>(mb: &'a MultibootInfo) {
 
         let uninit = array_addr as *mut PageData;
         for pfn in 0..pfn_count {
-            uninit.offset(pfn as isize).write(PageData {
+            uninit.add(pfn).write(PageData {
                 pfn,
                 refcount: AtomicU32::new(0),
             });
@@ -168,5 +168,5 @@ pub unsafe fn remove_page_ref(addr: usize) {
 }
 
 pub fn page_metadata() -> Option<&'static [PageData]> {
-    PAGE_DATA.get().map(|x| *x)
+    PAGE_DATA.get().copied()
 }

@@ -72,7 +72,7 @@ impl<K: Ord, V> AVLTree<K, V> {
             .get(parent)
             .expect("attempted to access invalid node");
 
-        return n.left.is_some() && n.left.unwrap() == child;
+        n.left.is_some() && n.left.unwrap() == child
     }
 
     fn is_right_child(&self, parent: usize, child: usize) -> bool {
@@ -81,7 +81,7 @@ impl<K: Ord, V> AVLTree<K, V> {
             .get(parent)
             .expect("attempted to access invalid node");
 
-        return n.right.is_some() && n.right.unwrap() == child;
+        n.right.is_some() && n.right.unwrap() == child
     }
 
     fn rotate(&mut self, pivot: usize) {
@@ -162,7 +162,7 @@ impl<K: Ord, V> AVLTree<K, V> {
         }
 
         self.rotate(child);
-        return child;
+        child
     }
 
     fn retrace_insert(&mut self, mut cur_node: usize) {
@@ -204,7 +204,7 @@ impl<K: Ord, V> AVLTree<K, V> {
             left: None,
             right: None,
             key,
-            val: val,
+            val,
             balance: 0,
         });
 
@@ -277,7 +277,7 @@ impl<K: Ord, V> AVLTree<K, V> {
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if self.nodes.len() == 0 {
+        if self.nodes.is_empty() {
             return None;
         }
 
@@ -290,7 +290,7 @@ impl<K: Ord, V> AVLTree<K, V> {
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if self.nodes.len() == 0 {
+        if self.nodes.is_empty() {
             return None;
         }
 
@@ -303,7 +303,7 @@ impl<K: Ord, V> AVLTree<K, V> {
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if self.nodes.len() == 0 {
+        if self.nodes.is_empty() {
             return false;
         }
 
@@ -320,7 +320,7 @@ impl<K: Ord, V> AVLTree<K, V> {
 
     fn delete_entry(&mut self, idx: usize) -> Node<K, V> {
         let removed = self.nodes.swap_remove(idx);
-        if self.nodes.len() == 0 {
+        if self.nodes.is_empty() {
             return removed;
         }
 
@@ -446,18 +446,18 @@ impl<K: Ord, V> AVLTree<K, V> {
             /* Replace with in-order successor and delete that node instead */
             let successor = self.leftmost(right.unwrap());
             self.swap_node_data(successor, idx);
-            return self.remove_internal(successor);
+            self.remove_internal(successor)
         } else if left.is_some() {
             let child = left.unwrap();
             self.swap_node_data(child, idx);
-            return self.remove_internal(child);
+            self.remove_internal(child)
         } else if right.is_some() {
             let child = right.unwrap();
             self.swap_node_data(child, idx);
-            return self.remove_internal(child);
+            self.remove_internal(child)
         } else {
             self.retrace_remove(idx);
-            return self.delete_entry(idx);
+            self.delete_entry(idx)
         }
     }
 
@@ -466,7 +466,7 @@ impl<K: Ord, V> AVLTree<K, V> {
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if self.nodes.len() == 0 {
+        if self.nodes.is_empty() {
             return None;
         }
 
@@ -476,7 +476,7 @@ impl<K: Ord, V> AVLTree<K, V> {
     }
 
     fn next_node(&self, cur: usize) -> Option<usize> {
-        if self.nodes.len() == 0 {
+        if self.nodes.is_empty() {
             return None;
         }
 
@@ -498,7 +498,7 @@ impl<K: Ord, V> AVLTree<K, V> {
     }
 
     fn prev_node(&self, cur: usize) -> Option<usize> {
-        if self.nodes.len() == 0 {
+        if self.nodes.is_empty() {
             return None;
         }
 
@@ -787,7 +787,7 @@ impl<K: Ord + Debug, V> AVLTree<K, V> {
         F: Fn(&K, usize) -> alloc_crate::string::String,
     {
         direct_println!("");
-        return self.print_recursive(&fmt, 0, self.root);
+        self.print_recursive(&fmt, 0, self.root)
     }
 
     fn height(&self, node: usize) -> isize {
@@ -806,9 +806,9 @@ impl<K: Ord + Debug, V> AVLTree<K, V> {
         }
 
         if left_height > right_height {
-            return 1 + left_height;
+            1 + left_height
         } else {
-            return 1 + right_height;
+            1 + right_height
         }
     }
 

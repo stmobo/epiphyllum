@@ -458,7 +458,7 @@ impl PhysicalMemoryAllocator {
 unsafe impl Send for PhysicalMemoryAllocator {}
 
 pub fn initialize() {
-    KERNEL_PMA.init(|| PhysicalMemoryAllocator::new());
+    KERNEL_PMA.init(PhysicalMemoryAllocator::new);
 }
 
 /// Register a range of physical memory with the allocator.

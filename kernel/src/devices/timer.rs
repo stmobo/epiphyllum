@@ -51,7 +51,7 @@ impl CalibrationData {
                      * Disable the PIT and the LAPIC timers:
                      */
                     unsafe {
-                        ports::outb(COMMAND_ADDR, 0b00_11_000_0);
+                        ports::outb(COMMAND_ADDR, 0b0011_0000);
                     }
 
                     return;
@@ -110,7 +110,7 @@ impl CalibrationData {
             let count = (1193182 / TICKS_PER_SECOND) as u16;
             println!("timer: PIT divisor = {}", count);
 
-            ports::outb(COMMAND_ADDR, 0b00_11_010_0);
+            ports::outb(COMMAND_ADDR, 0b0011_0100);
             ports::outb(CH0_ADDR, (count & 0xFF) as u8);
             ports::outb(CH0_ADDR, ((count >> 8) & 0xFF) as u8);
         }

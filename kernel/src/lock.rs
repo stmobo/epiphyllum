@@ -192,7 +192,7 @@ impl<T: PartialEq> PartialEq<T> for OnceCell<T> {
 impl<T> From<T> for OnceCell<T> {
     fn from(v: T) -> OnceCell<T> {
         let cell = OnceCell::new();
-        if let Err(_) = cell.set(v) {
+        if cell.set(v).is_err() {
             panic!("could not set newly-initialized OnceCell");
         }
 

@@ -80,7 +80,7 @@ pub fn spawn_async<T: Future<Output = u64> + Send + 'static>(
     if shared_address_space {
         address_space = scheduling::cur_address_space_handle();
     } else {
-        let space = AddressSpace::new().map_err(|e| TaskSpawnError::AllocationError(e))?;
+        let space = AddressSpace::new().map_err(TaskSpawnError::AllocationError)?;
         address_space = Arc::new(NoIRQSpinlock::new(space));
     }
 

@@ -48,7 +48,7 @@ impl<T> BipBuffer<T> {
         };
 
         let writer = BipWriter {
-            buffer: buffer.clone(),
+            buffer,
         };
 
         (reader, writer)
@@ -91,7 +91,7 @@ impl<T> BipBuffer<T> {
             }
 
             Ok(RawWriteRSVP {
-                ptr: self.data.offset(write_pos as isize),
+                ptr: self.data.add(write_pos),
                 offset: write_pos,
                 watermark_start: None,
             })
@@ -159,9 +159,9 @@ impl<T> BipBuffer<T> {
         }
 
         if avail >= len {
-            return Ok(self.data.offset(cur_read as isize));
+            Ok(self.data.add(cur_read))
         } else {
-            return Err(avail);
+            Err(avail)
         }
     }
 

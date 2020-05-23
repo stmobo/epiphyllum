@@ -209,7 +209,7 @@ impl Scheduler {
 unsafe impl Sync for Scheduler {}
 
 pub fn initialize() {
-    if let Err(_) = SCHEDULER.set(Scheduler::new()) {
+    if SCHEDULER.set(Scheduler::new()).is_err() {
         panic!("attempted to initialize scheduler twice");
     }
 }

@@ -521,7 +521,7 @@ pub mod tests {
                     let value = ((*p).slot_from_address(addr) & 0xFF) as u8;
 
                     for offset in 0..sz {
-                        let alloc_ptr = allocated.offset(offset as isize);
+                        let alloc_ptr = allocated.add(offset);
                         assert_eq!(
                             *alloc_ptr, 0,
                             "double allocation detected (seed: {:#x}, order {})",

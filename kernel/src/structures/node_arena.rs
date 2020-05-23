@@ -26,7 +26,7 @@ impl<T> Arena<T> {
         unsafe {
             let p = alloc::alloc(layout);
             if let Some(p) = NonNull::new(p) {
-                return Arena { data: p.cast() };
+                Arena { data: p.cast() }
             } else {
                 alloc::handle_alloc_error(layout);
             }
@@ -171,7 +171,7 @@ impl<T> ArenaList<T> {
         let (arena, offset) = Self::arena_index(index);
         unsafe {
             let p = self.arenas[arena].data.as_ptr();
-            p.offset(offset as isize)
+            p.add(offset)
         }
     }
 
@@ -187,7 +187,7 @@ impl<T> ArenaList<T> {
         let insert_arena = &mut self.arenas[arena];
         unsafe {
             let p = insert_arena.data.as_ptr();
-            ptr::write(p.offset(offset as isize), value);
+            ptr::write(p.add(offset), value);
         }
 
         self.len += 1;
@@ -216,7 +216,7 @@ impl<T> ArenaList<T> {
 
 impl<T> Drop for ArenaList<T> {
     fn drop(&mut self) {
-        if self.arenas.len() == 0 {
+        if self.arenas.is_empty() {
             // don't need to drop anything
             return;
         }
@@ -226,7 +226,7 @@ impl<T> Drop for ArenaList<T> {
             let p = self.arenas[arena].data.as_ptr();
             for j in 0..Arena::<T>::capacity() {
                 unsafe {
-                    ptr::drop_in_place(p.offset(j as isize));
+                    ptr::drop_in_place(p.add(j));
                 }
             }
         }
@@ -236,7 +236,7 @@ impl<T> Drop for ArenaList<T> {
         let p = self.arenas[self.arenas.len() - 1].data.as_ptr();
         for i in 0..rem {
             unsafe {
-                ptr::drop_in_place(p.offset(i as isize));
+                ptr::drop_in_place(p.add(i));
             }
         }
 

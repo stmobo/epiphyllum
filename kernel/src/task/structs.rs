@@ -64,7 +64,7 @@ impl Task {
         address_space: Arc<NoIRQSpinlock<AddressSpace>>,
     ) -> Result<TaskHandle, TaskSpawnError> {
         let stack_end =
-            Self::allocate_stack_pages().map_err(|e| TaskSpawnError::AllocationError(e))?;
+            Self::allocate_stack_pages().map_err(TaskSpawnError::AllocationError)?;
 
         // Stacks grow downwards on x86-64:
         let kernel_stack_base = stack_end + TASK_STACK_SIZE;
@@ -115,7 +115,7 @@ impl Task {
         if shared_address_space {
             address_space = scheduling::cur_address_space_handle();
         } else {
-            let space = AddressSpace::new().map_err(|e| TaskSpawnError::AllocationError(e))?;
+            let space = AddressSpace::new().map_err(TaskSpawnError::AllocationError)?;
             address_space = Arc::new(NoIRQSpinlock::new(space));
         }
 
@@ -130,7 +130,7 @@ impl Task {
         if shared_address_space {
             address_space = scheduling::cur_address_space_handle();
         } else {
-            let space = AddressSpace::new().map_err(|e| TaskSpawnError::AllocationError(e))?;
+            let space = AddressSpace::new().map_err(TaskSpawnError::AllocationError)?;
             address_space = Arc::new(NoIRQSpinlock::new(space));
         }
 
@@ -240,7 +240,7 @@ impl Task {
     /// Mark this task as dead.
     /// If this task is already dead, returns an error containing its ExitStatus.
     pub fn kill(&self, status: ExitStatus) -> Result<(), ExitStatus> {
-        if let Err(_) = self.exit_status.set(status) {
+        if self.exit_status.set(status).is_err() {
             return Err(self.exit_status().unwrap());
         }
 
@@ -305,7 +305,7 @@ impl PartialEq for Task {
 impl Eq for Task {}
 
 pub fn initialize() {
-    TASKS.init(|| AVLTree::new());
+    TASKS.init(AVLTree::new);
 }
 
 #[allow(unused_must_use)]

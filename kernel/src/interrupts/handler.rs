@@ -67,7 +67,7 @@ where
             cur_id: 1,
         }));
 
-        return Ok(0);
+        Ok(0)
     } else {
         let info: &mut IRQInfo = lock.as_deref_mut().unwrap();
         let id = info.cur_id;
@@ -76,7 +76,7 @@ where
         info.cur_id += 1;
 
         info.handlers.push(handler);
-        return Ok(id);
+        Ok(id)
     }
 }
 

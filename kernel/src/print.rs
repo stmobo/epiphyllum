@@ -74,7 +74,7 @@ pub unsafe fn set_logging_task_mode(enabled: bool) {
 
 pub fn initialize() {
     let (receiver, sender) = Channel::new();
-    if let Err(_) = LOGGING_CHANNEL.set(sender) {
+    if LOGGING_CHANNEL.set(sender).is_err() {
         panic!("logging already initialized");
     }
 

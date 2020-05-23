@@ -139,25 +139,24 @@ pub mod local_apic {
             ((data >> 24) & 0xFF) as u8
         }
 
-        pub fn read_irr(&self, irq_no: u8) -> bool {
+        fn read_irq_bit(&self, base: isize, irq_no: u8) -> bool {
             let bit_no = (irq_no % 32) as u32;
-            let offset = 0x200 + (((irq_no as isize) / 32) * 16);
+            let off = base + (((irq_no as isize) / 32) * 16);
 
-            unsafe { (ptr::read_volatile(self.base.offset(offset >> 2)) & (1 << bit_no)) != 0 }
+            let reg = unsafe { self.base.offset(off >> 2).read_volatile() };
+            (reg & (1 << bit_no)) != 0
+        }
+
+        pub fn read_irr(&self, irq_no: u8) -> bool {
+            self.read_irq_bit(0x200, irq_no)
         }
 
         pub fn read_isr(&self, irq_no: u8) -> bool {
-            let bit_no = (irq_no % 32) as u32;
-            let offset = 0x100 + (((irq_no as isize) / 32) * 16);
-
-            unsafe { (ptr::read_volatile(self.base.offset(offset >> 2)) & (1 << bit_no)) != 0 }
+            self.read_irq_bit(0x100, irq_no)
         }
 
         pub fn read_tmr(&self, irq_no: u8) -> bool {
-            let bit_no = (irq_no % 32) as u32;
-            let offset = 0x180 + (((irq_no as isize) / 32) * 16);
-
-            unsafe { (ptr::read_volatile(self.base.offset(offset >> 2)) & (1 << bit_no)) != 0 }
+            self.read_irq_bit(0x180, irq_no)
         }
 
         pub fn send_eoi(&self) {

@@ -70,8 +70,7 @@ pub mod local_apic {
     impl LocalAPIC {
         pub fn new() -> LocalAPIC {
             let base_addr = *LAPIC_BASE.call_once(|| {
-                let base_phys_addr: usize =
-                    unsafe { msr::rdmsr(0x1B) & 0xFFFF_FFFF_FFFF_F000 } as usize;
+                let base_phys_addr: usize = (msr::rdmsr(0x1B) & 0xFFFF_FFFF_FFFF_F000) as usize;
 
                 println!("lapic: LAPIC base address is {:#016x}", base_phys_addr);
 

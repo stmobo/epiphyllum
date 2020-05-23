@@ -138,6 +138,18 @@ impl PartialOrd<u64> for Bitmask64 {
     }
 }
 
+impl From<u64> for Bitmask64 {
+    fn from(v: u64) -> Self {
+        Bitmask64(v)
+    }
+}
+
+impl From<Bitmask64> for u64 {
+    fn from(bm: Bitmask64) -> Self {
+        bm.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

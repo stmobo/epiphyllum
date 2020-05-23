@@ -283,7 +283,7 @@ pub fn reserve_bootstrap_physical_pages() {
 
         // reserve the bootstrap PML4T itself as well
         let cr3 = asm::get_cr3();
-        physical_mem::allocate_at(cr3, 0);
+        physical_mem::allocate_at(cr3.address(), 0);
 
         // ensure the zero page is not allocated
         physical_mem::allocate_at(0, 0);

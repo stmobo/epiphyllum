@@ -314,12 +314,10 @@ pub struct AddressSpace {
 
 impl AddressSpace {
     pub unsafe fn current() -> AddressSpace {
-        let cr3 = asm::get_cr3();
-        super::add_page_ref(cr3);
+        let pml4t = asm::get_cr3();
+        super::add_page_ref(pml4t.address());
 
-        AddressSpace {
-            pml4t: PhysicalPointer::new_unchecked(cr3),
-        }
+        AddressSpace { pml4t }
     }
 
     pub fn new() -> Result<AddressSpace, AllocationError> {
@@ -353,12 +351,12 @@ impl AddressSpace {
 
     /// Loads this address space into CR3.
     pub unsafe fn load(&self) {
-        asm::set_cr3(self.pml4t.address());
+        asm::set_cr3(self.pml4t);
     }
 
     /// Get whether this address space is currently loaded into CR3.
     pub fn is_loaded(&self) -> bool {
-        asm::get_cr3() == self.pml4t.address()
+        asm::get_cr3().address() == self.pml4t.address()
     }
 
     /// Resolves a virtual address in this space into a (Table, Level) pair.

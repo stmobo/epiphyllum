@@ -109,14 +109,14 @@ pub unsafe fn break_print_locks() {
 fn print_control_regs() {
     println!(
         "CR0: {:#018x}    CR2: {:#018x}",
-        asm::get_cr0(),
+        u64::from(asm::get_cr0()),
         asm::get_cr2()
     );
 
     println!(
         "CR4: {:#018x}    CR3: {:#018x}",
-        asm::get_cr4(),
-        asm::get_cr3()
+        u64::from(asm::get_cr4()),
+        asm::get_cr3().address()
     );
 }
 

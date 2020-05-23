@@ -8,11 +8,9 @@ use crate::malloc::{physical_mem, AllocationError, PhysicalMemory, VirtualMemory
 use crate::multiboot::MultibootInfo;
 use crate::task;
 
-mod index;
 mod structs;
 mod tables;
 
-pub use index::PageHierarchyIndex;
 pub use structs::{add_page_ref, metadata_initialized, page_metadata, remove_page_ref, PageData};
 pub use tables::{AddressSpace, MappingError, PageLevel, PageTable, PageTableEntry};
 

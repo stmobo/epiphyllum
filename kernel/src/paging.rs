@@ -404,7 +404,7 @@ pub fn initialize_direct_physical_mappings() -> Result<(), AllocationError> {
         tables::initialize(pdpt);
 
         let pdpt_addr = old_pdpt.physical_address();
-        let old_pdpt: *mut PageTable = old_pdpt.page().unwrap().as_mut_ptr() as *mut PageTable;
+        let old_pdpt: *mut PageTable = old_pdpt.page().unwrap().as_mut_ptr();
 
         for pdpt_idx in 0..512usize {
             let pdpe = (*old_pdpt).get_entry(pdpt_idx).unwrap();
@@ -412,7 +412,7 @@ pub fn initialize_direct_physical_mappings() -> Result<(), AllocationError> {
                 continue;
             }
 
-            let pd = pdpe.page().unwrap().as_mut_ptr() as *mut PageTable;
+            let pd: *mut PageTable = pdpe.page().unwrap().as_mut_ptr();
             for pd_idx in 0..512usize {
                 let pde = (*pd).get_entry(pd_idx).unwrap();
                 if !pde.present() {

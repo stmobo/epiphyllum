@@ -58,7 +58,7 @@ impl PageTableEntry {
         self.entry = aligned | (self.entry & 0xFFF);
     }
 
-    pub fn page(&self) -> Option<PhysicalPointer<u8>> {
+    pub fn page<T>(&self) -> Option<PhysicalPointer<T>> {
         PhysicalPointer::new(self.physical_address())
     }
 

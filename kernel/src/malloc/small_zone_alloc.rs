@@ -279,13 +279,13 @@ impl SmallZoneAllocator {
     ) -> Result<*mut SmallZone, AllocationError> {
         let mut p = self.free_list;
 
-        if p == ptr::null_mut() {
+        if p.is_null() {
             if let Ok(vaddr) = heap_pages::allocate(0x1000) {
                 self.add_free_pages(vaddr, 1);
                 p = self.free_list;
             }
 
-            if p == ptr::null_mut() {
+            if p.is_null() {
                 return Err(AllocationError::NoFreeVirtualMemory);
             }
         }
@@ -310,10 +310,10 @@ impl SmallZoneAllocator {
         } else {
             let mut prev_ptr: *mut SmallZone = self.heads[order];
 
-            while (prev_ptr != ptr::null_mut()) && ((*prev_ptr).next != zone) {
+            while !prev_ptr.is_null() && ((*prev_ptr).next != zone) {
                 prev_ptr = (*prev_ptr).next;
             }
-            if prev_ptr == ptr::null_mut() {
+            if prev_ptr.is_null() {
                 panic!("attempted to release zone page not in allocator");
             }
 
@@ -329,11 +329,11 @@ impl SmallZoneAllocator {
     pub unsafe fn allocate(&mut self, order: usize) -> Result<usize, AllocationError> {
         let mut p = self.heads[order];
 
-        while p != ptr::null_mut() && (*p).full() {
+        while !p.is_null() && (*p).full() {
             p = (*p).next;
         }
 
-        if p == ptr::null_mut() {
+        if p.is_null() {
             /* No free zones found, get a new one. */
             p = self.init_new_zone_page(order)?;
         }

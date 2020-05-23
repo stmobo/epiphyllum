@@ -115,16 +115,14 @@ pub extern "C" fn AcpiOsMapMemory(Where: ACPI_PHYSICAL_ADDRESS, _: ACPI_SIZE) ->
 }
 
 #[no_mangle]
-pub extern "C" fn AcpiOsUnmapMemory(_: *mut cty::c_void, _: ACPI_SIZE) {
-    
-}
+pub extern "C" fn AcpiOsUnmapMemory(_: *mut cty::c_void, _: ACPI_SIZE) {}
 
 #[no_mangle]
 pub extern "C" fn AcpiOsGetPhysicalAddress(
     LogicalAddress: *mut cty::c_void,
     PhysicalAddress: *mut ACPI_PHYSICAL_ADDRESS,
 ) -> ACPI_STATUS {
-    if LogicalAddress == ptr::null_mut() || PhysicalAddress == ptr::null_mut() {
+    if LogicalAddress.is_null() || PhysicalAddress.is_null() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
@@ -193,7 +191,7 @@ pub extern "C" fn AcpiOsAllocate(Size: ACPI_SIZE) -> *mut cty::c_void {
     let layout = Layout::from_size_align(Size as usize, 8).expect("could not create layout");
     let ret: *mut cty::c_void = unsafe { mem::transmute(alloc(layout)) };
 
-    if ret != ptr::null_mut() {
+    if !ret.is_null() {
         let mut map = ACPI_ALLOC_MAP.lock();
         map.insert(ret as usize, layout);
     }
@@ -205,7 +203,7 @@ pub extern "C" fn AcpiOsAllocate(Size: ACPI_SIZE) -> *mut cty::c_void {
 pub extern "C" fn AcpiOsFree(Memory: *mut cty::c_void) {
     use alloc_crate::alloc::dealloc;
 
-    if Memory != ptr::null_mut() {
+    if !Memory.is_null() {
         let addr = Memory as usize;
         let map = ACPI_ALLOC_MAP.lock();
         if let Some(layout) = map.get(&addr) {
@@ -419,7 +417,7 @@ pub extern "C" fn AcpiOsWritePciConfiguration(
 
 #[no_mangle]
 pub extern "C" fn AcpiOsCreateMutex(OutHandle: *mut *mut cty::c_void) -> ACPI_STATUS {
-    if OutHandle == ptr::null_mut() {
+    if OutHandle.is_null() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
@@ -435,7 +433,7 @@ pub extern "C" fn AcpiOsCreateMutex(OutHandle: *mut *mut cty::c_void) -> ACPI_ST
 
 #[no_mangle]
 pub extern "C" fn AcpiOsDeleteMutex(Handle: *mut cty::c_void) {
-    if Handle == ptr::null_mut() {
+    if Handle.is_null() {
         return;
     }
 
@@ -448,7 +446,7 @@ pub extern "C" fn AcpiOsDeleteMutex(Handle: *mut cty::c_void) {
 
 #[no_mangle]
 pub extern "C" fn AcpiOsAcquireMutex(Handle: *mut cty::c_void, _Timeout: UINT16) -> ACPI_STATUS {
-    if Handle == ptr::null_mut() {
+    if Handle.is_null() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
@@ -462,7 +460,7 @@ pub extern "C" fn AcpiOsAcquireMutex(Handle: *mut cty::c_void, _Timeout: UINT16)
 
 #[no_mangle]
 pub extern "C" fn AcpiOsReleaseMutex(Handle: *mut cty::c_void) {
-    if Handle == ptr::null_mut() {
+    if Handle.is_null() {
         return;
     }
 
@@ -474,7 +472,7 @@ pub extern "C" fn AcpiOsReleaseMutex(Handle: *mut cty::c_void) {
 
 #[no_mangle]
 pub extern "C" fn AcpiOsCreateLock(OutHandle: *mut *mut cty::c_void) -> ACPI_STATUS {
-    if OutHandle == ptr::null_mut() {
+    if OutHandle.is_null() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
@@ -490,7 +488,7 @@ pub extern "C" fn AcpiOsCreateLock(OutHandle: *mut *mut cty::c_void) -> ACPI_STA
 
 #[no_mangle]
 pub extern "C" fn AcpiOsDeleteLock(Handle: *mut cty::c_void) {
-    if Handle == ptr::null_mut() {
+    if Handle.is_null() {
         return;
     }
 
@@ -505,7 +503,7 @@ pub extern "C" fn AcpiOsDeleteLock(Handle: *mut cty::c_void) {
 pub extern "C" fn AcpiOsAcquireLock(Handle: *mut cty::c_void, _Timeout: UINT16) -> ACPI_STATUS {
     use crate::asm::interrupts;
 
-    if Handle == ptr::null_mut() {
+    if Handle.is_null() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
@@ -525,7 +523,7 @@ pub extern "C" fn AcpiOsAcquireLock(Handle: *mut cty::c_void, _Timeout: UINT16) 
 pub extern "C" fn AcpiOsReleaseLock(Handle: *mut cty::c_void) {
     use crate::asm::interrupts;
 
-    if Handle == ptr::null_mut() {
+    if Handle.is_null() {
         return;
     }
 
@@ -546,7 +544,7 @@ pub extern "C" fn AcpiOsCreateSemaphore(
     _InitialUnits: UINT32,
     OutHandle: *mut *mut cty::c_void,
 ) -> ACPI_STATUS {
-    if OutHandle == ptr::null_mut() {
+    if OutHandle.is_null() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
@@ -555,7 +553,7 @@ pub extern "C" fn AcpiOsCreateSemaphore(
 
 #[no_mangle]
 pub extern "C" fn AcpiOsDeleteSemaphore(Handle: *mut cty::c_void) -> ACPI_STATUS {
-    if Handle == ptr::null_mut() {
+    if Handle.is_null() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
@@ -568,7 +566,7 @@ pub extern "C" fn AcpiOsWaitSemaphore(
     _Units: UINT32,
     _Timeout: UINT16,
 ) -> ACPI_STATUS {
-    if Handle == ptr::null_mut() {
+    if Handle.is_null() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
@@ -576,7 +574,7 @@ pub extern "C" fn AcpiOsWaitSemaphore(
 }
 #[no_mangle]
 pub extern "C" fn AcpiOsSignalSemaphore(Handle: *mut cty::c_void, _Units: UINT32) -> ACPI_STATUS {
-    if Handle == ptr::null_mut() {
+    if Handle.is_null() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 

@@ -52,11 +52,11 @@ impl LargeZone {
         let p = addr as *mut LargeZone;
         ptr::write(p, LargeZone::new(addr, next_zone));
 
-        if next_zone != ptr::null_mut() {
+        if !next_zone.is_null() {
             (*p).prev_zone = (*next_zone).prev_zone;
             (*next_zone).prev_zone = p;
 
-            if (*p).prev_zone != ptr::null_mut() {
+            if !(*p).prev_zone.is_null() {
                 (*(*p).prev_zone).next_zone = p;
             }
         }
@@ -259,7 +259,7 @@ impl LargeZoneAllocator {
         let sz = layout.size();
 
         unsafe {
-            while cur != ptr::null_mut() {
+            while !cur.is_null() {
                 if ((*cur).free_bytes as usize) >= sz {
                     if let Ok(addr) = (*cur).allocate(layout) {
                         return Ok(addr);
@@ -282,7 +282,7 @@ impl LargeZoneAllocator {
     unsafe fn deallocate(&mut self, addr: usize, layout: Layout) {
         let zone = LargeZone::zone_for_addr(addr);
 
-        if zone != ptr::null_mut() {
+        if !zone.is_null() {
             (*zone).deallocate(addr, layout);
         }
     }
@@ -296,7 +296,7 @@ impl LargeZoneAllocator {
         let mut reclaim_list: *mut LargeZone = ptr::null_mut();
 
         unsafe {
-            while cur != ptr::null_mut() {
+            while !cur.is_null() {
                 let next = (*cur).next_zone;
 
                 if (*cur).n_blocks == 1
@@ -306,16 +306,16 @@ impl LargeZoneAllocator {
                     // reclaim this zone
                     let prev = (*cur).prev_zone;
 
-                    if prev != ptr::null_mut() {
+                    if !prev.is_null() {
                         (*prev).next_zone = next;
                     }
 
-                    if next != ptr::null_mut() {
+                    if !next.is_null() {
                         (*next).prev_zone = prev;
                     }
 
                     (*cur).next_zone = ptr::null_mut();
-                    if reclaim_list != ptr::null_mut() {
+                    if !reclaim_list.is_null() {
                         (*reclaim_list).next_zone = cur;
                         (*cur).prev_zone = reclaim_list;
                         reclaim_list = cur;

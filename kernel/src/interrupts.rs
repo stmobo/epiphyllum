@@ -157,7 +157,7 @@ impl fmt::Display for InterruptFrame {
 }
 
 pub fn in_interrupt_context() -> bool {
-    INTERRUPT_CONTEXT.load(Ordering::SeqCst) != ptr::null_mut()
+    !INTERRUPT_CONTEXT.load(Ordering::SeqCst).is_null()
 }
 
 pub fn get_interrupt_context() -> *mut InterruptFrame {

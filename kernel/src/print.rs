@@ -1,7 +1,6 @@
 use alloc_crate::string::String;
 use core::fmt;
 use core::panic::PanicInfo;
-use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::asm;
@@ -148,7 +147,7 @@ pub fn do_panic(info: &PanicInfo) -> ! {
     }
 
     let int_ctx = interrupts::get_interrupt_context();
-    if int_ctx != ptr::null_mut() {
+    if !int_ctx.is_null() {
         println!("\n== [Interrupt Context] ==\n{}", unsafe { &*int_ctx });
 
         println!("\n== [Interrupt Stack Trace] ==");

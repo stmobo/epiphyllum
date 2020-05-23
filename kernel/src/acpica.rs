@@ -249,7 +249,7 @@ fn get_table(signature: &[u8], instance: u32) -> AcpiResult<usize> {
             &mut raw_header,
         ))?;
 
-        if raw_header == ptr::null_mut() {
+        if raw_header.is_null() {
             return Err(AcpiError::AE_NOT_FOUND);
         }
 

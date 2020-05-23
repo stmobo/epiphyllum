@@ -6,7 +6,6 @@ use alloc_crate::alloc::Layout;
 use alloc_crate::sync::Arc;
 use core::convert::{AsMut, AsRef};
 use core::ops::{Deref, DerefMut};
-use core::ptr;
 use core::slice;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,7 +28,7 @@ impl<T> BipBuffer<T> {
         let layout = Layout::array::<T>(len).unwrap();
         let buffer = unsafe {
             let p = alloc::alloc(layout);
-            if p == ptr::null_mut() {
+            if p.is_null() {
                 alloc::handle_alloc_error(layout);
             }
 
@@ -47,9 +46,7 @@ impl<T> BipBuffer<T> {
             buffer: buffer.clone(),
         };
 
-        let writer = BipWriter {
-            buffer,
-        };
+        let writer = BipWriter { buffer };
 
         (reader, writer)
     }

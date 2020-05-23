@@ -71,7 +71,7 @@ impl<T> Queue<T> {
         let tail = *self.tail.get();
         let next = (*tail).next.load(Ordering::Acquire);
 
-        if next != ptr::null_mut() {
+        if !next.is_null() {
             *self.tail.get() = next;
             let val = (*next).data.take().unwrap();
             drop(Box::from_raw(tail));

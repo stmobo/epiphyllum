@@ -9,21 +9,15 @@ use crate::multiboot::MultibootInfo;
 use crate::task;
 
 mod address_space;
+mod direct;
 mod entry;
-mod new_table;
 mod structs;
-mod tables;
+mod table;
 
 pub use address_space::{AddressSpace, MappingError};
-pub use new_table::{PageDirectory, PageStructure, PageStructureChild, PageTable, PDPT, PML4T};
-pub use structs::{
-    add_mapping_refs, add_page_ref, get_page_refcount, metadata_initialized, page_metadata,
-    remove_mapping_refs, remove_page_ref, PageData,
-};
-pub use tables::{
-    direct_get_mapping, direct_map_virtual_address, direct_unmap_virtual_address,
-    remap_boot_identity_paging, reserve_bootstrap_physical_pages, PageLevel,
-};
+pub use direct::*;
+pub use structs::*;
+pub use table::*;
 
 pub use entry::PageTableEntry;
 

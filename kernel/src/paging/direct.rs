@@ -13,7 +13,7 @@ const PD_RECURSIVE_BASE: usize = 0xFFFF_FFFF_C000_0000;
 const PT_RECURSIVE_BASE: usize = 0xFFFF_FF80_0000_0000;
 
 #[repr(transparent)]
-pub struct PageTable {
+struct PageTable {
     entries: [PageTableEntry; 512],
 }
 
@@ -119,10 +119,6 @@ impl PageTable {
 
     pub fn iter(&self) -> impl Iterator<Item = &PageTableEntry> {
         self.entries.iter()
-    }
-
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut PageTableEntry> {
-        self.entries.iter_mut()
     }
 }
 

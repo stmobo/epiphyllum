@@ -2,7 +2,7 @@ use crate::asm;
 use crate::lock::OnceCell;
 use crate::malloc::AllocationError;
 
-use super::new_table::*;
+use super::table::*;
 use super::{PageLevel, PageStructure, PageTable, PageTableEntry, PhysicalPointer};
 use super::{
     KERNEL_BASE, KERNEL_BASE_PML4_IDX, KERNEL_HEAP_BASE, KERNEL_HEAP_PML4_IDX, PHYSICAL_MAP_BASE,

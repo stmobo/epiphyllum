@@ -118,19 +118,7 @@ pub mod heap_pages {
         let mut vspace = paging::AddressSpace::current();
 
         for phys_block in pmem.iter() {
-            if vspace
-                .map_page_range(vaddr, phys_block.address(), phys_block.n_pages())
-                .is_err()
-            {
-                let start_addr = vmem.address();
-                drop(pmem);
-                drop(vmem);
-                vspace.unmap_page_range(start_addr, vaddr).unwrap();
-                direct_println!("could not map address for {:#018x}", vaddr);
-
-                return Err(AllocationError::CouldNotMapAddress);
-            }
-
+            vspace.map_page_range(vaddr, phys_block.address(), phys_block.n_pages());
             vaddr += phys_block.n_pages() << 12;
         }
 

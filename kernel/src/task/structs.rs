@@ -63,8 +63,7 @@ impl Task {
         init_arg: u64,
         address_space: Arc<NoIRQSpinlock<AddressSpace>>,
     ) -> Result<TaskHandle, TaskSpawnError> {
-        let stack_end =
-            Self::allocate_stack_pages().map_err(TaskSpawnError::AllocationError)?;
+        let stack_end = Self::allocate_stack_pages().map_err(TaskSpawnError::AllocationError)?;
 
         // Stacks grow downwards on x86-64:
         let kernel_stack_base = stack_end + TASK_STACK_SIZE;
@@ -165,9 +164,7 @@ impl Task {
             .unmap_page_range(vmem.address(), TASK_STACK_PAGES + 2)
             .or(Err(AllocationError::CouldNotMapAddress))?;
 
-        vspace
-            .map_page_range(vmem.address() + 0x1000, pmem.address(), TASK_STACK_PAGES)
-            .or(Err(AllocationError::CouldNotMapAddress))?;
+        vspace.map_page_range(vmem.address() + 0x1000, pmem.address(), TASK_STACK_PAGES);
 
         Ok(vmem.into_address() + 0x1000)
     }

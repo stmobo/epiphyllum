@@ -583,8 +583,16 @@ impl PhysicalMemory {
     }
 
     /// Get a PhysicalPointer to the start of this memory block.
-    pub fn as_ptr<T>(&self) -> PhysicalPointer<T> {
+    pub fn as_physical_ptr<T>(&self) -> PhysicalPointer<T> {
         unsafe { PhysicalPointer::new_unchecked(self.addr) }
+    }
+
+    pub fn as_ptr<T>(&self) -> *const T {
+        self.as_physical_ptr().as_ptr()
+    }
+
+    pub fn as_mut_ptr<T>(&self) -> *mut T {
+        self.as_physical_ptr().as_mut_ptr()
     }
 
     /// Get the range of pageframe numbers owned by this block.
@@ -613,7 +621,7 @@ impl Drop for PhysicalMemory {
     fn drop(&mut self) {
         if let Some(page_data) = paging::page_metadata() {
             for pfn in self.pfns() {
-                unsafe { page_data[pfn].decrement_refs() };
+                unsafe { page_data[pfn].decrement_refs(true) };
             }
         } else {
             unsafe { deallocate(self.addr, self.order) };
@@ -853,7 +861,7 @@ pub mod tests {
             );
 
             // Now drop the last ref to the page:
-            page_data[pfn].decrement_refs();
+            page_data[pfn].decrement_refs(true);
             assert_eq!(page_data[pfn].refcount(), 0, "incorrect refcount for page");
 
             // Ensure that the page was freed:

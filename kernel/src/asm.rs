@@ -1,6 +1,8 @@
 pub mod cpuid;
 
-use crate::paging::{PageTable, PhysicalPointer};
+use core::mem;
+
+use crate::paging::{PageStructure, PageTableEntry, PhysicalPointer, PML4T};
 use crate::structures::Bitmask64;
 
 fn get_flags() -> u64 {
@@ -53,15 +55,16 @@ pub fn get_cr2() -> usize {
 /// Gets the value of CR3.
 ///
 /// This contains the current physical address of the PML4T.
-pub fn get_cr3() -> PhysicalPointer<PageTable> {
+pub unsafe fn get_cr3() -> PML4T {
     let reg: u64;
-    unsafe {
-        llvm_asm!("mov %cr3, $0" : "=r"(reg) ::: "volatile");
-    }
+
+    llvm_asm!("mov %cr3, $0" : "=r"(reg) ::: "volatile");
 
     // If CR3 is invalid then we almost certainly have bigger problems.
     // But there's no harm in checking, right?
-    PhysicalPointer::new(reg as usize).expect("CR3 is invalid?")
+    let p: PhysicalPointer<PageTableEntry> =
+        PhysicalPointer::new(reg as usize).expect("CR3 is invalid?");
+    mem::transmute(p)
 }
 
 /// Sets the value of CR3.
@@ -75,13 +78,18 @@ pub fn get_cr3() -> PhysicalPointer<PageTable> {
 /// The caller must ensure that `pml4t` points to a valid page table, and
 /// should remember that pointers into non-shared areas of the address space
 /// now most likely point to (effectively) uninitialized data.
-pub unsafe fn set_cr3(pml4t: PhysicalPointer<PageTable>) {
-    llvm_asm!("mov $0, %cr3" :: "r"(pml4t.address() as u64) :: "volatile");
+pub unsafe fn set_cr3(pml4t: &PML4T) {
+    let addr = pml4t.address();
+    llvm_asm!("mov $0, %cr3" :: "r"(addr as u64) :: "volatile");
 }
 
 /// Flushes the TLB by reloading CR3 with the same value.
 pub fn reload_cr3() {
-    unsafe { set_cr3(get_cr3()) };
+    unsafe {
+        let reg: u64;
+        llvm_asm!("mov %cr3, $0" : "=r"(reg) ::: "volatile");
+        llvm_asm!("mov $0, %cr3" :: "r"(reg) :: "volatile");
+    };
 }
 
 /// Gets the value of CR4.

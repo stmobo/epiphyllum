@@ -2,7 +2,7 @@ use alloc_crate::alloc::Layout;
 use core::slice;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use super::PhysicalPointer;
+use super::{PageLevel, PhysicalPointer};
 use crate::lock::OnceCell;
 use crate::malloc::physical_mem;
 use crate::malloc::{PhysicalMemory, VirtualMemory};
@@ -42,9 +42,11 @@ impl PageData {
     }
 
     /// Decrement the reference count for this page frame, saturating at 0.
+    /// If `auto_dealloc` is true, the page will also be deallocated
+    /// automatically if its reference count reaches zero.
     ///
     /// Returns the new reference count.
-    pub unsafe fn decrement_refs(&self) -> u32 {
+    pub unsafe fn decrement_refs(&self, auto_dealloc: bool) -> u32 {
         // use a CAS loop here so we can use saturating_sub
         let new: u32 = loop {
             let cur = self.refcount.load(Ordering::SeqCst);
@@ -58,7 +60,7 @@ impl PageData {
             }
         };
 
-        if new == 0 {
+        if new == 0 && auto_dealloc {
             physical_mem::deallocate_pfn(self.pfn);
         }
 
@@ -155,15 +157,56 @@ pub fn metadata_initialized() -> bool {
     PAGE_DATA.get().is_some()
 }
 
+pub fn get_page_refcount(addr: usize) -> Option<u32> {
+    if let Some(data) = PAGE_DATA.get() {
+        Some(data[addr >> 12].refcount())
+    } else {
+        None
+    }
+}
+
 pub unsafe fn add_page_ref(addr: usize) {
     if let Some(data) = PAGE_DATA.get() {
         data[addr >> 12].increment_refs();
     }
 }
 
+pub unsafe fn add_mapping_refs(addr: usize, level: PageLevel) {
+    if let Some(data) = PAGE_DATA.get() {
+        let pfn_count: usize = match level {
+            PageLevel::PML4 => panic!("cannot add mapping refs for PML4 granularity"),
+            PageLevel::PDP => 512 * 512,
+            PageLevel::PD => 512,
+            PageLevel::PT => 1,
+        };
+
+        let pfn_start = addr >> 12;
+
+        for pfn in pfn_start..(pfn_start + pfn_count) {
+            data[pfn].increment_refs();
+        }
+    }
+}
+
 pub unsafe fn remove_page_ref(addr: usize) {
     if let Some(data) = PAGE_DATA.get() {
-        data[addr >> 12].decrement_refs();
+        data[addr >> 12].decrement_refs(true);
+    }
+}
+
+pub unsafe fn remove_mapping_refs(addr: usize, level: PageLevel) {
+    if let Some(data) = PAGE_DATA.get() {
+        let pfn_count: usize = match level {
+            PageLevel::PML4 => panic!("cannot remove mapping refs for PML4 granularity"),
+            PageLevel::PDP => 512 * 512,
+            PageLevel::PD => 512,
+            PageLevel::PT => 1,
+        };
+
+        let pfn_start = addr >> 12;
+        for pfn in pfn_start..(pfn_start + pfn_count) {
+            data[pfn].decrement_refs(true);
+        }
     }
 }
 

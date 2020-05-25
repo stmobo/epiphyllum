@@ -1,5 +1,5 @@
 use alloc_crate::boxed::Box;
-use alloc_crate::sync::{Arc, Weak};
+use alloc_crate::sync::Arc;
 use core::mem;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
@@ -8,12 +8,13 @@ use core::task::Waker;
 use super::async_task;
 use super::scheduling;
 use super::scheduling::SchedulerData;
+use crate::asm::interrupts;
 use crate::interrupts::InterruptFrame;
 use crate::lock::{LockedGlobal, NoIRQSpinlock, NoIRQSpinlockGuard, OnceCell};
 use crate::malloc::{virtual_mem, AllocationError, PhysicalMemory, VirtualMemory};
 use crate::paging;
 use crate::paging::AddressSpace;
-use crate::structures::{AVLTree, Queue};
+use crate::structures::{AVLTree, Channel, Queue, Receiver, Sender};
 
 use crossbeam::atomic::AtomicCell;
 
@@ -23,6 +24,7 @@ const TASK_STACK_SIZE: usize = TASK_STACK_PAGES * 0x1000;
 
 pub static TASKS: LockedGlobal<AVLTree<u64, TaskHandle>> = LockedGlobal::new();
 static CUR_PID: AtomicCell<u64> = AtomicCell::new(0);
+static REAPER_CH: OnceCell<Sender<TaskHandle>> = OnceCell::new();
 
 pub type TaskHandle = Arc<Task>;
 
@@ -280,6 +282,10 @@ impl Task {
 
 impl Drop for Task {
     fn drop(&mut self) {
+        if scheduling::current_task_id() == self.id() {
+            panic!("attempted to drop running task ({})", self.id());
+        }
+
         unsafe {
             let vaddr = self.kernel_stack_base - TASK_STACK_SIZE;
             let mut vspace = paging::AddressSpace::current();
@@ -304,14 +310,36 @@ pub fn initialize() {
     TASKS.init(AVLTree::new);
 }
 
+pub fn init_task_reaper() {
+    let (r, s) = Channel::new();
+
+    if REAPER_CH.set(s).is_err() {
+        panic!("already initialized");
+    }
+
+    let t = Task::from_closure(true, move || task_reaper(r)).expect("could not spawn task");
+    t.schedule();
+}
+
 #[allow(unused_must_use)]
 fn task_entry(handle: *const Task, entrypoint: fn(u64) -> u64, init_arg: u64) {
     let handle = unsafe { Arc::from_raw(handle) };
     let retcode = entrypoint(init_arg);
 
+    // If we get interrupted after handle.kill() but before sending our
+    // handle to the reaper, we're going to leak the task handle.
+    //
+    // Prevent that from happening by disabling interrupts here.
+    unsafe {
+        interrupts::set_if(false);
+    }
+
     handle.kill(ExitStatus::ReturnCode(retcode));
-    //direct_println!("task: Task {} exiting", handle.id());
-    drop(handle);
+
+    REAPER_CH
+        .get()
+        .expect("could not get task reaper channel")
+        .send(handle);
 
     loop {
         scheduling::yield_cpu();
@@ -321,4 +349,11 @@ fn task_entry(handle: *const Task, entrypoint: fn(u64) -> u64, init_arg: u64) {
 fn boxed_func_task<T: FnOnce() -> u64 + Send + 'static>(ctx: *mut T) -> u64 {
     let boxed = unsafe { Box::from_raw(ctx) };
     (*boxed)()
+}
+
+fn task_reaper(r: Receiver<TaskHandle>) -> u64 {
+    loop {
+        let t = r.recv();
+        drop(t);
+    }
 }

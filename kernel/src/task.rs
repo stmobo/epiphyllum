@@ -19,5 +19,6 @@ use crate::paging::AddressSpace;
 pub fn initialize(address_space: Arc<NoIRQSpinlock<AddressSpace>>) {
     structs::initialize();
     scheduling::initialize(address_space);
+    structs::init_task_reaper();
     println!("tasks: initialization complete");
 }

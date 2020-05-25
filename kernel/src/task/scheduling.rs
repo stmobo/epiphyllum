@@ -1,19 +1,19 @@
 use alloc_crate::sync::Arc;
 use core::mem;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::ops::Bound;
+use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use super::structs::{Task, TaskHandle, TaskStatus};
 use crate::asm::interrupts;
 use crate::interrupts::InterruptFrame;
 use crate::lock::{NoIRQSpinlock, NoIRQSpinlockGuard, OnceCell};
 use crate::paging::AddressSpace;
-use crate::structures::{Queue, QueueReader, QueueWriter};
-use crate::timer::get_kernel_ticks;
-
-use crossbeam::atomic::AtomicCell;
+use crate::structures::AVLTree;
+use crate::timer::{get_kernel_ticks, TICKS_PER_SECOND};
 
 static SCHEDULER: OnceCell<Scheduler> = OnceCell::new();
-const TIMESLICE_TICKS: u64 = 41; // corresponds to roughly 5 ms
+const NS_PER_TICK: u64 = 1_000_000_000 / TICKS_PER_SECOND;
+const GRANULARITY: u64 = 7; // in ms
 
 extern "C" {
     fn switch_context(frame: *mut InterruptFrame) -> !;
@@ -22,45 +22,94 @@ extern "C" {
 
 #[derive(Debug)]
 pub struct SchedulerData {
-    slice_start: AtomicCell<u64>,
+    /// The absolute time at which this process last executed.
+    exec_start: AtomicU64,
+
+    /// The virtual runtime of this process, in nanoseconds.
+    virtual_runtime: AtomicU64,
+
+    scheduler_key: NoIRQSpinlock<Option<TimelineKey>>,
 }
 
 impl SchedulerData {
     pub fn new() -> SchedulerData {
         SchedulerData {
-            slice_start: AtomicCell::new(get_kernel_ticks()),
+            exec_start: AtomicU64::new(0),
+            virtual_runtime: AtomicU64::new(0),
+            scheduler_key: NoIRQSpinlock::new(None),
         }
     }
 
-    pub fn start_timeslice(&self) {
-        self.slice_start.store(get_kernel_ticks());
+    pub fn start_running(&self) {
+        self.exec_start.store(get_kernel_ticks(), Ordering::SeqCst);
     }
 
-    pub fn cur_exec_time(&self) -> Option<u64> {
-        get_kernel_ticks().checked_sub(self.slice_start.load())
+    pub fn update_runtime(&self, n_tasks: u64) {
+        let start_time = self.exec_start.load(Ordering::SeqCst);
+        let abs_ns = (get_kernel_ticks() - start_time) * NS_PER_TICK;
+        let virt_time = abs_ns / n_tasks;
+
+        self.virtual_runtime.fetch_add(virt_time, Ordering::SeqCst);
+    }
+
+    fn set_runtime(&self, time: u64) {
+        self.virtual_runtime.store(time, Ordering::SeqCst);
+    }
+
+    pub fn virtual_runtime(&self) -> u64 {
+        self.virtual_runtime.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Clone)]
+pub struct TimelineKey {
+    virtual_runtime: u64,
+    task_id: u64,
+}
+
+impl TimelineKey {
+    fn new(task: &Task) -> TimelineKey {
+        TimelineKey {
+            virtual_runtime: task.scheduler_data().virtual_runtime(),
+            task_id: task.id(),
+        }
+    }
+}
+
+pub struct SchedulerTimeline {
+    tree: AVLTree<TimelineKey, TaskHandle>,
+    min_virt_runtime: u64,
+}
+
+impl SchedulerTimeline {
+    fn new() -> SchedulerTimeline {
+        SchedulerTimeline {
+            tree: AVLTree::new(),
+            min_virt_runtime: 0,
+        }
     }
 }
 
 pub struct Scheduler {
-    run_queue_writer: QueueWriter<TaskHandle>,
-    run_queue_reader: NoIRQSpinlock<QueueReader<TaskHandle>>,
+    timeline: NoIRQSpinlock<SchedulerTimeline>,
     default_task: TaskHandle,
     running_task: AtomicPtr<Task>, // this is actually an Arc<Task>
 }
 
 impl Scheduler {
-    fn new() -> Scheduler {
-        let default_task = Task::new(idle_task, 0, false).expect("could not create idle task");
+    fn new(address_space: Arc<NoIRQSpinlock<AddressSpace>>) -> Scheduler {
+        let default_task = unsafe {
+            Task::new_raw(idle_task as usize, 0, address_space).expect("could not create idle task")
+        };
+
         let p = Arc::into_raw(default_task.clone());
         let running_task = AtomicPtr::new(p as *mut Task);
-        let (reader, writer) = Queue::new();
         default_task.set_status(TaskStatus::Waiting);
 
         Scheduler {
             default_task,
             running_task,
-            run_queue_reader: NoIRQSpinlock::new(reader),
-            run_queue_writer: writer,
+            timeline: NoIRQSpinlock::new(SchedulerTimeline::new()),
         }
     }
 
@@ -92,6 +141,30 @@ impl Scheduler {
         }
     }
 
+    unsafe fn prepare_context_switch(&self) {
+        use crate::paging::{KERNEL_BASE, KERNEL_HEAP_BASE};
+
+        let task = self.running_task_ptr();
+
+        let ctx = (*task).get_context();
+        assert!(
+            (*ctx).rip >= (KERNEL_BASE as u64),
+            "attempt to context switch to task {} with invalid address {:#018x}",
+            (*task).id(),
+            (*ctx).rip
+        );
+
+        assert!(
+            (*ctx).rsp >= (KERNEL_HEAP_BASE as u64),
+            "attempt to context switch to task {} with invalid RSP {:#018x}",
+            (*task).id(),
+            (*ctx).rsp
+        );
+
+        (*task).scheduler_data().start_running();
+        (*task).load_address_space();
+    }
+
     /// Perform an immediate context switch to the current task's stored context.
     ///
     /// ## Safety
@@ -99,117 +172,141 @@ impl Scheduler {
     /// valid context to switch to, otherwise _very_ undefined behavior will
     /// happen.
     pub unsafe fn force_context_switch(&self) -> ! {
-        (*self.running_task_ptr()).load_address_space();
+        self.prepare_context_switch();
         let ctx = self.cur_context();
         switch_context(ctx)
     }
 
-    fn cas_running_task(&self, cur: *const Task, new: *const Task) -> bool {
-        self.running_task
-            .compare_and_swap(cur as *mut Task, new as *mut Task, Ordering::SeqCst)
-            == cur as *mut Task
-    }
-
     /// Wake up a Task, and schedule it for execution.
     /// Can be called from both regular and IRQ contexts.
-    pub fn schedule(&self, task: &TaskHandle) {
-        let task_ptr = Arc::into_raw(task.clone());
+    ///
+    /// Returns true if the task was successfully added to the runqueue, and
+    /// false if the task was already queued.
+    pub fn schedule(&self, task: &TaskHandle) -> bool {
+        let mut timeline = self.timeline.lock();
+        let scheduler_data = task.scheduler_data();
 
-        loop {
-            let cur_task = self.running_task_ptr();
+        let n_tasks = (timeline.tree.len() as u64) + 1;
+        let margin = (2 * GRANULARITY * 1_000_000) / n_tasks;
 
-            if self.default_task.as_ref().eq(unsafe { &*cur_task }) {
-                // we're idle right now, go ahead and schedule this task immediately
-                if self.cas_running_task(cur_task, task_ptr) {
-                    unsafe {
-                        (*task_ptr).set_task_running();
-                        Arc::from_raw(cur_task);
-                        return;
-                    }
-                } else {
-                    continue;
-                }
-            } else {
-                // something else is running, add this task to the run queue
-                let handle = unsafe { Arc::from_raw(task_ptr) };
-                task.set_status(TaskStatus::Waiting);
-                self.run_queue_writer.push(handle);
-                return;
+        if scheduler_data.virtual_runtime() < timeline.min_virt_runtime {
+            scheduler_data.set_runtime(timeline.min_virt_runtime + margin);
+        }
+
+        let mut prev_key = scheduler_data.scheduler_key.lock();
+        if prev_key.is_none() {
+            let key = TimelineKey::new(task);
+            if timeline.tree.insert(key.clone(), task.clone()).is_ok() {
+                *prev_key = Some(key);
+                return true;
             }
+        }
+
+        false
+    }
+
+    /// Remove a Task from the run queue.
+    /// Can be called from both regular and IRQ contexts.
+    ///
+    /// Returns true if the task was successfully removed from the queue, and
+    /// false if it wasn't queued to begin with.
+    pub fn deschedule(&self, task: &Task) -> bool {
+        let mut timeline = self.timeline.lock();
+        let mut prev_key = task.scheduler_data().scheduler_key.lock();
+        if let Some(key) = prev_key.take() {
+            timeline
+                .tree
+                .remove(&key)
+                .expect("inconsistent timeline key state");
+            true
+        } else {
+            false
+        }
+    }
+
+    fn swap_task(&self, new_task: &TaskHandle) {
+        let new = Arc::into_raw(new_task.clone());
+        let prev = unsafe {
+            Arc::from_raw(self.running_task.swap(new as *mut Task, Ordering::SeqCst) as *const Task)
+        };
+
+        new_task.set_status(TaskStatus::Running);
+        if prev.status() == TaskStatus::Running {
+            prev.set_status(TaskStatus::Waiting);
         }
     }
 
     /// Run a scheduler update, swapping out the current Task for other tasks
     /// that are scheduled to run if necessary.
     pub fn update(&self) {
-        let queue_lock = self.run_queue_reader.lock();
+        let mut timeline = self.timeline.lock();
+        let n_tasks = (timeline.tree.len() as u64) + 1;
+
         let cur_task = unsafe { &*self.running_task_ptr() };
-        let mut should_switch = false;
+        let sched_data = cur_task.scheduler_data();
+        let mut timeline_key_lock = sched_data.scheduler_key.lock();
 
-        // Check to see if we need to switch to a new task:
-        if !cur_task.eq(&self.default_task) {
-            if cur_task.status() != TaskStatus::Running {
-                should_switch = true;
-            } else {
-                let elapsed = cur_task
-                    .scheduler_data()
-                    .cur_exec_time()
-                    .expect("invalid timeslice start time for running task");
-                should_switch = elapsed >= TIMESLICE_TICKS;
-            }
-        } // if we're idle, we rely on schedule() to break us out
-
-        if should_switch {
-            for handle in queue_lock.try_iter() {
-                if handle.status() != TaskStatus::Waiting {
-                    continue;
-                }
-
-                drop(cur_task);
-
-                // set this task as running
-                handle.set_task_running();
-                let prev_task = unsafe {
-                    Arc::from_raw(
-                        self.running_task
-                            .swap(Arc::into_raw(handle) as *mut Task, Ordering::Relaxed),
-                    )
-                };
-
-                if prev_task.should_run() {
-                    // prev_task is still runnable
-                    prev_task.set_status(TaskStatus::Waiting);
-                    prev_task.set_wakeup_pending(false);
-                    if !prev_task.eq(&self.default_task) {
-                        self.run_queue_writer.push(prev_task);
-                    }
-                } // else prev_task is now blocked or dead
-
-                return;
-            }
-
-            // no other tasks are runnable
-            if cur_task.should_run() {
-                // set up this task for another timeslice
-                cur_task.set_task_running();
-            } else {
-                // set the idle task to run
-                self.default_task.set_task_running();
-                unsafe {
-                    drop(Arc::from_raw(self.running_task.swap(
-                        Arc::into_raw(self.default_task.clone()) as *mut Task,
-                        Ordering::SeqCst,
-                    )));
-                }
+        if cur_task.id() != self.default_task.id() {
+            if let Some(old_key) = timeline_key_lock.take() {
+                timeline
+                    .tree
+                    .remove(&old_key)
+                    .expect("could not find old timeline key in tree");
             }
         }
+
+        cur_task.scheduler_data().update_runtime(n_tasks);
+        let new_key = TimelineKey::new(cur_task);
+
+        if cur_task.should_run() && cur_task.id() != self.default_task.id() {
+            if timeline
+                .tree
+                .insert(new_key.clone(), self.running_task_handle())
+                .is_err()
+            {
+                panic!(
+                    "could not re-insert task {} into timeline tree",
+                    cur_task.id()
+                );
+            }
+
+            *timeline_key_lock = Some(new_key.clone());
+        }
+
+        if let Some((key, task)) = timeline.tree.lower_bound(Bound::Unbounded) {
+            let should_swap =
+                (cur_task.id() == self.default_task.id()) || !cur_task.should_run() || {
+                    let threshold = (GRANULARITY * 1_000_000) / n_tasks;
+                    let diff = new_key.virtual_runtime.saturating_sub(key.virtual_runtime);
+
+                    diff >= threshold
+                };
+
+            if should_swap {
+                self.swap_task(task);
+            }
+
+            timeline.min_virt_runtime = key.virtual_runtime;
+        } else {
+            // Run the default task
+            self.swap_task(&self.default_task);
+        }
+    }
+
+    /// Forcibly set the current running task.
+    pub unsafe fn force_set_running_task(&self, task: TaskHandle) {
+        task.set_status(TaskStatus::Running);
+        self.schedule(&task);
+
+        let task = Arc::into_raw(task);
+        Arc::from_raw(self.running_task.swap(task as *mut Task, Ordering::SeqCst) as *const Task);
     }
 }
 
 unsafe impl Sync for Scheduler {}
 
-pub fn initialize() {
-    if SCHEDULER.set(Scheduler::new()).is_err() {
+pub fn initialize(address_space: Arc<NoIRQSpinlock<AddressSpace>>) {
+    if SCHEDULER.set(Scheduler::new(address_space)).is_err() {
         panic!("attempted to initialize scheduler twice");
     }
 }
@@ -237,8 +334,7 @@ pub fn current_address_space() -> NoIRQSpinlockGuard<'static, AddressSpace> {
 
 pub unsafe fn prepare_context_switch() {
     if let Some(sched) = SCHEDULER.get() {
-        let task = sched.running_task_ptr();
-        (*task).load_address_space();
+        sched.prepare_context_switch();
     }
 }
 
@@ -274,6 +370,7 @@ extern "C" fn yield_cpu_2(return_ctx: *mut InterruptFrame) {
             }
 
             (*task).set_context(return_ctx);
+            sched.deschedule(&*task);
         }
     }
 

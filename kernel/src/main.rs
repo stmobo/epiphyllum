@@ -194,20 +194,17 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
     devices::local_apic::initialize();
     devices::io_apic::initialize();
 
-    task::initialize();
+    let address_space = Arc::new(NoIRQSpinlock::new(space));
+    task::initialize(address_space.clone());
 
     unsafe {
-        let h = task::Task::new_raw(
-            kernel_stage2_main as usize,
-            10,
-            Arc::new(NoIRQSpinlock::new(space)),
-        )
-        .expect("could not spawn initial task");
+        let h = task::Task::new_raw(kernel_stage2_main as usize, 10, address_space)
+            .expect("could not spawn initial task");
 
         h.schedule();
-        drop(h);
-
-        task::scheduler().force_context_switch();
+        let scheduler = task::scheduler();
+        scheduler.force_set_running_task(h);
+        scheduler.force_context_switch();
     }
 }
 

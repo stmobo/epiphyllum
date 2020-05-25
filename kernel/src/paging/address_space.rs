@@ -71,6 +71,10 @@ impl AddressSpace {
         unsafe { asm::get_cr3().address() == self.pml4t.address() }
     }
 
+    pub fn pml4t_address(&self) -> usize {
+        self.pml4t.address()
+    }
+
     /// Gets the physical page mapping for a virtual address in this address
     /// space, if one exists.
     pub fn get_mapping(&self, vaddr: usize) -> Option<(PageLevel, PageTableEntry)> {

@@ -11,8 +11,13 @@ pub use scheduling::{
 pub use structs::{ExitStatus, Task, TaskHandle, TaskSpawnError, TaskStatus};
 pub use wait_queue::{WaitMode, WaitQueue, WaitQueueFuture};
 
-pub fn initialize() {
+use alloc_crate::sync::Arc;
+
+use crate::lock::NoIRQSpinlock;
+use crate::paging::AddressSpace;
+
+pub fn initialize(address_space: Arc<NoIRQSpinlock<AddressSpace>>) {
     structs::initialize();
-    scheduling::initialize();
+    scheduling::initialize(address_space);
     println!("tasks: initialization complete");
 }

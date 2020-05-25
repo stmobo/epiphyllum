@@ -92,7 +92,7 @@ impl Task {
         });
 
         unsafe {
-            let handle_ptr = Weak::into_raw(Arc::downgrade(&task));
+            let handle_ptr = Arc::into_raw(task.clone());
             (*kernel_stack_head).registers.rdi = (handle_ptr as usize) as u64;
             (*kernel_stack_head).registers.rsi = entry as u64;
             (*kernel_stack_head).registers.rdx = init_arg;
@@ -218,16 +218,15 @@ impl Task {
             return;
         }
 
-        scheduling::scheduler().schedule(self)
+        scheduling::scheduler().schedule(self);
     }
 
     pub fn should_run(&self) -> bool {
-        self.status() == TaskStatus::Running || self.wakeup_pending()
-    }
+        if self.status() == TaskStatus::Dead {
+            return false;
+        }
 
-    pub fn set_task_running(&self) {
-        self.set_status(TaskStatus::Running);
-        self.scheduler_data.start_timeslice();
+        self.status() == TaskStatus::Running || self.wakeup_pending()
     }
 
     pub fn scheduler_data(&self) -> &SchedulerData {
@@ -307,17 +306,15 @@ pub fn initialize() {
 
 #[allow(unused_must_use)]
 fn task_entry(handle: *const Task, entrypoint: fn(u64) -> u64, init_arg: u64) {
-    let handle = unsafe { Weak::from_raw(handle) };
+    let handle = unsafe { Arc::from_raw(handle) };
     let retcode = entrypoint(init_arg);
 
-    if let Some(handle) = handle.upgrade() {
-        handle.kill(ExitStatus::ReturnCode(retcode));
-    }
+    handle.kill(ExitStatus::ReturnCode(retcode));
+    //direct_println!("task: Task {} exiting", handle.id());
+    drop(handle);
 
-    let sched = scheduling::scheduler();
-    sched.update();
-    unsafe {
-        sched.force_context_switch();
+    loop {
+        scheduling::yield_cpu();
     }
 }
 

@@ -261,3 +261,45 @@ impl<'a, T> Iterator for WaitIter<'a, T> {
         Some(self.0.recv())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rng::MersenneTwister64;
+    use crate::task::{run_future, Task};
+    use crate::test::TEST_SEED;
+    use kernel_test_macro::kernel_test;
+
+    #[kernel_test]
+    fn test_channels() {
+        let (r1, s1) = Channel::<u64>::new();
+        let (r2, s2) = Channel::<u64>::new();
+
+        let task_1 = Task::from_closure(false, move || {
+            let mut rng = MersenneTwister64::new(TEST_SEED);
+
+            for _ in 0..25 {
+                s1.send(rng.generate());
+                assert_eq!(r2.recv(), rng.generate(), "RNG states out of sync");
+            }
+
+            0
+        })
+        .expect("could not spawn task");
+
+        let task_2 = Task::from_closure(false, move || {
+            let mut rng = MersenneTwister64::new(TEST_SEED);
+
+            for _ in 0..25 {
+                assert_eq!(r1.recv(), rng.generate(), "RNG states out of sync");
+                s2.send(rng.generate());
+            }
+
+            0
+        })
+        .expect("could not spawn task");
+
+        task_1.schedule();
+        task_2.schedule();
+    }
+}

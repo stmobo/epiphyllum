@@ -1,5 +1,6 @@
 use super::{pd_idx, pdp_idx, pml4_idx, pt_idx};
 use super::{PageLevel, PageTableEntry, PhysicalPointer};
+use super::{KERNEL_BASE_PML4_IDX, KERNEL_HEAP_PML4_IDX, PHYSICAL_MAP_PML4_IDX};
 use crate::asm;
 use crate::asm::cpuid::FeatureFlags;
 use crate::malloc::{physical_mem, AllocationError, PhysicalMemory};
@@ -133,12 +134,12 @@ unsafe fn add_table_ref<T: PageStructure>(table: &T) {
     super::add_mapping_refs(table.address(), PageLevel::PT);
 }
 
-unsafe fn remove_table_ref<T: PageStructure>(table: &mut T) {
+unsafe fn remove_table_ref<T: PageStructure>(table: &mut T, dealloc: bool) {
     let physical_address = table.address();
     if let Some(page_data) = super::page_metadata() {
         let count = page_data[physical_address >> 12].decrement_refs(false);
 
-        if count == 0 {
+        if count == 0 && dealloc {
             table.cleanup();
             physical_mem::deallocate_pfn(physical_address >> 12);
         }
@@ -252,15 +253,19 @@ impl PML4T {
             return;
         }
 
+        let dealloc = (index != KERNEL_HEAP_PML4_IDX)
+            && (index != KERNEL_BASE_PML4_IDX)
+            && (index != PHYSICAL_MAP_PML4_IDX);
+
         unsafe {
-            remove_table_ref(&mut PDPT::from_table_entry(entry).unwrap());
+            remove_table_ref(&mut PDPT::from_table_entry(entry).unwrap(), dealloc);
         }
     }
 }
 
 impl Drop for PML4T {
     fn drop(&mut self) {
-        unsafe { remove_table_ref(self) };
+        unsafe { remove_table_ref(self, true) };
     }
 }
 
@@ -371,7 +376,7 @@ impl PDPT {
             if entry.page_size() {
                 super::remove_mapping_refs(entry.physical_address(), PageLevel::PDP);
             } else {
-                remove_table_ref(&mut PageDirectory::from_table_entry(entry).unwrap());
+                remove_table_ref(&mut PageDirectory::from_table_entry(entry).unwrap(), true);
             }
         }
     }
@@ -483,7 +488,7 @@ impl PageDirectory {
             if entry.page_size() {
                 super::remove_mapping_refs(entry.physical_address(), PageLevel::PD);
             } else {
-                remove_table_ref(&mut PageTable::from_table_entry(entry).unwrap());
+                remove_table_ref(&mut PageTable::from_table_entry(entry).unwrap(), true);
             }
         }
     }

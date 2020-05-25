@@ -146,20 +146,22 @@ impl Scheduler {
 
         let task = self.running_task_ptr();
 
-        let ctx = (*task).get_context();
-        assert!(
-            (*ctx).rip >= (KERNEL_BASE as u64),
-            "attempt to context switch to task {} with invalid address {:#018x}",
-            (*task).id(),
-            (*ctx).rip
-        );
+        if cfg!(debug_assertions) {
+            let ctx = (*task).get_context();
+            assert!(
+                (*ctx).rip >= (KERNEL_BASE as u64),
+                "attempt to context switch to task {} with invalid address {:#018x}",
+                (*task).id(),
+                (*ctx).rip
+            );
 
-        assert!(
-            (*ctx).rsp >= (KERNEL_HEAP_BASE as u64),
-            "attempt to context switch to task {} with invalid RSP {:#018x}",
-            (*task).id(),
-            (*ctx).rsp
-        );
+            assert!(
+                (*ctx).rsp >= (KERNEL_HEAP_BASE as u64),
+                "attempt to context switch to task {} with invalid RSP {:#018x}",
+                (*task).id(),
+                (*ctx).rsp
+            );
+        }
 
         (*task).scheduler_data().start_running();
         (*task).load_address_space();
@@ -340,6 +342,10 @@ pub unsafe fn prepare_context_switch() {
 
 pub fn current_task() -> TaskHandle {
     scheduler().running_task_handle()
+}
+
+pub fn current_task_id() -> u64 {
+    unsafe { (*scheduler().running_task_ptr()).id() }
 }
 
 /// Put the currently-running Task to sleep until awoken by another Task.

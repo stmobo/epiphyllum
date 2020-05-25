@@ -4,7 +4,7 @@ use crate::asm;
 use crate::malloc::{physical_mem, AllocationError, PhysicalMemory};
 
 use super::{pd_idx, pdp_idx, pml4_idx, pt_idx};
-use super::{PageStructure, PageTableEntry, PhysicalPointer};
+use super::{PageTableEntry, PhysicalPointer};
 use super::{HIGHER_HALF_PML4_IDX, KERNEL_HEAP_PML4_IDX, PAGE_MASK, PHYSICAL_MAP_PML4_IDX};
 
 const PML4T_RECURSIVE_BASE: usize = 0xFFFF_FFFF_FFFF_F000;
@@ -387,8 +387,7 @@ pub fn reserve_bootstrap_physical_pages() {
         }
 
         // reserve the bootstrap PML4T itself as well
-        let cr3 = asm::get_cr3();
-        physical_mem::allocate_at(cr3.address(), 0);
+        physical_mem::allocate_at(asm::get_cr3(), 0);
 
         // ensure the zero page is not allocated
         physical_mem::allocate_at(0, 0);

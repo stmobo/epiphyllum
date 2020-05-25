@@ -1,9 +1,16 @@
+use core::mem;
+
 use super::{pd_idx, pdp_idx, pml4_idx, pt_idx};
 use super::{PageLevel, PageTableEntry, PhysicalPointer};
 use super::{KERNEL_BASE_PML4_IDX, KERNEL_HEAP_PML4_IDX, PHYSICAL_MAP_PML4_IDX};
 use crate::asm;
 use crate::asm::cpuid::FeatureFlags;
+use crate::lock::OnceCell;
 use crate::malloc::{physical_mem, AllocationError, PhysicalMemory};
+
+static PHYSICAL_MAP_PDPT: OnceCell<PageTableEntry> = OnceCell::new();
+static HEAP_PDPT: OnceCell<PageTableEntry> = OnceCell::new();
+static KERNEL_BASE_PDPT: OnceCell<PageTableEntry> = OnceCell::new();
 
 #[derive(Debug, Clone)]
 #[repr(transparent)]
@@ -122,6 +129,11 @@ pub trait PageStructure {
         self.table_mut().set_entry(Self::index(vaddr), val)
     }
 
+    /// Set a raw entry in this table by index.
+    fn set_by_index(&mut self, index: usize, val: PageTableEntry) {
+        self.table_mut().set_entry(index, val);
+    }
+
     /// Clear an entry in this table.
     ///
     /// This will not affect page reference counts.
@@ -144,6 +156,28 @@ unsafe fn remove_table_ref<T: PageStructure>(table: &mut T, dealloc: bool) {
             physical_mem::deallocate_pfn(physical_address >> 12);
         }
     }
+}
+
+pub unsafe fn initialize() {
+    // increment refcount for bootstrap PML4T, since the first call to
+    // PML4T::load() will decrement this refcount
+
+    direct_println!("paging: bootstrap PML4T at {:#018x}", asm::get_cr3());
+
+    let pml4t = PML4T(RawPageTable {
+        phys_addr: PhysicalPointer::new_unchecked(asm::get_cr3()),
+    });
+
+    let heap = pml4t.get_by_index(KERNEL_HEAP_PML4_IDX);
+    let base = pml4t.get_by_index(KERNEL_BASE_PML4_IDX);
+    let phys = pml4t.get_by_index(PHYSICAL_MAP_PML4_IDX);
+
+    PHYSICAL_MAP_PDPT.set(phys).expect("already initialized");
+    HEAP_PDPT.set(heap).expect("already initialized");
+    KERNEL_BASE_PDPT.set(base).expect("already initialized");
+
+    add_table_ref(&pml4t);
+    mem::forget(pml4t);
 }
 
 // Note: C is the _child table_ type
@@ -192,7 +226,10 @@ impl PageStructure for PML4T {
 impl PML4T {
     /// Get the currently-loaded PML4T as referenced by the CR3 register.
     pub unsafe fn current() -> PML4T {
-        let table = asm::get_cr3();
+        let table = PML4T(RawPageTable {
+            phys_addr: PhysicalPointer::new_unchecked(asm::get_cr3()),
+        });
+
         add_table_ref(&table);
         table
     }
@@ -213,7 +250,34 @@ impl PML4T {
             .0
             .set_entry(511, PageTableEntry::from_address(table.address()));
 
+        // Add mappings for kernel base, heap, and physical map:
+        table.0.set_entry(
+            KERNEL_BASE_PML4_IDX,
+            KERNEL_BASE_PDPT.get().copied().unwrap(),
+        );
+
+        table
+            .0
+            .set_entry(KERNEL_HEAP_PML4_IDX, HEAP_PDPT.get().copied().unwrap());
+
+        table.0.set_entry(
+            PHYSICAL_MAP_PML4_IDX,
+            PHYSICAL_MAP_PDPT.get().copied().unwrap(),
+        );
+
         Ok(table)
+    }
+
+    pub unsafe fn load(&self) {
+        // decrement refcount for outgoing PML4T
+        let _prev = PML4T(RawPageTable {
+            phys_addr: PhysicalPointer::new_unchecked(asm::get_cr3()),
+        });
+
+        asm::set_cr3(self.0.phys_addr.address());
+
+        // increment refcount for incoming PML4T
+        add_table_ref(self);
     }
 
     /// Get a child PDPT referenced by this table.

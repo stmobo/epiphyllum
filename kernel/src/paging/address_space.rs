@@ -1,30 +1,8 @@
 use crate::asm;
-use crate::lock::OnceCell;
 use crate::malloc::AllocationError;
 
 use super::table::*;
 use super::{PageLevel, PageStructure, PageTable, PageTableEntry, PhysicalPointer};
-use super::{
-    KERNEL_BASE, KERNEL_BASE_PML4_IDX, KERNEL_HEAP_BASE, KERNEL_HEAP_PML4_IDX, PHYSICAL_MAP_BASE,
-};
-
-static PHYSICAL_MAP_PDPT: OnceCell<PageTableEntry> = OnceCell::new();
-static HEAP_PDPT: OnceCell<PageTableEntry> = OnceCell::new();
-static KERNEL_BASE_PDPT: OnceCell<PageTableEntry> = OnceCell::new();
-
-pub unsafe fn initialize(physical_map_pdpt: PDPT) {
-    let pml4t = PML4T::current();
-
-    let heap = pml4t.get_by_index(KERNEL_HEAP_PML4_IDX);
-    let base = pml4t.get_by_index(KERNEL_BASE_PML4_IDX);
-
-    PHYSICAL_MAP_PDPT
-        .set(PageTableEntry::from_address(physical_map_pdpt.address()))
-        .expect("already initialized");
-
-    HEAP_PDPT.set(heap).expect("already initialized");
-    KERNEL_BASE_PDPT.set(base).expect("already initialized");
-}
 
 #[derive(Debug, Copy, Clone)]
 pub enum MappingError {
@@ -48,27 +26,19 @@ impl AddressSpace {
     }
 
     pub fn new() -> Result<AddressSpace, AllocationError> {
-        let mut pml4t = PML4T::new()?;
-
-        let base = PDPT::from_table_entry(KERNEL_BASE_PDPT.get().copied().unwrap()).unwrap();
-        let heap = PDPT::from_table_entry(HEAP_PDPT.get().copied().unwrap()).unwrap();
-        let phys = PDPT::from_table_entry(PHYSICAL_MAP_PDPT.get().copied().unwrap()).unwrap();
-
-        pml4t.map_table(KERNEL_BASE, &base);
-        pml4t.map_table(KERNEL_HEAP_BASE, &heap);
-        pml4t.map_table(PHYSICAL_MAP_BASE, &phys);
-
-        Ok(AddressSpace { pml4t })
+        Ok(AddressSpace {
+            pml4t: PML4T::new()?,
+        })
     }
 
     /// Loads this address space into CR3.
     pub unsafe fn load(&self) {
-        asm::set_cr3(&self.pml4t);
+        self.pml4t.load();
     }
 
     /// Get whether this address space is currently loaded into CR3.
     pub fn is_loaded(&self) -> bool {
-        unsafe { asm::get_cr3().address() == self.pml4t.address() }
+        asm::get_cr3() == self.pml4t.address()
     }
 
     pub fn pml4t_address(&self) -> usize {

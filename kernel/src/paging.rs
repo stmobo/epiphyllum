@@ -216,11 +216,15 @@ pub fn initialize_direct_physical_mappings() {
         // swap in the mappings
         let mut pml4t = PML4T::current();
         let old_pdpt = pml4t.get(PHYSICAL_MAP_BASE).unwrap();
-        pml4t.map_table(PHYSICAL_MAP_BASE, &pdpt);
+
+        pml4t.set_by_index(
+            PHYSICAL_MAP_PML4_IDX,
+            PageTableEntry::from_address(pdpt.address()),
+        );
+
         asm::reload_cr3();
 
         // init stuff for tables and clean up old physical mappings
-        address_space::initialize(pdpt);
         let pdpt_addr = old_pdpt.address();
 
         for pdpt_idx in 0..512usize {

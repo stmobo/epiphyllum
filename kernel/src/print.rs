@@ -7,7 +7,6 @@ use crate::asm;
 use crate::devices::serial;
 use crate::interrupts;
 use crate::lock::OnceCell;
-use crate::paging::PageStructure;
 use crate::stack_trace;
 use crate::structures::{Channel, Receiver, Sender};
 use crate::task;
@@ -116,7 +115,7 @@ fn print_control_regs() {
     println!(
         "CR4: {:#018x}    CR3: {:#018x}",
         u64::from(asm::get_cr4()),
-        unsafe { asm::get_cr3().address() }
+        asm::get_cr3()
     );
 }
 

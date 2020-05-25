@@ -148,6 +148,8 @@ pub fn initialize<'a>(mb: &'a MultibootInfo) {
         PAGE_DATA
             .set(page_data)
             .expect("Paging metadata already initialized");
+
+        super::table::initialize();
     }
 
     println!("paging: initialized metadata for {} pageframes", pfn_count);

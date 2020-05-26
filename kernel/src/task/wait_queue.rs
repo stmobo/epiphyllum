@@ -307,19 +307,19 @@ mod tests {
         .expect("could not spawn subtask");
         child.schedule();
 
-        sleep(TimerDeadline::Relative(1024)).unwrap();
+        sleep(TimerDeadline::Relative(512)).unwrap();
         assert_eq!(shared.load(Ordering::SeqCst), 0);
 
         shared.store(3, Ordering::SeqCst);
         queue.wake();
 
-        sleep(TimerDeadline::Relative(1024)).unwrap();
+        sleep(TimerDeadline::Relative(512)).unwrap();
         assert_eq!(shared.load(Ordering::SeqCst), 3);
 
         shared.store(10, Ordering::SeqCst);
         queue.wake();
 
-        sleep(TimerDeadline::Relative(1024)).unwrap();
+        sleep(TimerDeadline::Relative(512)).unwrap();
         assert_eq!(shared.load(Ordering::SeqCst), 11);
 
         drop(child);
@@ -351,19 +351,19 @@ mod tests {
         child.schedule();
 
         task::run_future(async {
-            sleep_async(TimerDeadline::Relative(1024)).unwrap().await;
+            sleep_async(TimerDeadline::Relative(512)).unwrap().await;
             assert_eq!(shared.load(Ordering::SeqCst), 0);
 
             shared.store(3, Ordering::SeqCst);
             queue.wake();
 
-            sleep_async(TimerDeadline::Relative(1024)).unwrap().await;
+            sleep_async(TimerDeadline::Relative(512)).unwrap().await;
             assert_eq!(shared.load(Ordering::SeqCst), 3);
 
             shared.store(10, Ordering::SeqCst);
             queue.wake();
 
-            sleep_async(TimerDeadline::Relative(1024)).unwrap().await;
+            sleep_async(TimerDeadline::Relative(512)).unwrap().await;
             assert_eq!(shared.load(Ordering::SeqCst), 11);
         });
     }

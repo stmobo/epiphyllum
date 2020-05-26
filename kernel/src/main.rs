@@ -162,7 +162,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     println!("Heap virtual memory allocator initialized.");
 
-    paging::initialize_direct_physical_mappings();
+    unsafe { paging::initialize_direct_physical_mappings() };
     paging::init_paging_metadata(&mb);
 
     // Get a reference to the boot address space to ensure that it doesn't

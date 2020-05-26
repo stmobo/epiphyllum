@@ -1,10 +1,7 @@
 use core::convert::{TryFrom, TryInto};
-use core::mem;
 use core::ptr::NonNull;
 
-use crate::asm;
-use crate::asm::cpuid::FeatureFlags;
-use crate::malloc::{physical_mem, PhysicalMemory, VirtualMemory};
+use crate::malloc::physical_mem;
 use crate::multiboot::MultibootInfo;
 use crate::task;
 
@@ -85,6 +82,42 @@ pub fn init_paging_metadata<'a>(mb: &'a MultibootInfo) {
     structs::initialize(mb);
 }
 
+/// Initializes the direct physical mappings in kernel space.
+///
+/// # Safety
+/// This function should only ever be called once.
+pub unsafe fn initialize_direct_physical_mappings() {
+    let old_pml4e = direct::init_physical_map();
+    let old_pdpt = PDPT::from_table_entry(old_pml4e).unwrap();
+
+    // clean up old physical mappings
+    let pdpt_addr = old_pdpt.address();
+
+    for pdpt_idx in 0..512usize {
+        let pdpe = old_pdpt.get_by_index(pdpt_idx);
+        if !pdpe.present() {
+            continue;
+        }
+
+        let pd = PageDirectory::from_table_entry(pdpe).unwrap();
+        for pd_idx in 0..512usize {
+            let pde = pd.get_by_index(pd_idx);
+            if !pde.present() {
+                continue;
+            }
+
+            let pt_addr = pde.physical_address();
+            physical_mem::deallocate(pt_addr, 0);
+        }
+
+        let pd_addr = pdpe.physical_address();
+        physical_mem::deallocate(pd_addr, 0);
+    }
+    physical_mem::deallocate(pdpt_addr, 0);
+
+    println!("paging: initialized direct physical memory map");
+}
+
 pub fn get_page_mapping(vaddr: usize) -> Option<(PageLevel, PageTableEntry)> {
     if task::scheduler_initialized() {
         let space = task::current_address_space();
@@ -113,145 +146,6 @@ pub fn unmap_pages(vaddr: usize, n_pages: usize) {
         let mut space = unsafe { AddressSpace::current() };
         space.unmap_page_range(vaddr, n_pages);
     }
-}
-
-fn init_physical_map_gb_pages(window: VirtualMemory) -> PDPT {
-    let pdpt_addr = PhysicalMemory::new(0)
-        .expect("could not allocate physical memory")
-        .into_address();
-    let table = window.address() as *mut PageTableEntry;
-
-    unsafe {
-        if !direct_map_virtual_address(window.address(), pdpt_addr) {
-            panic!("could not map virtual address");
-        }
-
-        for i in 0..512usize {
-            let mut pte = PageTableEntry::from_address(i << 30);
-            pte.set_page_size(true);
-            table.add(i).write_volatile(pte);
-        }
-
-        direct_unmap_virtual_address(window.address());
-
-        let ptr: PhysicalPointer<PageTableEntry> = PhysicalPointer::new_unchecked(pdpt_addr);
-        let pdpt: PDPT = mem::transmute(ptr);
-        pdpt
-    }
-}
-
-fn init_physical_map_mb_pages(window: VirtualMemory) -> PDPT {
-    let pdpt_addr = PhysicalMemory::new(0)
-        .expect("could not allocate physical memory")
-        .into_address();
-
-    // allocate page directories in chunks of 128 pages (= 0.5 MiB)
-    let table = window.address() as *mut PageTableEntry;
-    let mut chunk_addrs: [usize; 4] = [0, 0, 0, 0];
-
-    // create mappings within each page directory
-    for chunk in 0..4 {
-        let block = PhysicalMemory::new(7).expect("could not allocate physical memory");
-        let block_addr = block.address();
-
-        for chunk_page in 0..128usize {
-            let pdp_no = (chunk * 128) + chunk_page;
-            let pd_addr = block_addr + (chunk_page * 0x1000);
-
-            unsafe {
-                if !direct_map_virtual_address(window.address(), pd_addr) {
-                    panic!("could not map page directory");
-                }
-            }
-
-            for pd_offset in 0..512usize {
-                let phys_addr = (pdp_no << 30) | (pd_offset << 21);
-                unsafe {
-                    let mut pte = PageTableEntry::from_address(phys_addr);
-                    pte.set_page_size(true);
-                    table.add(pd_offset).write_volatile(pte);
-                }
-            }
-        }
-
-        chunk_addrs[chunk] = block.into_address();
-    }
-
-    unsafe {
-        // create mappings within the PDPT
-        if !direct_map_virtual_address(window.address(), pdpt_addr) {
-            panic!("could not map PDPT");
-        }
-
-        for pdp_no in 0..512usize {
-            let chunk = pdp_no / 128;
-            let chunk_page = pdp_no % 128;
-            let pd_addr = chunk_addrs[chunk] + (chunk_page * 0x1000);
-
-            table
-                .add(pdp_no)
-                .write_volatile(PageTableEntry::from_address(pd_addr));
-        }
-
-        direct_unmap_virtual_address(window.address());
-
-        let ptr: PhysicalPointer<PageTableEntry> = PhysicalPointer::new_unchecked(pdpt_addr);
-        let pdpt: PDPT = mem::transmute(ptr);
-        pdpt
-    }
-}
-
-pub fn initialize_direct_physical_mappings() {
-    let window = VirtualMemory::new(0x1000).expect("could not allocate virtual memory window");
-
-    let pdpt = if FeatureFlags::GB_PAGES.supported() {
-        println!("paging: CPU supports GB pages");
-        init_physical_map_gb_pages(window)
-    } else {
-        println!("paging: CPU does not support GB pages");
-        init_physical_map_mb_pages(window)
-    };
-
-    unsafe {
-        // swap in the mappings
-        let mut pml4t = PML4T::current();
-        let old_pdpt = pml4t.get(PHYSICAL_MAP_BASE).unwrap();
-
-        pml4t.set_by_index(
-            PHYSICAL_MAP_PML4_IDX,
-            PageTableEntry::from_address(pdpt.address()),
-        );
-
-        asm::reload_cr3();
-
-        // init stuff for tables and clean up old physical mappings
-        let pdpt_addr = old_pdpt.address();
-
-        for pdpt_idx in 0..512usize {
-            let pdpe = old_pdpt.get_by_index(pdpt_idx);
-            if !pdpe.present() {
-                continue;
-            }
-
-            let pd = PageDirectory::from_table_entry(pdpe).unwrap();
-            for pd_idx in 0..512usize {
-                let pde = pd.get_by_index(pd_idx);
-                if !pde.present() {
-                    continue;
-                }
-
-                let pt_addr = pde.physical_address();
-                physical_mem::deallocate(pt_addr, 0);
-            }
-
-            let pd_addr = pdpe.physical_address();
-            physical_mem::deallocate(pd_addr, 0);
-        }
-
-        physical_mem::deallocate(pdpt_addr, 0);
-    }
-
-    println!("paging: initialized direct physical memory map");
 }
 
 pub fn offset_direct_map<T: TryInto<usize>>(phys_addr: T) -> usize {

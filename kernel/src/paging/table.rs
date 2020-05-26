@@ -1,8 +1,11 @@
 use core::mem;
+use core::ptr;
 
 use super::{pd_idx, pdp_idx, pml4_idx, pt_idx};
 use super::{PageLevel, PageTableEntry, PhysicalPointer};
-use super::{KERNEL_BASE_PML4_IDX, KERNEL_HEAP_PML4_IDX, PHYSICAL_MAP_PML4_IDX};
+use super::{
+    KERNEL_BASE_PML4_IDX, KERNEL_HEAP_PML4_IDX, KERNEL_STACK_PML4_IDX, PHYSICAL_MAP_PML4_IDX,
+};
 use crate::asm;
 use crate::asm::cpuid::FeatureFlags;
 use crate::lock::OnceCell;
@@ -86,7 +89,11 @@ impl RawPageTable {
 
 unsafe impl Send for RawPageTable {}
 
-pub trait PageStructure {
+pub trait PageStructure: Sized {
+    fn new() -> Result<Self, AllocationError>;
+
+    fn from_table_entry(entry: PageTableEntry) -> Option<Self>;
+
     /// Get a reference to the raw page table for this structure.
     fn table(&self) -> &RawPageTable;
 
@@ -165,6 +172,99 @@ unsafe fn remove_table_ref<T: PageStructure>(table: &mut T, dealloc: bool) {
     }
 }
 
+/// Create a copy of a page table.
+///
+/// # Safety
+/// `src` must point to a valid page table of the given type.
+unsafe fn copy_page_table<T: PageStructure>(src: *const PageTableEntry) -> T {
+    let mut new = T::new().expect("could not allocate new table");
+    let dst_ptr = new.table_mut().as_mut_ptr();
+    ptr::copy_nonoverlapping(src, dst_ptr, 512);
+
+    new
+}
+
+/// Ensures that a page table is not located at the zero page.
+///
+/// # Safety
+/// `pte` must be a page table entry that references a valid, present page
+/// table of type T.
+unsafe fn ensure_nonzero_page<T: PageStructure>(entry: PageTableEntry) -> T {
+    assert!(entry.present(), "referenced table is not present");
+    assert!(!entry.page_size(), "referenced table is not a table");
+
+    if let Some(table) = T::from_table_entry(entry) {
+        table
+    } else {
+        println!(
+            "paging: remapped page table ({:?}) located at invalid page {:#018x}",
+            T::level(),
+            entry.physical_address()
+        );
+
+        let src_ptr = super::offset_direct_map(entry.physical_address()) as *const PageTableEntry;
+        copy_page_table(src_ptr)
+    }
+}
+
+unsafe fn initialize_bootstrap_page_table(pt: PageTable, count_mapped: bool) {
+    for l1_idx in 0..512 {
+        let pte = pt.get_by_index(l1_idx);
+
+        if !pte.present() {
+            continue;
+        } else if count_mapped {
+            super::add_mapping_refs(pte.physical_address(), PageLevel::PT);
+        }
+    }
+
+    add_table_ref(&pt);
+}
+
+unsafe fn initialize_bootstrap_page_dir(pd: PageDirectory, count_mapped: bool) {
+    for l2_idx in 0..512 {
+        let pde = pd.get_by_index(l2_idx);
+
+        if !pde.present() {
+            continue;
+        } else if pde.page_size() {
+            if count_mapped {
+                // 2MiB page
+                super::add_mapping_refs(pde.physical_address(), PageLevel::PD);
+            }
+        } else {
+            let pt = ensure_nonzero_page(pde);
+            initialize_bootstrap_page_table(pt, count_mapped);
+        }
+    }
+
+    add_table_ref(&pd)
+}
+
+unsafe fn initialize_bootstrap_pdpt(pdpt: PDPT, count_mapped: bool) {
+    for l3_idx in 0..512 {
+        let pdpe = pdpt.get_by_index(l3_idx);
+
+        if !pdpe.present() {
+            continue;
+        } else if pdpe.page_size() {
+            if count_mapped {
+                // 1GiB page
+                super::add_mapping_refs(pdpe.physical_address(), PageLevel::PDP);
+            }
+        } else {
+            let pd = ensure_nonzero_page(pdpe);
+            initialize_bootstrap_page_dir(pd, count_mapped);
+        }
+    }
+
+    add_table_ref(&pdpt);
+}
+
+/// Initialize reference counts for the bootstrap address space.
+///
+/// # Safety
+/// This function should be called only once.
 pub unsafe fn initialize() {
     // increment refcount for bootstrap PML4T, since the first call to
     // PML4T::load() will decrement this refcount
@@ -182,6 +282,28 @@ pub unsafe fn initialize() {
     PHYSICAL_MAP_PDPT.set(phys).expect("already initialized");
     HEAP_PDPT.set(heap).expect("already initialized");
     KERNEL_BASE_PDPT.set(base).expect("already initialized");
+
+    // increment refcounts for:
+    // - kernel text pages
+    // - kernel heap pages
+    // - bootstrap page tables
+    // Don't increment refcounts for the physical map for obvious reasons.
+
+    for l4_idx in 0..512 {
+        let pml4e = pml4t.get_by_index(l4_idx);
+
+        if pml4e.present()
+            && (l4_idx == KERNEL_BASE_PML4_IDX
+                || l4_idx == KERNEL_HEAP_PML4_IDX
+                || l4_idx == PHYSICAL_MAP_PML4_IDX
+                || l4_idx == KERNEL_STACK_PML4_IDX)
+        {
+            // Increment refcounts for all referenced text/heap/stack pages,
+            // and for all referenced tables
+            let pdpt = ensure_nonzero_page(pml4e);
+            initialize_bootstrap_pdpt(pdpt, l4_idx != PHYSICAL_MAP_PML4_IDX);
+        }
+    }
 
     add_table_ref(&pml4t);
     mem::forget(pml4t);
@@ -227,6 +349,14 @@ impl PageStructure for PML4T {
                 self.cleanup_entry(511);
             }
         }
+    }
+
+    fn new() -> Result<Self, AllocationError> {
+        PML4T::new()
+    }
+
+    fn from_table_entry(_: PageTableEntry) -> Option<Self> {
+        unimplemented!();
     }
 }
 
@@ -371,6 +501,14 @@ impl PageStructure for PDPT {
             self.cleanup_entry(i);
         }
     }
+
+    fn new() -> Result<Self, AllocationError> {
+        PDPT::new()
+    }
+
+    fn from_table_entry(entry: PageTableEntry) -> Option<Self> {
+        PDPT::from_table_entry(entry)
+    }
 }
 
 impl PDPT {
@@ -513,6 +651,14 @@ impl PageStructure for PageDirectory {
         for i in 0..512 {
             self.cleanup_entry(i);
         }
+    }
+
+    fn new() -> Result<Self, AllocationError> {
+        PageDirectory::new()
+    }
+
+    fn from_table_entry(entry: PageTableEntry) -> Option<Self> {
+        PageDirectory::from_table_entry(entry)
     }
 }
 
@@ -665,6 +811,14 @@ impl PageStructure for PageTable {
         for i in 0..512 {
             self.cleanup_entry(i);
         }
+    }
+
+    fn new() -> Result<Self, AllocationError> {
+        PageTable::new()
+    }
+
+    fn from_table_entry(entry: PageTableEntry) -> Option<Self> {
+        PageTable::from_table_entry(entry)
     }
 }
 

@@ -167,12 +167,6 @@ pub fn get_page_refcount(addr: usize) -> Option<u32> {
     }
 }
 
-pub unsafe fn add_page_ref(addr: usize) {
-    if let Some(data) = PAGE_DATA.get() {
-        data[addr >> 12].increment_refs();
-    }
-}
-
 pub unsafe fn add_mapping_refs(addr: usize, level: PageLevel) {
     if let Some(data) = PAGE_DATA.get() {
         let pfn_count: usize = match level {
@@ -187,12 +181,6 @@ pub unsafe fn add_mapping_refs(addr: usize, level: PageLevel) {
         for pfn in pfn_start..(pfn_start + pfn_count) {
             data[pfn].increment_refs();
         }
-    }
-}
-
-pub unsafe fn remove_page_ref(addr: usize) {
-    if let Some(data) = PAGE_DATA.get() {
-        data[addr >> 12].decrement_refs(true);
     }
 }
 

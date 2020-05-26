@@ -162,10 +162,7 @@ impl Task {
         let vmem = VirtualMemory::new(virt_sz)?;
         let mut vspace = unsafe { paging::AddressSpace::current() };
 
-        vspace
-            .unmap_page_range(vmem.address(), TASK_STACK_PAGES + 2)
-            .or(Err(AllocationError::CouldNotMapAddress))?;
-
+        vspace.unmap_page_range(vmem.address(), TASK_STACK_PAGES + 2);
         vspace.map_page_range(vmem.address() + 0x1000, pmem.address(), TASK_STACK_PAGES);
 
         Ok(vmem.into_address() + 0x1000)
@@ -289,10 +286,7 @@ impl Drop for Task {
         unsafe {
             let vaddr = self.kernel_stack_base - TASK_STACK_SIZE;
             let mut vspace = paging::AddressSpace::current();
-            vspace
-                .unmap_page_range(vaddr, TASK_STACK_PAGES)
-                .expect("could not unmap pages");
-
+            vspace.unmap_page_range(vaddr, TASK_STACK_PAGES);
             virtual_mem::deallocate(vaddr - 0x1000, TASK_STACK_SIZE + 0x2000);
         }
     }

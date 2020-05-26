@@ -135,9 +135,7 @@ pub mod heap_pages {
         let start_addr = paging::round_to_prev_page(vaddr);
 
         let mut vspace = paging::AddressSpace::current();
-        vspace
-            .unmap_page_range(start_addr, alloc_sz >> 12)
-            .expect("could not unmap pages");
+        vspace.unmap_page_range(start_addr, alloc_sz >> 12);
         virtual_mem::deallocate(vaddr, alloc_sz);
     }
 }

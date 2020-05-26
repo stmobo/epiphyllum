@@ -32,6 +32,10 @@ impl AddressSpace {
     }
 
     /// Loads this address space into CR3.
+    ///
+    /// # Safety
+    /// This function modifies processor control registers and additionally
+    /// modifies processor page mappings.
     pub unsafe fn load(&self) {
         self.pml4t.load();
     }
@@ -41,6 +45,8 @@ impl AddressSpace {
         asm::get_cr3() == self.pml4t.address()
     }
 
+    /// Get the physical address of the PML4T at the root of this address
+    /// space.
     pub fn pml4t_address(&self) -> usize {
         self.pml4t.address()
     }
@@ -65,9 +71,22 @@ impl AddressSpace {
         Some((PageLevel::PT, pt.get(vaddr)?))
     }
 
-    /// Sets a mapping within this address space, replacing any previous
-    /// mapping(s) for that address.
-    pub fn set_mapping(&mut self, vaddr: usize, mapping: PageTableEntry, level: PageLevel) {
+    /// Clear the TLB for a given address range, if this address space is
+    /// loaded.
+    fn clear_tlb(&self, vaddr: usize, level: PageLevel) {
+        if self.is_loaded() {
+            unsafe {
+                match level {
+                    PageLevel::PML4 => unreachable!(),
+                    PageLevel::PDP | PageLevel::PD => self.load(),
+                    PageLevel::PT => asm::invlpg(vaddr),
+                };
+            }
+        }
+    }
+
+    /// Sets a mapping without a TLB flush.
+    fn _set_mapping(&mut self, vaddr: usize, mapping: PageTableEntry, level: PageLevel) {
         assert_ne!(level, PageLevel::PML4, "invalid level for page mapping");
 
         let mut pdpt = self.pml4t.ensure_table(vaddr);
@@ -86,46 +105,58 @@ impl AddressSpace {
         pt.map_page(vaddr, mapping);
     }
 
+    /// Sets a mapping within this address space, replacing any previous
+    /// mapping(s) for that address.
+    ///
+    /// The granularity of the mapping is specified by the `level` parameter.
+    /// For example, mapping pages with PDP granularity will create a 1GiB
+    /// mapping that starts at the physical address specified in the given
+    /// PageTableEntry.
+    pub fn set_mapping(&mut self, vaddr: usize, mapping: PageTableEntry, level: PageLevel) {
+        self._set_mapping(vaddr, mapping, level);
+        self.clear_tlb(vaddr, level);
+    }
+
+    /// Clears a mapping without a TLB flush.
+    fn _remove_mapping(&mut self, vaddr: usize, level: PageLevel) {
+        if level == PageLevel::PML4 {
+            self.pml4t.clear(vaddr);
+            return;
+        }
+
+        if let Some(mut pdpt) = self.pml4t.get(vaddr) {
+            if !pdpt.is_present(vaddr) {
+                return;
+            } else if level == PageLevel::PDP {
+                pdpt.clear(vaddr);
+                return;
+            }
+
+            let mut pd = pdpt.ensure_table(vaddr);
+            if !pd.is_present(vaddr) {
+                return;
+            } else if level == PageLevel::PD {
+                pd.clear(vaddr);
+                return;
+            }
+
+            let mut pt = pd.ensure_table(vaddr);
+            if !pt.is_present(vaddr) {
+                return;
+            }
+
+            pt.clear(vaddr);
+        }
+    }
+
     /// Remove a range of mapped pages, with granularity corresponding to
     /// the given page-level.
     ///
     /// For example, removing pages with PDP granularity will unmap all pages
     /// with the same PML4 offset and PDP offset as the given virtual address.
-    ///
-    /// Attempting to unmap an address with finer granularity than it was
-    /// originally mapped with will result in an error, with the error value
-    /// being the mapped page's granularity.
-    pub fn remove_mapping(&mut self, vaddr: usize, level: PageLevel) -> Result<(), PageLevel> {
-        if level == PageLevel::PML4 {
-            self.pml4t.clear(vaddr);
-            return Ok(());
-        }
-
-        if let Some(mut pdpt) = self.pml4t.get(vaddr) {
-            if level == PageLevel::PDP {
-                pdpt.clear(vaddr);
-                return Ok(());
-            }
-
-            let mut pd = match pdpt.get(vaddr) {
-                PageStructureChild::None => return Ok(()),
-                PageStructureChild::Page(_) => return Err(PageLevel::PDP),
-                PageStructureChild::Table(t) => t,
-            };
-
-            if level == PageLevel::PD {
-                pd.clear(vaddr);
-                return Ok(());
-            }
-
-            match pd.get(vaddr) {
-                PageStructureChild::None => return Ok(()),
-                PageStructureChild::Page(_) => return Err(PageLevel::PD),
-                PageStructureChild::Table(mut pt) => pt.clear(vaddr),
-            };
-        }
-
-        Ok(())
+    pub fn remove_mapping(&mut self, vaddr: usize, level: PageLevel) {
+        self._remove_mapping(vaddr, level);
+        self.clear_tlb(vaddr, level);
     }
 
     /// Convenience function for mapping a single page with 4K granularity.
@@ -135,23 +166,30 @@ impl AddressSpace {
     }
 
     /// Convenience function for unmapping a single page with 4K granularity.
-    pub fn unmap_page(&mut self, vaddr: usize) -> Result<(), PageLevel> {
+    pub fn unmap_page(&mut self, vaddr: usize) {
         self.remove_mapping(vaddr, PageLevel::PT)
     }
 
     /// Convenience function for unmapping a range of pages with 4K granularity.
-    pub fn unmap_page_range(&mut self, vaddr: usize, n_pages: usize) -> Result<(), PageLevel> {
+    pub fn unmap_page_range(&mut self, vaddr: usize, n_pages: usize) {
         for i in 0..n_pages {
-            self.unmap_page(vaddr + (0x1000 * i))?;
+            self._remove_mapping(vaddr + (0x1000 * i), PageLevel::PT);
         }
 
-        Ok(())
+        if self.is_loaded() {
+            unsafe { self.load() };
+        }
     }
 
     /// Convenience function for mapping a range of pages with 4K granularity.
     pub fn map_page_range(&mut self, vaddr: usize, paddr: usize, n_pages: usize) {
         for i in 0..n_pages {
-            self.map_page(vaddr + (i * 0x1000), paddr + (i * 0x1000));
+            let pte = PageTableEntry::from_address(paddr + (i * 0x1000));
+            self._set_mapping(vaddr + (i * 0x1000), pte, PageLevel::PT);
+        }
+
+        if self.is_loaded() {
+            unsafe { self.load() };
         }
     }
 }
@@ -211,7 +249,7 @@ mod tests {
         }
 
         drop(pmem);
-        addr_space.unmap_page_range(vaddr, 4).unwrap();
+        addr_space.unmap_page_range(vaddr, 4);
     }
 
     #[kernel_test]
@@ -300,7 +338,7 @@ mod tests {
             );
 
             // Unmapping the page should decrement its refcount:
-            space.unmap_page(vaddr).unwrap();
+            space.unmap_page(vaddr);
             assert_eq!(
                 page_data[pfn].refcount(),
                 0,

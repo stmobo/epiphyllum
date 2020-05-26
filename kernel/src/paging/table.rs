@@ -140,6 +140,13 @@ pub trait PageStructure {
     fn clear_entry(&mut self, vaddr: usize) {
         self.set_entry(vaddr, PageTableEntry::new());
     }
+
+    /// Get whether there is an entry for the given virtual address within this
+    /// table.
+    fn is_present(&self, vaddr: usize) -> bool {
+        let pte = self.get_entry(vaddr);
+        pte.present()
+    }
 }
 
 unsafe fn add_table_ref<T: PageStructure>(table: &T) {
@@ -268,6 +275,11 @@ impl PML4T {
         Ok(table)
     }
 
+    /// Load this PML4T into the current processor's CR3 register.
+    ///
+    /// # Safety
+    /// This function modifies processor control registers and additionally
+    /// modifies processor page mappings.
     pub unsafe fn load(&self) {
         // decrement refcount for outgoing PML4T
         let _prev = PML4T(RawPageTable {
@@ -382,13 +394,15 @@ impl PDPT {
     /// Get the child page directory that is mapped for a virtual address
     /// within this table.
     ///
-    /// If the virtual address is unmapped or if a 1 GiB page is already mapped
-    /// to this virtual address, a new PD will be allocated and replace the
-    /// prior mapping.
+    /// If the virtual address is unmapped, a new table will be allocated.
+    ///
+    /// If the virtual address is already mapped as a 1GiB page, the mapping
+    /// will be split into a page directory.
     pub fn ensure_table(&mut self, vaddr: usize) -> PageDirectory {
         match self.get(vaddr) {
             PageStructureChild::Table(pd) => pd,
-            PageStructureChild::Page(_) | PageStructureChild::None => {
+            PageStructureChild::Page(_) => self.split_page_mapping(vaddr).unwrap(),
+            PageStructureChild::None => {
                 let pd = PageDirectory::new().expect("could not create page directory");
                 self.map_table(vaddr, &pd);
                 pd
@@ -422,6 +436,30 @@ impl PDPT {
         self.cleanup_entry(pdp_idx(vaddr));
         self.set_entry(vaddr, page);
         unsafe { super::add_mapping_refs(page.physical_address(), PageLevel::PDP) };
+    }
+
+    /// Splits a single 1GiB page mapping into a page directory that linearly
+    /// maps the same physical address range.
+    ///
+    /// Returns an error if the page mapping for the given virtual address does
+    /// not correspond to a 1GiB page.
+    pub fn split_page_mapping(&mut self, vaddr: usize) -> Result<PageDirectory, PageTableEntry> {
+        let pdpe = self.get_entry(vaddr);
+        let start_addr = pdpe.physical_address();
+
+        if !pdpe.present() || !pdpe.page_size() {
+            // not a 1GiB page mapping
+            return Err(pdpe);
+        }
+
+        let pd = PageDirectory::gb_map_table(start_addr).expect("could not create page directory");
+
+        // No need to clean up the old page mapping, since the overall refcount
+        // for those pages should not change.
+        self.set_entry(vaddr, PageTableEntry::from_address(pd.address()));
+        unsafe { add_table_ref(&pd) };
+
+        Ok(pd)
     }
 
     /// Clear the mapping for a virtual address, if any.
@@ -484,6 +522,24 @@ impl PageDirectory {
         Ok(PageDirectory(RawPageTable::new()?))
     }
 
+    /// Create a new page directory linearly mapping a GiB of physical memory.
+    ///
+    /// Does not adjust reference counts for the mapped pages.
+    fn gb_map_table(start_addr: usize) -> Result<PageDirectory, AllocationError> {
+        let mut pd = PageDirectory::new()?;
+        let start_addr = start_addr & ((1 << 30) - 1);
+
+        for i in 0..512 {
+            let address = start_addr + (i << 21);
+            let mut pte = PageTableEntry::from_address(address);
+
+            pte.set_page_size(true);
+            pd.set_by_index(i, pte);
+        }
+
+        Ok(pd)
+    }
+
     /// Get the mapping for a virtual address within this table.
     pub fn get(&self, vaddr: usize) -> PageStructureChild<PageTable> {
         let entry = self.get_entry(vaddr);
@@ -499,13 +555,15 @@ impl PageDirectory {
     /// Get the child page table that is mapped for a virtual address within
     /// this table.
     ///
-    /// If the virtual address is unmapped or if a 2 MiB page is already mapped
-    /// to this virtual address, a new table will be allocated and replace the
-    /// prior mapping.
+    /// If the virtual address is unmapped, a new table will be allocated.
+    ///
+    /// If the virtual address is already mapped as a 2MiB page, the mapping
+    /// will be split into a new page table.
     pub fn ensure_table(&mut self, vaddr: usize) -> PageTable {
         match self.get(vaddr) {
             PageStructureChild::Table(pt) => pt,
-            PageStructureChild::Page(_) | PageStructureChild::None => {
+            PageStructureChild::Page(_) => self.split_page_mapping(vaddr).unwrap(),
+            PageStructureChild::None => {
                 let pt = PageTable::new().expect("could not create page directory");
                 self.map_table(vaddr, &pt);
                 pt
@@ -534,6 +592,26 @@ impl PageDirectory {
         self.cleanup_entry(pd_idx(vaddr));
         self.set_entry(vaddr, page);
         unsafe { super::add_mapping_refs(page.physical_address(), PageLevel::PD) };
+    }
+
+    /// Splits a single 2MiB page mapping into a page table that linearly
+    /// maps the same physical address range.
+    ///
+    /// Returns an error if the page mapping for the given virtual address does
+    /// not correspond to a 2MiB page.
+    pub fn split_page_mapping(&mut self, vaddr: usize) -> Result<PageTable, PageTableEntry> {
+        let pde = self.get_entry(vaddr);
+        let start_addr = pde.physical_address();
+
+        if !pde.present() || !pde.page_size() {
+            return Err(pde);
+        }
+
+        let pt = PageTable::mb_map_table(start_addr).expect("could not create page table");
+        self.set_entry(vaddr, PageTableEntry::from_address(pt.address()));
+        unsafe { add_table_ref(&pt) };
+
+        Ok(pt)
     }
 
     /// Clear the mapping for a virtual address, if any.
@@ -594,6 +672,21 @@ impl PageTable {
     /// Create a new, empty page table.
     pub fn new() -> Result<PageTable, AllocationError> {
         Ok(PageTable(RawPageTable::new()?))
+    }
+
+    /// Create a new page table linearly mapping 2 MiB of physical memory.
+    ///
+    /// Does not adjust reference counts for the mapped pages.
+    fn mb_map_table(start_addr: usize) -> Result<PageTable, AllocationError> {
+        let mut pt = PageTable::new()?;
+        let start_addr = start_addr & ((1 << 21) - 1);
+
+        for i in 0..512 {
+            let address = start_addr + (i << 12);
+            pt.set_by_index(i, PageTableEntry::from_address(address));
+        }
+
+        Ok(pt)
     }
 
     /// Get the mapping for a virtual address within this table.

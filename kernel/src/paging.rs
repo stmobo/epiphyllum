@@ -105,13 +105,13 @@ pub fn map_pages(vaddr: usize, paddr: usize, n_pages: usize) {
     }
 }
 
-pub fn unmap_pages(vaddr: usize, n_pages: usize) -> Result<(), PageLevel> {
+pub fn unmap_pages(vaddr: usize, n_pages: usize) {
     if task::scheduler_initialized() {
         let mut space = task::current_address_space();
-        space.unmap_page_range(vaddr, n_pages)
+        space.unmap_page_range(vaddr, n_pages);
     } else {
         let mut space = unsafe { AddressSpace::current() };
-        space.unmap_page_range(vaddr, n_pages)
+        space.unmap_page_range(vaddr, n_pages);
     }
 }
 

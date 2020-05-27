@@ -45,6 +45,8 @@ pub fn handle_interrupt(frame: &mut InterruptFrame) {
         }
     }
 
+    drop(lock);
+
     if !found_handler {
         if frame.interrupt_no < 32 {
             exceptions::unhandled_exception(frame);

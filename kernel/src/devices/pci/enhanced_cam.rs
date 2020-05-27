@@ -1,9 +1,9 @@
 use alloc_crate::vec::Vec;
 use core::ops::Range;
 
-use super::PCISegmentConfigSpace;
+use super::{PCIAddress, PCISegmentConfigSpace};
 use crate::acpica::mcfg::MCFG;
-use crate::lock::{NoIRQSpinlock, OnceCell};
+use crate::lock::OnceCell;
 use crate::paging::PhysicalPointer;
 use crate::structures::HashMap;
 
@@ -13,52 +13,52 @@ pub struct PCIExtendedHostBridge {
     bus_start: u8,
     bus_end: u8,
     base_address: usize,
-    lock: NoIRQSpinlock<()>,
 }
 
 impl PCIExtendedHostBridge {
-    fn config_space_address(&self, bus: u8, device: u8, function: u8) -> PhysicalPointer<u32> {
-        assert!(
-            bus >= self.bus_start,
+    fn config_space_address(&self, address: PCIAddress) -> PhysicalPointer<u32> {
+        debug_assert!(
+            address.bus() >= self.bus_start,
             "invalid bus number {} >= {}",
-            bus,
+            address.bus(),
             self.bus_start
         );
 
-        assert!(
-            bus <= self.bus_end,
+        debug_assert!(
+            address.bus() <= self.bus_end,
             "invalid bus number {} <= {}",
-            bus,
+            address.bus(),
             self.bus_end
         );
 
-        assert!(device < 32, "invalid device number {}", device);
-        assert!(function < 8, "invalid function number {}", function);
+        let bus_min = (self.bus_start as u64) << 20;
+        let shifted = address.extended_cam_shift();
 
-        let bus_offset = bus - self.bus_start;
-        let addr = self.base_address
-            + (((bus_offset as usize) << 20)
-                | ((device as usize) << 15)
-                | ((function as usize) << 12));
-
-        PhysicalPointer::new(addr).unwrap()
+        let offset = (shifted - bus_min) as usize;
+        PhysicalPointer::new(self.base_address + offset).unwrap()
     }
 
-    unsafe fn read(&self, bus: u8, device: u8, function: u8, offset: u16) -> u32 {
-        assert!((offset & 0x03) == 0, "offset {:#06x} not aligned", offset);
+    unsafe fn read(&self, address: PCIAddress, offset: u16) -> u32 {
+        assert_eq!(offset & 0x03, 0, "offset {:#06x} not aligned", offset);
+        assert!(
+            offset < 0x1000,
+            "offset {:#06x} too large (limit 0x1000)",
+            offset
+        );
 
-        let phys = self.config_space_address(bus, device, function);
-        let _lock = self.lock.lock();
-
+        let phys = self.config_space_address(address);
         phys.as_ptr().add((offset >> 2).into()).read_volatile()
     }
 
-    unsafe fn write(&self, bus: u8, device: u8, function: u8, offset: u16, value: u32) {
-        assert!((offset & 0x03) == 0, "offset {:#06x} not aligned", offset);
+    unsafe fn write(&self, address: PCIAddress, offset: u16, value: u32) {
+        assert_eq!(offset & 0x03, 0, "offset {:#06x} not aligned", offset);
+        assert!(
+            offset < 0x1000,
+            "offset {:#06x} too large (limit 0x1000)",
+            offset
+        );
 
-        let phys = self.config_space_address(bus, device, function);
-        let _lock = self.lock.lock();
-
+        let phys = self.config_space_address(address);
         phys.as_mut_ptr()
             .add((offset >> 2).into())
             .write_volatile(value);
@@ -87,20 +87,20 @@ impl PCISegmentConfigSpace for PCISegment {
         self.segment
     }
 
-    unsafe fn read(&self, bus: u8, device: u8, function: u8, offset: u16) -> u32 {
+    unsafe fn read(&self, address: PCIAddress, offset: u16) -> u32 {
         let bridge = self
-            .find_bridge(bus)
+            .find_bridge(address.bus())
             .expect("could not find bridge for bus");
 
-        bridge.read(bus, device, function, offset)
+        bridge.read(address, offset)
     }
 
-    unsafe fn write(&self, bus: u8, device: u8, function: u8, offset: u16, value: u32) {
+    unsafe fn write(&self, address: PCIAddress, offset: u16, value: u32) {
         let bridge = self
-            .find_bridge(bus)
+            .find_bridge(address.bus())
             .expect("could not find bridge for bus");
 
-        bridge.write(bus, device, function, offset, value)
+        bridge.write(address, offset, value)
     }
 }
 
@@ -133,7 +133,6 @@ pub fn initialize() {
             bus_start: bridge.start_bus,
             bus_end: bridge.end_bus,
             base_address: bridge.address,
-            lock: NoIRQSpinlock::new(()),
         });
     }
 

@@ -1,14 +1,12 @@
-use alloc_crate::boxed::Box;
 use core::future::Future;
-use core::marker::PhantomData;
 use core::pin::Pin;
-use core::ptr::NonNull;
 use core::task::{Context, Poll, Waker};
 
 use super::scheduler;
 use super::scheduling::{current_task, yield_cpu};
 use super::structs::TaskStatus;
-use crate::lock::NoIRQSpinlock;
+use crate::structures::handle_list::NodeHandle;
+use crate::structures::HandleList;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum WaitMode {
@@ -17,143 +15,42 @@ pub enum WaitMode {
 }
 
 #[derive(Clone)]
-pub struct ListNode {
+pub struct WaitData {
     waker: Option<Waker>,
     mode: WaitMode,
-    prev: Option<NonNull<ListNode>>,
-    next: Option<NonNull<ListNode>>,
 }
 
-impl ListNode {
-    fn new(waker: Option<Waker>, mode: WaitMode) -> NonNull<ListNode> {
-        Box::leak(Box::new(ListNode {
-            waker,
-            mode,
-            prev: None,
-            next: None,
-        }))
-        .into()
-    }
-
-    unsafe fn unlink(&mut self) {
-        if let Some(mut prev) = self.prev {
-            prev.as_mut().next = self.next;
-        }
-
-        if let Some(mut next) = self.next {
-            next.as_mut().prev = self.prev;
-        }
-
-        self.prev = None;
-        self.next = None;
-    }
-
-    unsafe fn append(&mut self, mut node: NonNull<ListNode>) {
-        {
-            let mut r = node.as_mut();
-            r.next = self.next;
-            r.prev = Some(NonNull::new_unchecked(self as *mut ListNode));
-        }
-
-        if let Some(mut next) = self.next {
-            next.as_mut().prev = Some(node);
-        }
-
-        self.next = Some(node);
-    }
-}
-
-pub struct WaitList {
-    head: Option<NonNull<ListNode>>,
-    tail: Option<NonNull<ListNode>>,
-}
-
-impl WaitList {
-    const fn new() -> WaitList {
-        WaitList {
-            head: None,
-            tail: None,
-        }
-    }
-
-    // SAFETY: The caller must not do anything with the returned ListNode
-    // without first acquiring a lock on this list.
-    unsafe fn push_front(&mut self, mut node: NonNull<ListNode>) {
-        if let Some(head) = self.head {
-            assert_ne!(head, node);
-            node.as_mut().append(head);
-        }
-        self.head = Some(node);
-    }
-
-    // SAFETY: See push_front.
-    unsafe fn push_back(&mut self, node: NonNull<ListNode>) {
-        if let Some(mut tail) = self.tail {
-            assert_ne!(tail, node);
-            tail.as_mut().append(node);
-        }
-        self.tail = Some(node);
-    }
-
-    // This is safe, since users of WaitListIter can't get rid of their mut
-    // reference to / lock on this list while they hold returned references
-    // from the iterator.
-    fn iter_mut(&mut self) -> WaitListIter<'_> {
-        WaitListIter(self.head, PhantomData)
-    }
-}
-
-struct WaitListIter<'a>(Option<NonNull<ListNode>>, PhantomData<&'a mut ListNode>);
-
-impl<'a> Iterator for WaitListIter<'a> {
-    type Item = &'a mut ListNode;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.take().map(|p| {
-            let r: &'a mut ListNode = unsafe { &mut *p.as_ptr() };
-            if r.mode != WaitMode::Exclusive {
-                self.0 = r.next;
-            }
-
-            r
-        })
-    }
-}
+pub struct WaitHandle<'a>(NodeHandle<'a, WaitData>);
 
 #[repr(transparent)]
 pub struct WaitQueue {
-    tasks: NoIRQSpinlock<WaitList>,
+    tasks: HandleList<WaitData>,
 }
 
 impl WaitQueue {
     /// Create a new WaitQueue.
     pub const fn new() -> WaitQueue {
         WaitQueue {
-            tasks: NoIRQSpinlock::new(WaitList::new()),
+            tasks: HandleList::new(),
         }
     }
 
     /// Add a Waker to this WaitQueue.
     ///
     /// The waker will be removed from the queue when the following happens:
-    ///  - The returned WaiterHandle is dropped, or
+    ///  - The returned WaitHandle is dropped, or
     ///  - A call to wake() awakens the added Waker.
     ///
     /// Either way, the storage for the node will only be deallocated once the
-    /// returned WaiterHandle is dropped.
-    pub fn add_waiter(&self, waker: Option<Waker>, mode: WaitMode) -> WaiterHandle<'_> {
-        let node = ListNode::new(waker, mode);
+    /// returned WaitHandle is dropped.
+    pub fn add_waiter(&self, waker: Option<Waker>, mode: WaitMode) -> WaitHandle<'_> {
+        let data = WaitData { waker, mode };
+        let handle = match mode {
+            WaitMode::Default => self.tasks.push_front(data),
+            WaitMode::Exclusive => self.tasks.push_back(data),
+        };
 
-        let mut queue = self.tasks.lock();
-        unsafe {
-            match mode {
-                WaitMode::Default => queue.push_front(node),
-                WaitMode::Exclusive => queue.push_back(node),
-            };
-        }
-        drop(queue);
-
-        WaiterHandle(self, node)
+        WaitHandle(handle)
     }
 
     /// Wake up waiters on this queue.
@@ -162,26 +59,28 @@ impl WaitQueue {
     /// at most 1 WaitMode::Exclusive waiter.
     pub fn wake(&self) {
         let mut queue = self.tasks.lock();
+        for waiter in queue.drain() {
+            if let Some(waker) = waiter.waker.take() {
+                waker.wake();
+            }
 
-        for node in queue.iter_mut() {
-            if node.waker.is_some() {
-                node.waker.as_ref().unwrap().wake_by_ref();
+            if waiter.mode == WaitMode::Exclusive {
+                break;
             }
         }
-
-        drop(queue);
     }
 
     /// Wait for a condition to become true, sleeping on this queue in the
     /// meanwhile.
     pub fn wait<F: FnMut() -> bool>(&self, mut condition: F, mode: WaitMode) {
-        let h = self.add_waiter(Some(current_task().waker()), mode);
         let p = scheduler().running_task_ptr();
 
         loop {
             unsafe {
                 (*p).set_wakeup_pending(false);
             }
+
+            let _h = self.add_waiter(Some(current_task().waker()), mode);
 
             if condition() {
                 break;
@@ -198,76 +97,38 @@ impl WaitQueue {
             (*p).set_wakeup_pending(false);
             (*p).set_status(TaskStatus::Running);
         }
-
-        drop(h);
     }
 
-    pub fn wait_async<F: Fn() -> bool>(
+    pub fn wait_async<F: FnMut() -> bool + Unpin>(
         &self,
         condition: F,
         mode: WaitMode,
     ) -> WaitQueueFuture<'_, F> {
-        let waiter = self.add_waiter(None, mode);
-        WaitQueueFuture { waiter, condition }
-    }
-}
-
-unsafe impl Send for WaitQueue {}
-unsafe impl Sync for WaitQueue {}
-
-pub struct WaiterHandle<'a>(&'a WaitQueue, NonNull<ListNode>);
-
-impl<'a> WaiterHandle<'a> {
-    fn set_waker(&self, waker: Waker) {
-        let lock = self.0.tasks.lock();
-        unsafe {
-            let p = self.1.as_ptr();
-            (*p).waker = Some(waker);
+        WaitQueueFuture {
+            handle: None,
+            queue: self,
+            condition,
+            mode,
         }
-        drop(lock);
     }
 }
 
-impl<'a> Drop for WaiterHandle<'a> {
-    fn drop(&mut self) {
-        let mut lock = self.0.tasks.lock();
-        unsafe {
-            let p = self.1.as_ptr();
-            let m = self.1.as_mut();
-
-            if let Some(head) = lock.head {
-                if head.as_ptr() == p {
-                    lock.head = m.next;
-                }
-            }
-
-            if let Some(tail) = lock.tail {
-                if tail.as_ptr() == p {
-                    lock.tail = m.prev;
-                }
-            }
-
-            m.unlink();
-            drop(Box::from_raw(self.1.as_ptr()));
-        }
-        drop(lock);
-    }
-}
-
-unsafe impl<'a> Send for WaiterHandle<'a> {}
-unsafe impl<'a> Sync for WaiterHandle<'a> {}
-
-pub struct WaitQueueFuture<'a, F: Fn() -> bool> {
-    waiter: WaiterHandle<'a>,
+pub struct WaitQueueFuture<'a, F: FnMut() -> bool + Unpin> {
+    handle: Option<WaitHandle<'a>>,
+    queue: &'a WaitQueue,
     condition: F,
+    mode: WaitMode,
 }
 
-impl<'a, F: Fn() -> bool> Future for WaitQueueFuture<'a, F> {
+impl<'a, F: FnMut() -> bool + Unpin> Future for WaitQueueFuture<'a, F> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.waiter.set_waker(cx.waker().clone());
-        if (self.condition)() {
+        let m = self.get_mut();
+
+        m.handle = Some(m.queue.add_waiter(Some(cx.waker().clone()), m.mode));
+        if (m.condition)() {
+            m.handle.take();
             Poll::Ready(())
         } else {
             Poll::Pending

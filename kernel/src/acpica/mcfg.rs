@@ -44,7 +44,13 @@ impl MCFG {
             let p = cfg_start as *const HostBridgeSpace;
 
             for i in 0..n_bridges {
-                bridges.push(p.add(i).read_unaligned());
+                let bridge = p.add(i).read_unaligned();
+                println!("acpi: host bridge {}:", i);
+                println!("acpi:    segment group {}", bridge.segment_group);
+                println!("acpi:    busses {} - {}", bridge.start_bus, bridge.end_bus);
+                println!("acpi:    address: {:#018x}", bridge.address);
+
+                bridges.push(bridge);
             }
 
             Some(MCFG { bridges })

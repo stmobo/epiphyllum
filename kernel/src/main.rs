@@ -221,6 +221,8 @@ fn kernel_stage2_main(arg: u64) -> u64 {
 
     print::initialize();
 
+    devices::pci::initialize();
+
     #[cfg(test)]
     test_main();
 

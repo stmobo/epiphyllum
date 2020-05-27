@@ -200,6 +200,7 @@ pub mod bindings {
 }
 
 pub mod madt;
+pub mod mcfg;
 
 #[allow(non_snake_case)]
 pub mod os_services;

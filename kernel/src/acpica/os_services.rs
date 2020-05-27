@@ -1,4 +1,6 @@
 use super::bindings::*;
+use crate::interrupts;
+use crate::interrupts::IRQHandler;
 use crate::lock::LockedGlobal;
 use crate::paging;
 use crate::paging::PhysicalPointer;
@@ -607,7 +609,37 @@ pub extern "C" fn AcpiOsGetTimer() -> UINT64 {
     0
 }
 
-static ACPI_ISR_MAP: LockedGlobal<BTreeMap<usize, u64>> = LockedGlobal::new();
+pub struct ISRData {
+    context: ISRContext,
+    isr: IRQHandler,
+}
+
+impl ISRData {
+    fn isr_address(routine: ACPI_OSD_HANDLER) -> usize {
+        routine.unwrap() as usize
+    }
+
+    fn new(irq_no: u8, handler: ACPI_OSD_HANDLER, context: *mut cty::c_void) -> ISRData {
+        // type is "unsafe extern "C" fn(Context: *mut cty::c_void) -> UINT32"
+        let func = handler.unwrap();
+        let context = ISRContext(context);
+
+        let isr =
+            interrupts::register_handler(irq_no, move || -> interrupts::InterruptHandlerStatus {
+                unsafe {
+                    if func(context.0) == ACPI_INTERRUPT_HANDLED {
+                        interrupts::InterruptHandlerStatus::Handled
+                    } else {
+                        interrupts::InterruptHandlerStatus::NotHandled
+                    }
+                }
+            });
+
+        ISRData { isr, context }
+    }
+}
+
+static ACPI_ISR_MAP: LockedGlobal<BTreeMap<usize, ISRData>> = LockedGlobal::new();
 pub fn init_isr_map() {
     ACPI_ISR_MAP.init(BTreeMap::new);
 }
@@ -618,33 +650,20 @@ pub extern "C" fn AcpiOsInstallInterruptHandler(
     ServiceRoutine: ACPI_OSD_HANDLER,
     Context: *mut cty::c_void,
 ) -> ACPI_STATUS {
-    use crate::interrupts;
-
     if InterruptNumber > 255 || ServiceRoutine.is_none() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
-    let ctx = ISRContext(Context);
-
-    let isr = ServiceRoutine.unwrap();
-    let isr_id = interrupts::register_handler(
-        InterruptNumber as u8,
-        move || -> interrupts::InterruptHandlerStatus {
-            unsafe {
-                if isr(ctx.0) == ACPI_INTERRUPT_HANDLED {
-                    interrupts::InterruptHandlerStatus::Handled
-                } else {
-                    interrupts::InterruptHandlerStatus::NotHandled
-                }
-            }
-        },
-    )
-    .unwrap();
-
+    let isr_addr = ISRData::isr_address(ServiceRoutine);
     let mut map = ACPI_ISR_MAP.lock();
-    map.insert(isr as usize, isr_id);
+    if map.contains_key(&isr_addr) {
+        return AcpiError::AE_ALREADY_EXISTS.into();
+    }
 
-    0
+    let data = ISRData::new(InterruptNumber as u8, ServiceRoutine, Context);
+    map.insert(isr_addr, data);
+
+    AE_OK
 }
 
 #[no_mangle]
@@ -652,26 +671,22 @@ pub extern "C" fn AcpiOsRemoveInterruptHandler(
     InterruptNumber: UINT32,
     ServiceRoutine: ACPI_OSD_HANDLER,
 ) -> ACPI_STATUS {
-    use crate::interrupts;
-
     if InterruptNumber > 255 || ServiceRoutine.is_none() {
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
-    let isr = ServiceRoutine.unwrap() as usize;
+    let isr_addr = ISRData::isr_address(ServiceRoutine);
     let mut map = ACPI_ISR_MAP.lock();
 
-    if let Some(isr_id) = map.get(&isr) {
-        let isr_id = *isr_id;
-        interrupts::unregister_handler(InterruptNumber as u8, isr_id);
-        map.remove(&isr);
-
+    if let Some(isr) = map.remove(&isr_addr) {
+        drop(isr);
         AE_OK
     } else {
         AcpiError::AE_NOT_EXIST.into()
     }
 }
 
+#[derive(Copy, Clone)]
 #[repr(transparent)]
 struct ISRContext(*mut cty::c_void);
 unsafe impl Send for ISRContext {}

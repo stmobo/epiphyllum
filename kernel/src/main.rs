@@ -215,12 +215,9 @@ fn kernel_stage2_main(arg: u64) -> u64 {
         asm::interrupts::set_if(true);
     }
 
-    devices::timer::calibrate_apic_timer();
     timer::initialize();
-    devices::timer::start_ticks();
-
+    devices::timer::initialize();
     print::initialize();
-
     devices::pci::initialize();
 
     #[cfg(test)]

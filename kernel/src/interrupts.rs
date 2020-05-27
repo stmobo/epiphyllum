@@ -3,7 +3,7 @@ mod handler;
 mod idt;
 
 // use crate::task;
-pub use handler::{register_handler, InterruptHandlerStatus};
+pub use handler::{register_handler, IRQHandler, InterruptHandlerStatus};
 pub use idt::{claim_idt_page, initialize_idt};
 
 use core::fmt;

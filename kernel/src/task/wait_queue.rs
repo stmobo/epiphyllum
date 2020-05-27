@@ -99,6 +99,8 @@ impl WaitQueue {
         }
     }
 
+    /// Creates a Future that sleeps on this queue until the given condition
+    /// becomes true.
     pub fn wait_async<F: FnMut() -> bool + Unpin>(
         &self,
         condition: F,

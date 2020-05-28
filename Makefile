@@ -2,6 +2,8 @@
 
 clean:
 	rm -rf target/
+	rm -rf kernel/target/
+	rm -rf bootloader/target/
 	xargo clean
 
 bootloader:

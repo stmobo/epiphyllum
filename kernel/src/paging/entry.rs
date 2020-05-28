@@ -67,4 +67,33 @@ impl PageTableEntry {
             self.entry &= !(1 << 7);
         }
     }
+
+    pub fn cache_type(&self) -> CacheType {
+        let pwt = (self.entry & (1 << 3)) != 0;
+        let pcd = (self.entry & (1 << 4)) != 0;
+
+        if pcd {
+            CacheType::Uncacheable
+        } else if pwt {
+            CacheType::WriteThrough
+        } else {
+            CacheType::WriteBack
+        }
+    }
+
+    pub fn set_cache_type(&mut self, caching: CacheType) {
+        self.entry = (self.entry & !0b11000)
+            | match caching {
+                CacheType::WriteBack => 0,
+                CacheType::WriteThrough => 0b01000,
+                CacheType::Uncacheable => 0b11000,
+            };
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum CacheType {
+    WriteBack,
+    WriteThrough,
+    Uncacheable,
 }

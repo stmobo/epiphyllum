@@ -13,10 +13,9 @@ mod table;
 
 pub use address_space::{AddressSpace, MappingError};
 pub use direct::*;
+pub use entry::{CacheType, PageTableEntry};
 pub use structs::*;
 pub use table::*;
-
-pub use entry::PageTableEntry;
 
 pub const PAGE_MASK: usize = 0xFFFF_FFFF_FFFF_F000;
 

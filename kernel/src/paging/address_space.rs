@@ -2,7 +2,7 @@ use crate::asm;
 use crate::malloc::AllocationError;
 
 use super::table::*;
-use super::{PageLevel, PageStructure, PageTable, PageTableEntry, PhysicalPointer};
+use super::{CacheType, PageLevel, PageStructure, PageTable, PageTableEntry, PhysicalPointer};
 
 #[derive(Debug, Copy, Clone)]
 pub enum MappingError {
@@ -192,6 +192,90 @@ impl AddressSpace {
             unsafe { self.load() };
         }
     }
+
+    /// Transform page table entries for a range of pages in the address space.
+    fn _transform_entries<T>(&mut self, vaddr: usize, n_pages: usize, mut xfrm: T)
+    where
+        T: FnMut(PageTableEntry) -> PageTableEntry,
+    {
+        let mut page_count = n_pages;
+        let mut cur_addr = vaddr;
+
+        while page_count > 0 {
+            let pml4e = self.pml4t.get_entry(cur_addr);
+            if !pml4e.present() {
+                // Skip this entire portion of the address range.
+                page_count = page_count.saturating_sub(1 << 27);
+                cur_addr += 1 << 39;
+                continue;
+            }
+
+            let mut pdpt = self.pml4t.get(cur_addr).unwrap();
+
+            let mut pd = match pdpt.get(cur_addr) {
+                PageStructureChild::None => {
+                    // Skip 1 GiB
+                    page_count = page_count.saturating_sub(1 << 18); // 18 = 30 - 12
+                    cur_addr += 1 << 30;
+                    continue;
+                }
+                PageStructureChild::Table(pd) => pd,
+                PageStructureChild::Page(entry) => {
+                    // If possible, transform the map for the entire page at once.
+                    if (page_count >= (1 << 18))
+                        && (cur_addr & PageLevel::PDP.alignment_mask().unwrap() == 0)
+                    {
+                        pdpt.set_entry(cur_addr, xfrm(entry));
+                        page_count = page_count.saturating_sub(1 << 18); // 18 = 30 - 12
+                        cur_addr += 1 << 30;
+                        continue;
+                    } else {
+                        // Otherwise, split this page mapping into a smaller map and continue.
+                        pdpt.split_page_mapping(cur_addr).unwrap()
+                    }
+                }
+            };
+
+            let mut pt = match pd.get(cur_addr) {
+                PageStructureChild::None => {
+                    // Skip 2 MiB
+                    page_count = page_count.saturating_sub(1 << 9);
+                    cur_addr += 1 << 21;
+                    continue;
+                }
+                PageStructureChild::Table(pt) => pt,
+                PageStructureChild::Page(entry) => {
+                    if (page_count >= (1 << 9))
+                        && (cur_addr & PageLevel::PD.alignment_mask().unwrap() == 0)
+                    {
+                        pd.set_entry(cur_addr, xfrm(entry));
+                        page_count = page_count.saturating_sub(1 << 9); // 18 = 30 - 12
+                        cur_addr += 1 << 21;
+                        continue;
+                    } else {
+                        // Otherwise, split this page mapping into a smaller map and continue.
+                        pd.split_page_mapping(cur_addr).unwrap()
+                    }
+                }
+            };
+
+            let entry = pt.get_entry(cur_addr);
+            if entry.present() {
+                pt.set_entry(cur_addr, xfrm(entry));
+            }
+
+            page_count = page_count.saturating_sub(1);
+            cur_addr += 1 << 12;
+        }
+    }
+
+    pub fn set_caching(&mut self, vaddr: usize, n_pages: usize, caching: CacheType) {
+        self._transform_entries(vaddr, n_pages, |entry| {
+            let mut ent = entry;
+            ent.set_cache_type(caching);
+            ent
+        })
+    }
 }
 
 #[cfg(test)]
@@ -199,9 +283,12 @@ mod tests {
     use super::*;
     use crate::malloc::physical_mem;
     use crate::malloc::{PhysicalMemory, VirtualMemory};
+    use crate::paging::PHYSICAL_MAP_BASE;
     use crate::rng::MersenneTwister64;
     use crate::test::TEST_SEED;
     use kernel_test_macro::kernel_test;
+
+    use alloc_crate::vec::Vec;
 
     #[kernel_test]
     fn test_map() {
@@ -361,6 +448,149 @@ mod tests {
                 0,
                 "incorrect refcount for deallocated page"
             );
+        }
+    }
+
+    #[kernel_test]
+    fn test_transform() {
+        // This tests set_caching(), _transform_entries(), as well as the
+        // split_page_mapping() methods for PDPT and PageDirectory.
+
+        let transform_address: usize = PHYSICAL_MAP_BASE + (72 << 30);
+        let n_pages: usize = (1 << 18) + (1 << 9) + 1;
+
+        let mut addr_space = unsafe { AddressSpace::current() };
+
+        let pdpt = addr_space.pml4t.get(transform_address).unwrap();
+        let mut prev_pdpt_entries = Vec::with_capacity(512);
+
+        // Copy the old physical map PDPT entries so we can check them later.
+        for i in 0..512 {
+            prev_pdpt_entries.push(pdpt.get_by_index(i));
+        }
+
+        drop(pdpt);
+
+        // This _should_ transform exactly one of each page type (1G, 2M, and 4K).
+        addr_space.set_caching(transform_address, n_pages, CacheType::Uncacheable);
+        let pdpt = addr_space.pml4t.get(transform_address).unwrap();
+
+        // The transform should not affect any other PDPT entries other than
+        // the ones in the given range (in this case, entries 72 and 73):
+        for i in 0..512 {
+            if i == 72 || i == 73 {
+                continue;
+            }
+
+            assert_eq!(
+                pdpt.get_by_index(i),
+                prev_pdpt_entries[i],
+                "PDPT entry {} changed",
+                i
+            );
+        }
+
+        // This 1G page should have been transformed in its entirety:
+        let pdpe_72 = pdpt.get_by_index(72);
+        assert!(pdpe_72.present(), "transform unmapped page");
+        assert_eq!(
+            pdpe_72.cache_type(),
+            CacheType::Uncacheable,
+            "incorrect cache type"
+        );
+        assert_eq!(
+            pdpe_72.physical_address(),
+            72 << 30,
+            "transform changed physical address"
+        );
+        assert!(pdpe_72.page_size(), "transform changed page size");
+        assert!(!pdpe_72.writable(), "transform changed writability");
+
+        // Get the page directory at PDPT offset 73:
+        let pd = match pdpt.get(PHYSICAL_MAP_BASE + (73 << 30)) {
+            PageStructureChild::Table(pd) => pd,
+            PageStructureChild::Page(_) => {
+                panic!("Physical mapping portion should have been a table")
+            }
+            PageStructureChild::None => panic!("Physical mapping portion unexpectedly disappeared"),
+        };
+
+        // This 2M page should have been transformed in its entirety:
+        let pde = pd.get_by_index(0);
+        assert!(pde.present(), "transform unmapped page");
+        assert_eq!(
+            pde.cache_type(),
+            CacheType::Uncacheable,
+            "incorrect cache type"
+        );
+        assert_eq!(
+            pde.physical_address(),
+            73 << 30,
+            "transform changed physical address"
+        );
+        assert!(pde.page_size(), "transform changed page size");
+        assert!(!pde.writable(), "transform changed writability");
+
+        // Ensure entries 2 through 511 have all-default settings.
+        // (Entry 1 should now point to a page table.)
+        for i in 2..512 {
+            let pde = pd.get_by_index(i);
+            assert!(pde.present(), "transform unmapped page");
+            assert_eq!(
+                pde.cache_type(),
+                CacheType::WriteBack,
+                "incorrect cache type"
+            );
+            assert_eq!(
+                pde.physical_address(),
+                (73 << 30) + (i << 21),
+                "transform changed physical address"
+            );
+            assert!(pde.page_size(), "transform changed page size");
+            assert!(!pde.writable(), "transform changed writability");
+        }
+
+        // Get the page table at PD offset 1:
+        let pt = match pd.get(PHYSICAL_MAP_BASE + (73 << 30) + (1 << 21)) {
+            PageStructureChild::Table(pt) => pt,
+            PageStructureChild::Page(_) => {
+                panic!("Physical mapping portion should have been a table")
+            }
+            PageStructureChild::None => panic!("Physical mapping portion unexpectedly disappeared"),
+        };
+
+        // This 4K entry should have been transformed.
+        let pte = pt.get_by_index(0);
+        assert!(pte.present(), "transform unmapped page");
+        assert_eq!(
+            pte.cache_type(),
+            CacheType::Uncacheable,
+            "incorrect cache type"
+        );
+        assert_eq!(
+            pte.physical_address(),
+            (73 << 30) + (1 << 21),
+            "transform changed physical address"
+        );
+        assert!(!pte.page_size(), "transform changed PAT bit");
+        assert!(!pte.writable(), "transform changed writability");
+
+        // Ensure entries 1 through 511 have all-default settings.
+        for i in 1..512 {
+            let pte = pt.get_by_index(i);
+            assert!(pte.present(), "transform unmapped page");
+            assert_eq!(
+                pte.cache_type(),
+                CacheType::WriteBack,
+                "incorrect cache type"
+            );
+            assert_eq!(
+                pte.physical_address(),
+                (73 << 30) + (1 << 21) + (i << 12),
+                "transform changed physical address"
+            );
+            assert!(!pte.page_size(), "transform changed PAT bit");
+            assert!(!pte.writable(), "transform changed writability");
         }
     }
 }

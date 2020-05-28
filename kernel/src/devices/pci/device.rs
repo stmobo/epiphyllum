@@ -6,6 +6,7 @@ use super::config_space;
 use super::enhanced_cam;
 use super::PCIAddress;
 use crate::malloc::physical_mem;
+use crate::paging;
 
 #[derive(Debug)]
 pub struct PCIDevice {
@@ -78,9 +79,18 @@ impl PCIDevice {
             for bar in bars.iter() {
                 println!("pci:        {}", bar);
 
-                // if !bar.io {
-                //     physical_mem::reserve_page_range(bar.address, bar.size >> 12);
-                // }
+                if !bar.io {
+                    unsafe {
+                        physical_mem::reserve_page_range(bar.address, bar.size >> 12)
+                            .expect("could not reserve page range for BAR");
+                    }
+
+                    paging::set_page_caching(
+                        paging::offset_direct_map(bar.address),
+                        bar.size >> 12,
+                        paging::CacheType::Uncacheable,
+                    );
+                }
             }
         }
 

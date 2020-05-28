@@ -1,4 +1,5 @@
 use alloc_crate::string::String;
+use core::convert::TryFrom;
 use core::mem;
 use core::ptr;
 
@@ -235,11 +236,45 @@ pub fn initialize() -> AcpiResult<()> {
             .expect("AcpiInitializeObjects");
     }
 
+    init_apic_mode();
+
     device::enumerate_devices();
 
     println!("acpi: initialization complete");
 
     Ok(())
+}
+
+fn init_apic_mode() {
+    unsafe {
+        let mut arg = ACPI_OBJECT { Type: 1 }; // ACPI_TYPE_INTEGER
+        arg.Integer.Type = 1;
+        arg.Integer.Value = 1; // APIC mode
+
+        let mut arg_list = ACPI_OBJECT_LIST {
+            Count: 1,
+            Pointer: &mut arg,
+        };
+
+        let slice_ptr = b"\\_PIC\0".as_ptr();
+        let status = AcpiEvaluateObject(
+            ptr::null_mut(),
+            mem::transmute(slice_ptr),
+            &mut arg_list,
+            ptr::null_mut(),
+        );
+
+        if status == AE_OK {
+            println!("acpi: APIC mode initialized");
+        } else if status == AcpiError::AE_NOT_FOUND as u32 {
+            println!("acpi: \\_PIC method not found");
+        } else {
+            panic!(
+                "failed to initialize APIC mode: {:?}",
+                AcpiError::try_from(status).unwrap()
+            );
+        }
+    }
 }
 
 fn get_table(signature: &[u8], instance: u32) -> AcpiResult<usize> {

@@ -15,6 +15,8 @@ static DEVICES: OnceCell<HashMap<PCIAddress, NoIRQSpinlock<PCIDevice>>> = OnceCe
 
 pub fn initialize() {
     config_space::initialize();
+    device::enumerate_acpi();
+
     let devices = device::enumerate_devices();
 
     let mut map: HashMap<PCIAddress, NoIRQSpinlock<PCIDevice>> = HashMap::new();

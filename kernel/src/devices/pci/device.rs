@@ -5,10 +5,16 @@ use core::fmt::Display;
 use super::config_space;
 use super::enhanced_cam;
 use super::PCIAddress;
+use crate::acpica;
+use crate::acpica::AcpiDevice;
+use crate::lock::OnceCell;
 use crate::malloc::physical_mem;
 use crate::paging;
+use crate::structures::HashMap;
 
-#[derive(Debug)]
+static ACPI_BUS_LIST: OnceCell<Vec<(u8, &'static AcpiDevice)>> = OnceCell::new();
+static ACPI_MAP: OnceCell<HashMap<PCIAddress, &'static AcpiDevice>> = OnceCell::new();
+
 pub struct PCIDevice {
     address: PCIAddress,
     device_id: u16,
@@ -17,6 +23,8 @@ pub struct PCIDevice {
     minor_class: u8,
     prog_if: u8,
     bars: Vec<BAR>,
+    secondary_bus: Option<u8>, // if present, this device represents a bridge
+    acpi_device: Option<&'static AcpiDevice>,
 }
 
 impl PCIDevice {
@@ -32,6 +40,9 @@ impl PCIDevice {
         let data = unsafe { config_space::read_config(address, 12) };
         let header_type = (((data >> 16) & 0xFF) as u8) & 0x7F;
         let mut bars = Vec::new();
+
+        let dev_map = ACPI_MAP.get().unwrap();
+        let acpi_device = dev_map.get(&address).copied();
 
         unsafe {
             if header_type == 0x00 {
@@ -69,6 +80,13 @@ impl PCIDevice {
             }
         }
 
+        let secondary_bus: Option<u8>;
+        if (major_class == 0x06) && (minor_class == 0x04) {
+            secondary_bus = Some(get_secondary_bus(segment, bus, device, function));
+        } else {
+            secondary_bus = None;
+        }
+
         println!(
             "pci: enumerated device {}\npci:    Vendor: {:04x}\npci:    Device: {:04x}\npci:    Class: {:02x}.{:02x}.{:02x}",
             address, vendor_id, device_id, major_class, minor_class, prog_if
@@ -102,6 +120,8 @@ impl PCIDevice {
             vendor_id,
             device_id,
             bars,
+            secondary_bus,
+            acpi_device,
         }
     }
 
@@ -257,6 +277,11 @@ fn read_class(segment: u16, bus: u8, device: u8, function: u8) -> (u8, u8, u8) {
     (major_class, minor_class, prog_if)
 }
 
+fn get_secondary_bus(segment: u16, bus: u8, device: u8, function: u8) -> u8 {
+    let t = unsafe { config_space::read_config_split(segment, bus, device, function, 0x18) };
+    ((t >> 8) & 0xFF) as u8
+}
+
 fn enumerate_function(
     segment: u16,
     bus: u8,
@@ -266,16 +291,12 @@ fn enumerate_function(
 ) {
     let address = PCIAddress::new(segment, bus, device, function);
     let dev = PCIDevice::new(address);
-    let is_bridge = (dev.major_class == 0x06) && (dev.minor_class == 0x04);
+    let secondary_bus = dev.secondary_bus;
 
     out_list.push(dev);
 
-    if is_bridge {
-        // enumerate devices behind bridge
-        let secondary_bus =
-            unsafe { config_space::read_config_split(segment, bus, device, function, 0x18) };
-        let secondary_bus = ((secondary_bus >> 8) & 0xFF) as u8;
-        enumerate_bus(segment, secondary_bus, out_list);
+    if let Some(child_bus) = secondary_bus {
+        enumerate_bus(segment, child_bus, out_list);
     }
 }
 
@@ -325,4 +346,61 @@ pub fn enumerate_devices() -> Vec<PCIDevice> {
     }
 
     devices
+}
+
+fn get_root_acpi_device() -> Option<&'static AcpiDevice> {
+    for (_, device) in acpica::get_device_map().iter() {
+        if device.is_pci_root() {
+            return Some(device);
+        }
+    }
+
+    None
+}
+
+fn enumerate_bus_acpi_devices(
+    bus: u8,
+    device: &'static AcpiDevice,
+    bus_list: &mut Vec<(u8, &'static AcpiDevice)>,
+    dev_map: &mut HashMap<PCIAddress, &'static AcpiDevice>,
+) {
+    bus_list.push((bus, device));
+    for child in device.children() {
+        if let Some(addr) = child.address() {
+            let function = (addr & 0x07) as u8;
+            let dev_id = ((addr >> 16) & 0x1F) as u8;
+
+            let pci_addr = PCIAddress::new(0, bus, dev_id, function);
+            if dev_map.insert(pci_addr, child).is_some() {
+                panic!("PCI address collision in dev map");
+            }
+
+            let (major_class, minor_class, _) = read_class(0, bus, dev_id, function);
+            if (major_class != 0x06) || (minor_class != 0x04) {
+                // not a PCI-PCI bridge
+                continue;
+            }
+
+            let child_bus = get_secondary_bus(0, bus, dev_id, function);
+            enumerate_bus_acpi_devices(child_bus, child, bus_list, dev_map);
+        }
+    }
+}
+
+// Enumerate all PCI devices in the ACPI namespace.
+pub fn enumerate_acpi() {
+    let mut bus_list = Vec::new();
+    let mut dev_map: HashMap<PCIAddress, &'static AcpiDevice> = HashMap::new();
+    let root = get_root_acpi_device().expect("could not find ACPI device for PCI root bridge");
+
+    // Assume that the root bridge is bus 0.
+    enumerate_bus_acpi_devices(0, root, &mut bus_list, &mut dev_map);
+
+    if ACPI_BUS_LIST.set(bus_list).is_err() {
+        panic!("already initialized");
+    }
+
+    if ACPI_MAP.set(dev_map).is_err() {
+        panic!("already initialized");
+    }
 }

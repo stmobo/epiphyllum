@@ -1,5 +1,7 @@
 use alloc_crate::string::String;
 use alloc_crate::vec::Vec;
+use core::fmt;
+use core::fmt::Display;
 use core::mem;
 use core::ptr;
 use core::slice;
@@ -192,7 +194,52 @@ impl AcpiDevice {
     pub fn children(&self) -> DeviceIter {
         DeviceIter::new(self)
     }
+
+    pub fn pci_irq_routing(&self) -> AcpiResult<Vec<PCIRoutingEntry>> {
+        let mut buf = ACPI_BUFFER {
+            Length: u64::MAX,
+            Pointer: ptr::null_mut(),
+        };
+
+        let mut out_vec = Vec::new();
+
+        unsafe {
+            let status = AcpiGetIrqRoutingTable(self.handle, &mut buf);
+            if let Err(e) = *AcpiStatus::from(status) {
+                if !buf.Pointer.is_null() {
+                    os_services::AcpiOsFree(buf.Pointer);
+                }
+
+                return Err(e);
+            }
+
+            let mut offset: usize = 0;
+
+            while offset < buf.Length as usize {
+                let addr = (buf.Pointer as usize) + offset;
+                let entry_ptr = addr as *const ACPI_PCI_ROUTING_TABLE;
+
+                if (*entry_ptr).Length == 0 {
+                    break;
+                }
+
+                if let Ok(entry) = PCIRoutingEntry::new(entry_ptr) {
+                    out_vec.push(entry);
+                } else {
+                    os_services::AcpiOsFree(buf.Pointer);
+                    return Err(AcpiError::AE_ERROR);
+                }
+
+                offset += (*entry_ptr).Length as usize;
+            }
+        }
+
+        Ok(out_vec)
+    }
 }
+
+unsafe impl Send for AcpiDevice {}
+unsafe impl Sync for AcpiDevice {}
 
 pub struct DeviceIter {
     parent: ACPI_HANDLE,
@@ -223,18 +270,89 @@ impl Iterator for DeviceIter {
             ) == AE_OK
             {
                 self.cur_child = out_handle;
-
                 // The device map should contain every ACPI device in the
-                // system, so it is a legitimate error for us to not find the
-                // handle in the map.
-                let dev = get_device_map()
-                    .get(&out_handle)
-                    .expect("device not in enumerated map");
-                Some(dev)
+                // system, so it should be an legitimate error for us to not
+                // find the handle in the map.
+                let res = get_device_map().get(&out_handle);
+
+                if res.is_none() {
+                    let name = get_name(out_handle, true).unwrap();
+                    println!("acpi: could not find device {} in device map?", name);
+                }
+
+                res
             } else {
                 None
             }
         }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(u8)]
+pub enum PCIInterruptPin {
+    LNKA = 0x00,
+    LNKB = 0x01,
+    LNKC = 0x02,
+    LNKD = 0x03,
+}
+
+impl Display for PCIInterruptPin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            PCIInterruptPin::LNKA => write!(f, "LNKA"),
+            PCIInterruptPin::LNKB => write!(f, "LNKB"),
+            PCIInterruptPin::LNKC => write!(f, "LNKC"),
+            PCIInterruptPin::LNKD => write!(f, "LNKD"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PCIRoutingEntry {
+    pin: PCIInterruptPin,
+    address: u64,
+    source: String,
+    source_idx: usize,
+}
+
+impl PCIRoutingEntry {
+    unsafe fn new(table: *const ACPI_PCI_ROUTING_TABLE) -> Result<PCIRoutingEntry, str::Utf8Error> {
+        let address: u64 = (*table).Address;
+        let pin_byte = ((*table).Pin & 0xFF) as u8;
+        let source_idx = ((*table).SourceIndex & 0xFF) as usize;
+
+        assert!(
+            pin_byte <= 0x03,
+            "invalid PCI interrupt pin byte {:02x}",
+            pin_byte
+        );
+        let pin: PCIInterruptPin = mem::transmute(pin_byte);
+
+        let src_ptr = (*table).Source.as_ptr() as *const u8;
+        let src_string_len = ((*table).Length as usize) - 20;
+        let src_bytes = slice::from_raw_parts(src_ptr, src_string_len);
+        let source = String::from(str::from_utf8(src_bytes)?);
+
+        Ok(PCIRoutingEntry {
+            address,
+            pin,
+            source,
+            source_idx,
+        })
+    }
+}
+
+impl Display for PCIRoutingEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "device {:02x}: {} routed via interrupt device {} (index {})",
+            (self.address >> 16) & 0x1F,
+            self.pin,
+            self.source,
+            self.source_idx
+        )
     }
 }
 
@@ -280,9 +398,27 @@ pub fn enumerate_devices() {
     let devices = find_devices(None).expect("could not enumerate devices");
     let mut device_map = AVLTree::new();
 
-    println!("acpi: found {} devices in ACPI namespace", devices.len());
+    println!("acpi: found {} devices in ACPI namespace:", devices.len());
 
     for device in devices {
+        print!("acpi:    {} ", device.full_name());
+
+        if let Some(hid) = device.hardware_id() {
+            print!("[HID: {}] ", hid);
+        } else if let Some(adr) = device.address() {
+            print!("[ADR: {:08x}] ", adr);
+        }
+
+        if let Some(uid) = device.unique_id() {
+            print!("[UID: {}] ", uid);
+        }
+
+        if device.is_pci_root() {
+            println!("[PCI root]");
+        } else {
+            print!("\n");
+        }
+
         if device_map.insert(device.handle, device).is_err() {
             panic!("duplicate device handles found");
         }

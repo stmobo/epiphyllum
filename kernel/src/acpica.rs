@@ -210,7 +210,7 @@ pub mod os_services;
 
 use binding_utils::{buffer_to_string, CalleeAllocatedBuffer};
 use bindings::*;
-pub use device::{find_devices, get_device_map, AcpiDevice};
+pub use device::{find_devices, get_device_map, AcpiDevice, PCIInterruptPin, PCIRoutingEntry};
 
 type AcpiResult<T> = Result<T, AcpiError>;
 

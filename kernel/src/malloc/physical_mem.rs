@@ -512,6 +512,33 @@ pub unsafe fn deallocate_pfn(pfn: usize) {
     KERNEL_PMA.lock().deallocate_block(pfn << 12, 0);
 }
 
+/// Mark a specific page frame as being reserved, if it doesn't already lie
+/// in a reserved memory range and isn't already allocated.
+///
+/// This is equivalent to intentionally leaking a specific page.
+pub unsafe fn reserve_page(addr: usize) -> Result<(), AllocationError> {
+    match KERNEL_PMA.lock().allocate_block_at(addr, 0) {
+        Ok(_) | Err(AllocationError::ReservedMemory) => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Mark a number of pages as being reserved.
+///
+/// See `reserve_page` for more details.
+pub unsafe fn reserve_page_range(addr: usize, n_pages: usize) -> Result<(), AllocationError> {
+    let mut lock = KERNEL_PMA.lock();
+
+    for i in 0..n_pages {
+        match lock.allocate_block_at(addr + (i << 12), 0) {
+            Ok(_) | Err(AllocationError::ReservedMemory) => {}
+            Err(e) => return Err(e),
+        };
+    }
+
+    Ok(())
+}
+
 /// Represents an owned, allocated block of contiguous physical memory.
 ///
 /// This can be used as a safer interface to the physical memory allocator;

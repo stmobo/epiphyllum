@@ -673,7 +673,7 @@ impl PageDirectory {
     /// Does not adjust reference counts for the mapped pages.
     fn gb_map_table(start_addr: usize) -> Result<PageDirectory, AllocationError> {
         let mut pd = PageDirectory::new()?;
-        let start_addr = start_addr & ((1 << 30) - 1);
+        let start_addr = start_addr & !((1 << 30) - 1);
 
         for i in 0..512 {
             let address = start_addr + (i << 21);
@@ -833,7 +833,7 @@ impl PageTable {
     /// Does not adjust reference counts for the mapped pages.
     fn mb_map_table(start_addr: usize) -> Result<PageTable, AllocationError> {
         let mut pt = PageTable::new()?;
-        let start_addr = start_addr & ((1 << 21) - 1);
+        let start_addr = start_addr & !((1 << 21) - 1);
 
         for i in 0..512 {
             let address = start_addr + (i << 12);

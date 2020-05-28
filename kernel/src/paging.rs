@@ -147,6 +147,16 @@ pub fn unmap_pages(vaddr: usize, n_pages: usize) {
     }
 }
 
+pub fn set_page_caching(vaddr: usize, n_pages: usize, caching: CacheType) {
+    if task::scheduler_initialized() {
+        let mut space = task::current_address_space();
+        space.set_caching(vaddr, n_pages, caching);
+    } else {
+        let mut space = unsafe { AddressSpace::current() };
+        space.set_caching(vaddr, n_pages, caching);
+    }
+}
+
 pub fn offset_direct_map<T: TryInto<usize>>(phys_addr: T) -> usize {
     if let Ok(offset) = phys_addr.try_into() {
         PHYSICAL_MAP_BASE + offset

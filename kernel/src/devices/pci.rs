@@ -4,7 +4,6 @@ mod config_space;
 mod device;
 mod enhanced_cam;
 mod enumeration;
-mod host_bridge;
 mod legacy_cam;
 
 pub use address::PCIAddress;

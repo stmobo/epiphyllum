@@ -11,6 +11,7 @@ use super::bindings::*;
 use super::get_name;
 use super::os_services;
 use super::{AcpiError, AcpiResult, AcpiStatus};
+use crate::devices::pci::PCIInterruptPin;
 use crate::lock::OnceCell;
 use crate::structures::AVLTree;
 
@@ -288,26 +289,6 @@ impl Iterator for DeviceIter {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-#[repr(u8)]
-pub enum PCIInterruptPin {
-    LNKA = 0x00,
-    LNKB = 0x01,
-    LNKC = 0x02,
-    LNKD = 0x03,
-}
-
-impl Display for PCIInterruptPin {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            PCIInterruptPin::LNKA => write!(f, "LNKA"),
-            PCIInterruptPin::LNKB => write!(f, "LNKB"),
-            PCIInterruptPin::LNKC => write!(f, "LNKC"),
-            PCIInterruptPin::LNKD => write!(f, "LNKD"),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct PCIRoutingEntry {
     pin: PCIInterruptPin,
@@ -398,9 +379,10 @@ pub fn enumerate_devices() {
     let devices = find_devices(None).expect("could not enumerate devices");
     let mut device_map = AVLTree::new();
 
-    println!("acpi: found {} devices in ACPI namespace:", devices.len());
+    println!("acpi: found {} devices in ACPI namespace", devices.len());
 
     for device in devices {
+        /*
         print!("acpi:    {} ", device.full_name());
 
         if let Some(hid) = device.hardware_id() {
@@ -418,6 +400,7 @@ pub fn enumerate_devices() {
         } else {
             print!("\n");
         }
+        */
 
         if device_map.insert(device.handle, device).is_err() {
             panic!("duplicate device handles found");

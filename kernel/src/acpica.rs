@@ -209,9 +209,10 @@ pub mod mcfg;
 #[allow(non_snake_case)]
 pub mod os_services;
 
+pub use crate::devices::pci::PCIInterruptPin;
 use binding_utils::{buffer_to_string, CalleeAllocatedBuffer};
 use bindings::*;
-pub use device::{find_devices, get_device_map, AcpiDevice, PCIInterruptPin, PCIRoutingEntry};
+pub use device::{find_devices, get_device_map, AcpiDevice, PCIRoutingEntry};
 
 type AcpiResult<T> = Result<T, AcpiError>;
 

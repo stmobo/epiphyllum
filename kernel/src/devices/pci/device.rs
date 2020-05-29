@@ -1,4 +1,3 @@
-use alloc_crate::boxed::Box;
 use alloc_crate::sync::{Arc, Weak};
 use alloc_crate::vec::Vec;
 use core::fmt;
@@ -17,18 +16,18 @@ use super::enumeration;
 use super::PCIAddress;
 
 static DEVICES: OnceCell<HashMap<PCIAddress, Arc<PCIDevice>>> = OnceCell::new();
-static ROOT_BUSSES: OnceCell<Vec<PCIBus>> = OnceCell::new();
+static ROOT_BUSSES: OnceCell<Vec<Arc<PCIBus>>> = OnceCell::new();
 
 pub struct PCIDevice {
     address: PCIAddress,
-    parent: Option<Weak<PCIDevice>>,
     device_id: u16,
     vendor_id: u16,
     major_class: u8,
     minor_class: u8,
     prog_if: u8,
     bars: Vec<BAR>,
-    bus_data: OnceCell<Option<Box<PCIBus>>>,
+    parent_bus: Option<Weak<PCIBus>>,
+    child_bus: OnceCell<Option<Arc<PCIBus>>>,
     acpi_device: Option<&'static AcpiDevice>,
 }
 
@@ -38,7 +37,7 @@ impl PCIDevice {
         bus: u8,
         device: u8,
         function: u8,
-        parent: Option<Weak<PCIDevice>>,
+        parent_bus: Option<Weak<PCIBus>>,
     ) -> Arc<PCIDevice> {
         let address = PCIAddress::new(segment, bus, device, function);
         let (major_class, minor_class, prog_if) =
@@ -142,9 +141,9 @@ impl PCIDevice {
             vendor_id,
             device_id,
             bars,
-            bus_data: OnceCell::new(),
+            child_bus: OnceCell::new(),
             acpi_device,
-            parent,
+            parent_bus,
         });
 
         if (major_class == 0x06) && (minor_class == 0x04) {
@@ -156,10 +155,10 @@ impl PCIDevice {
             );
 
             let weak = Arc::downgrade(&device_info);
-            let bus_info = Box::new(PCIBus::new(segment, secondary_bus, Some(&weak)));
-            assert!(device_info.bus_data.set(Some(bus_info)).is_ok());
+            let bus_info = PCIBus::new(segment, secondary_bus, Some(&weak));
+            assert!(device_info.child_bus.set(Some(bus_info)).is_ok());
         } else {
-            assert!(device_info.bus_data.set(None).is_ok());
+            assert!(device_info.child_bus.set(None).is_ok());
         }
 
         device_info
@@ -189,21 +188,21 @@ impl PCIDevice {
         self.prog_if
     }
 
-    fn bus_data(&self) -> Option<&PCIBus> {
-        self.bus_data.get().unwrap().as_deref()
+    fn bridge_data(&self) -> Option<&PCIBus> {
+        self.child_bus.get().unwrap().as_deref()
     }
 
     pub fn is_bridge(&self) -> bool {
-        self.bus_data().is_some()
+        self.bridge_data().is_some()
     }
 
     pub fn secondary_bus(&self) -> Option<u8> {
-        let r = self.bus_data()?;
+        let r = self.bridge_data()?;
         Some(r.bus_id())
     }
 
     pub fn child_devices(&self) -> Option<&Vec<Arc<PCIDevice>>> {
-        let r = self.bus_data()?;
+        let r = self.bridge_data()?;
         Some(r.devices())
     }
 }
@@ -373,12 +372,21 @@ impl Display for PCIInterruptPin {
 pub struct PCIBus {
     segment: u16,
     secondary_bus: u8,
-    devices: Vec<Arc<PCIDevice>>,
+    devices: OnceCell<Vec<Arc<PCIDevice>>>,
+    bridge: Option<Weak<PCIDevice>>,
 }
 
 impl PCIBus {
-    fn new(segment: u16, bus: u8, bridge: Option<&Weak<PCIDevice>>) -> PCIBus {
+    fn new(segment: u16, bus: u8, bridge: Option<&Weak<PCIDevice>>) -> Arc<PCIBus> {
+        let obj = Arc::new(PCIBus {
+            segment,
+            secondary_bus: bus,
+            devices: OnceCell::new(),
+            bridge: bridge.cloned(),
+        });
+
         let mut devices = Vec::new();
+        let parent_bus = Arc::downgrade(&obj);
 
         for device in 0..32 {
             if !enumeration::device_present(segment, bus, device, 0) {
@@ -386,24 +394,32 @@ impl PCIBus {
                 continue;
             }
 
-            let parent = bridge.cloned();
-            devices.push(PCIDevice::new(segment, bus, device, 0, parent));
+            devices.push(PCIDevice::new(
+                segment,
+                bus,
+                device,
+                0,
+                Some(parent_bus.clone()),
+            ));
 
             if enumeration::is_multi_function(segment, bus, device, 0) {
                 for function in 1..8 {
-                    let parent = bridge.cloned();
                     if enumeration::device_present(segment, bus, device, function) {
-                        devices.push(PCIDevice::new(segment, bus, device, function, parent));
+                        devices.push(PCIDevice::new(
+                            segment,
+                            bus,
+                            device,
+                            function,
+                            Some(parent_bus.clone()),
+                        ));
                     }
                 }
             }
         }
 
-        PCIBus {
-            segment,
-            secondary_bus: bus,
-            devices,
-        }
+        assert!(obj.devices.set(devices).is_ok());
+
+        obj
     }
 
     pub fn segment_id(&self) -> u16 {
@@ -414,13 +430,17 @@ impl PCIBus {
         self.secondary_bus
     }
 
+    pub fn bridge(&self) -> Option<Arc<PCIDevice>> {
+        self.bridge.clone().and_then(|weak| weak.upgrade())
+    }
+
     pub fn devices(&self) -> &Vec<Arc<PCIDevice>> {
-        &self.devices
+        self.devices.get().unwrap()
     }
 }
 
 pub fn enumerate_devices() {
-    let mut root_busses: Vec<PCIBus> = Vec::new();
+    let mut root_busses: Vec<Arc<PCIBus>> = Vec::new();
 
     if enhanced_cam::ecam_supported() {
         for (segment, busses) in enhanced_cam::busses() {
@@ -480,12 +500,12 @@ fn init_pci_map(cur: &Arc<PCIDevice>, map: &mut HashMap<PCIAddress, Arc<PCIDevic
     }
 }
 
-fn print_pci_topology(roots: &Vec<PCIBus>) {
+fn print_pci_topology(roots: &Vec<Arc<PCIBus>>) {
     for bus in roots.iter() {
         let mut device_count = Vec::new();
 
         print!("pci: [{:04x}:{:02x}]-", bus.segment_id(), bus.bus_id());
-        print_pci_topology_bus(bus, &mut device_count);
+        print_pci_topology_bus(&*bus, &mut device_count);
         print!("\n");
     }
 }
@@ -541,7 +561,7 @@ fn print_pci_topology_device(
     }
 
     print!("-[{:02x}]-", device.secondary_bus().unwrap());
-    print_pci_topology_bus(device.bus_data().unwrap(), device_count);
+    print_pci_topology_bus(device.bridge_data().unwrap(), device_count);
 }
 
 fn print_pci_topology_indent(device_count: &Vec<usize>) {

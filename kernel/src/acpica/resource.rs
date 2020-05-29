@@ -1039,6 +1039,11 @@ unsafe extern "C" fn walk_resource_callback(
 ) -> ACPI_STATUS {
     match ResourceBox::new(resource) {
         Ok(data) => {
+            if data.resource_type == AcpiResourceType::EndTag {
+                // don't add the EndTag to the returned device resource list
+                return AE_OK;
+            }
+
             let out_list = &mut *(context as *mut Vec<Resource>);
             out_list.push(Resource { data });
         }

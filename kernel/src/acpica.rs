@@ -214,7 +214,7 @@ pub use crate::devices::pci::PCIInterruptPin;
 use binding_utils::{buffer_to_string, CalleeAllocatedBuffer};
 pub use bindings::AcpiError;
 use bindings::*;
-pub use device::{find_devices, get_device_map, AcpiDevice, PCIRoutingEntry};
+pub use device::{find_devices, get_device_map, AcpiDevice, PCIInterruptSource, PCIRoutingEntry};
 
 type AcpiResult<T> = Result<T, AcpiError>;
 

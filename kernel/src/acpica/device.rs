@@ -1,7 +1,7 @@
 use alloc_crate::string::String;
 use alloc_crate::vec::Vec;
 use core::fmt;
-use core::fmt::Display;
+use core::fmt::{Debug, Display};
 use core::mem;
 use core::ptr;
 use core::slice;
@@ -11,7 +11,7 @@ use super::bindings::*;
 use super::get_name;
 use super::os_services;
 use super::resource;
-use super::Resource;
+use super::resource::{AcpiResource, Resource};
 use super::{AcpiError, AcpiResult, AcpiStatus};
 use crate::devices::pci::PCIInterruptPin;
 use crate::lock::OnceCell;
@@ -226,7 +226,7 @@ impl AcpiDevice {
                     break;
                 }
 
-                if let Ok(entry) = PCIRoutingEntry::new(entry_ptr) {
+                if let Ok(entry) = PCIRoutingEntry::new(self.handle, entry_ptr) {
                     out_vec.push(entry);
                 } else {
                     os_services::AcpiOsFree(buf.Pointer);
@@ -240,17 +240,99 @@ impl AcpiDevice {
         Ok(out_vec)
     }
 
-    pub fn possible_resources(&self) -> AcpiResult<Vec<Resource>> {
+    pub fn all_possible_resources(&self) -> AcpiResult<Vec<Resource>> {
         resource::walk_resources(self.handle(), false)
     }
 
-    pub fn current_resources(&self) -> AcpiResult<Vec<Resource>> {
+    pub fn all_current_resources(&self) -> AcpiResult<Vec<Resource>> {
         resource::walk_resources(self.handle(), true)
+    }
+
+    pub fn possible_resources<T: AcpiResource>(&self) -> AcpiResult<Vec<T>> {
+        let mut filtered = Vec::new();
+
+        for resource in self.all_possible_resources()? {
+            if let Ok(parsed) = resource.parse::<T>() {
+                filtered.push(parsed);
+            }
+        }
+
+        Ok(filtered)
+    }
+
+    pub fn current_resources<T: AcpiResource>(&self) -> AcpiResult<Vec<T>> {
+        let mut filtered = Vec::new();
+
+        for resource in self.all_current_resources()? {
+            if let Ok(parsed) = resource.parse::<T>() {
+                filtered.push(parsed);
+            }
+        }
+
+        Ok(filtered)
     }
 }
 
 unsafe impl Send for AcpiDevice {}
 unsafe impl Sync for AcpiDevice {}
+
+impl Debug for AcpiDevice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AcpiDevice")
+            .field("handle", &(self.handle as usize))
+            .field("full_name", &self.full_name)
+            .field("single_name", &self.single_name)
+            .field("hardware_id", &self.hardware_id)
+            .field("unique_id", &self.unique_id)
+            .field("address", &self.address)
+            .field("compatible_ids", &self.compatible_ids)
+            .field("highest_d_states", &self.highest_d_states)
+            .field("lowest_d_states", &self.lowest_d_states)
+            .field("is_pci_root", &self.is_pci_root)
+            .finish()
+    }
+}
+
+impl Display for AcpiDevice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.full_name)?;
+
+        if self.hardware_id.is_some() || self.address.is_some() || self.unique_id.is_some() {
+            write!(f, " (")?;
+
+            let hid_adr: bool;
+            if let Some(hid) = self.hardware_id.as_deref() {
+                write!(f, "{}", hid)?;
+                hid_adr = true;
+            } else if let Some(adr) = self.address {
+                write!(f, "{:08x}", adr)?;
+                hid_adr = true;
+            } else {
+                hid_adr = false;
+            }
+
+            if let Some(uid) = self.unique_id.as_deref() {
+                if hid_adr {
+                    write!(f, ", {}", uid)?;
+                } else {
+                    write!(f, "{}", uid)?;
+                }
+            }
+
+            write!(f, ")")?;
+        }
+
+        Ok(())
+    }
+}
+
+impl PartialEq for AcpiDevice {
+    fn eq(&self, other: &AcpiDevice) -> bool {
+        (self.handle as usize) == (other.handle as usize)
+    }
+}
+
+impl Eq for AcpiDevice {}
 
 pub struct DeviceIter {
     parent: ACPI_HANDLE,
@@ -299,19 +381,26 @@ impl Iterator for DeviceIter {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum PCIInterruptSource {
+    Device(&'static AcpiDevice),
+    Hardwired(u8),
+}
+
 #[derive(Debug, Clone)]
 pub struct PCIRoutingEntry {
     pin: PCIInterruptPin,
     address: u64,
-    source: String,
-    source_idx: usize,
+    source: PCIInterruptSource,
 }
 
 impl PCIRoutingEntry {
-    unsafe fn new(table: *const ACPI_PCI_ROUTING_TABLE) -> Result<PCIRoutingEntry, str::Utf8Error> {
+    unsafe fn new(
+        parent: ACPI_HANDLE,
+        table: *const ACPI_PCI_ROUTING_TABLE,
+    ) -> Result<PCIRoutingEntry, str::Utf8Error> {
         let address: u64 = (*table).Address;
         let pin_byte = ((*table).Pin & 0xFF) as u8;
-        let source_idx = ((*table).SourceIndex & 0xFF) as usize;
 
         assert!(
             pin_byte <= 0x03,
@@ -320,30 +409,76 @@ impl PCIRoutingEntry {
         );
         let pin: PCIInterruptPin = mem::transmute(pin_byte);
 
-        let src_ptr = (*table).Source.as_ptr() as *const u8;
-        let src_string_len = ((*table).Length as usize) - 20;
-        let src_bytes = slice::from_raw_parts(src_ptr, src_string_len);
-        let source = String::from(str::from_utf8(src_bytes)?);
+        let source: PCIInterruptSource;
+        if ((*table).SourceIndex & 0xFF) != 0 {
+            // Assume this references a hardwired GSI.
+            // Note: technically, if Source is non-null, this might be an index
+            // into the resource template for the device referenced by the
+            // Source pointer.
+            //
+            // But, some firmware is broken and has a non-null Source string
+            // even though they use hardwired GSIs.
+            // So we just assume all non-zero SourceIndex values indicate
+            // hardwired GSIs. (FreeBSD does this.)
+            source = PCIInterruptSource::Hardwired(((*table).SourceIndex & 0xFF) as u8);
+        } else {
+            // Look up the device handle relative to this device.
+            let src_ptr = (*table).Source.as_ptr();
+            assert!(!src_ptr.is_null());
+
+            let mut device_handle: ACPI_HANDLE = ptr::null_mut();
+            let status = AcpiGetHandle(parent, mem::transmute(src_ptr), &mut device_handle);
+
+            let src_string_len = ((*table).Length as usize) - 20;
+            let src_bytes = slice::from_raw_parts(src_ptr as *const u8, src_string_len);
+            let src_name = String::from(str::from_utf8(src_bytes)?);
+
+            if status != AE_OK {
+                panic!(
+                    "could not find linked interrupt source device {}: {:?}",
+                    src_name,
+                    AcpiStatus::from(status)
+                );
+            }
+
+            let map = DEVICES.get().expect("not initialized");
+            let device = match map.get(&device_handle) {
+                Some(d) => d,
+                None => panic!("could not find handle for interrupt device {}", src_name),
+            };
+            source = PCIInterruptSource::Device(device);
+        }
 
         Ok(PCIRoutingEntry {
             address,
             pin,
             source,
-            source_idx,
         })
+    }
+
+    pub fn pin(&self) -> PCIInterruptPin {
+        self.pin
+    }
+
+    pub fn device_id(&self) -> u8 {
+        ((self.address >> 16) & 0x1F) as u8
+    }
+
+    pub fn interrupt_source(&self) -> PCIInterruptSource {
+        self.source
     }
 }
 
 impl Display for PCIRoutingEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "device {:02x}: {} routed via interrupt device {} (index {})",
-            (self.address >> 16) & 0x1F,
-            self.pin,
-            self.source,
-            self.source_idx
-        )
+        write!(f, "device {:02x}: {} ", self.device_id(), self.pin)?;
+
+        match self.source {
+            PCIInterruptSource::Device(link_device) => {
+                write!(f, "routed via interrupt device {}", link_device)
+            }
+            PCIInterruptSource::Hardwired(gsi) => write!(f, "hardwired to GSI {}", gsi),
+        }
     }
 }
 

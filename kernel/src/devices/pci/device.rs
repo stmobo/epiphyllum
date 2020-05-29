@@ -524,8 +524,8 @@ fn init_pci_map(cur: &Arc<PCIDevice>, map: &mut HashMap<PCIAddress, Arc<PCIDevic
     }
 }
 
-/// Displays the PCI topology rooted at this device in an lspci-ish tree form.
-fn print_pci_topology(cur: &Arc<PCIDevice>, level: u64) {
+/// Displays the PCI topology rooted at this device in an lspci-ish tree.
+fn print_pci_topology(cur: &Arc<PCIDevice>, level: u64, is_last_child: bool) {
     print!("pci: ");
 
     for _ in 0..level {
@@ -556,10 +556,10 @@ fn print_pci_topology_child(cur: &Arc<PCIDevice>, level: u64) {
                 print_pci_topology_child(&children[0], level + 1);
 
                 for i in 1..(children.len() - 1) {
-                    print_pci_topology(&children[i], level + 1);
+                    print_pci_topology(&children[i], level + 1, false);
                 }
 
-                print_pci_topology(&children[children.len() - 1], level + 1);
+                print_pci_topology(&children[children.len() - 1], level + 1, true);
             } else {
                 print!("-[{:02x}]---", bus);
                 print_pci_topology_child(&children[0], level + 1);

@@ -10,6 +10,8 @@ use core::str;
 use super::bindings::*;
 use super::get_name;
 use super::os_services;
+use super::resource;
+use super::Resource;
 use super::{AcpiError, AcpiResult, AcpiStatus};
 use crate::devices::pci::PCIInterruptPin;
 use crate::lock::OnceCell;
@@ -236,6 +238,14 @@ impl AcpiDevice {
         }
 
         Ok(out_vec)
+    }
+
+    pub fn possible_resources(&self) -> AcpiResult<Vec<Resource>> {
+        resource::walk_resources(self.handle(), false)
+    }
+
+    pub fn current_resources(&self) -> AcpiResult<Vec<Resource>> {
+        resource::walk_resources(self.handle(), true)
     }
 }
 

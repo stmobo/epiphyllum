@@ -205,12 +205,14 @@ mod binding_utils;
 mod device;
 pub mod madt;
 pub mod mcfg;
+pub mod resource;
 
 #[allow(non_snake_case)]
 pub mod os_services;
 
 pub use crate::devices::pci::PCIInterruptPin;
 use binding_utils::{buffer_to_string, CalleeAllocatedBuffer};
+pub use bindings::AcpiError;
 use bindings::*;
 pub use device::{find_devices, get_device_map, AcpiDevice, PCIRoutingEntry};
 

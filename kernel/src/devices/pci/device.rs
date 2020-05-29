@@ -374,15 +374,34 @@ pub struct PCIBus {
     secondary_bus: u8,
     devices: OnceCell<Vec<Arc<PCIDevice>>>,
     bridge: Option<Weak<PCIDevice>>,
+    acpi_device: &'static AcpiDevice,
 }
 
 impl PCIBus {
     fn new(segment: u16, bus: u8, bridge: Option<&Weak<PCIDevice>>) -> Arc<PCIBus> {
+        let acpi_device = if let Some(dev) = bridge {
+            // get the ACPI device for the parent bridge
+            let dev = dev.upgrade().unwrap();
+            if let Some(acpi_device) = dev.acpi_device {
+                acpi_device
+            } else {
+                panic!(
+                    "could not find ACPI device for PCI bus {:04x}:{:02x}",
+                    segment, bus
+                );
+            }
+        } else {
+            // This is a root bus, so get the ACPI device for the root bridge
+            // (i.e. \_SB_.PCI0)
+            acpi::get_root_bridge_device()
+        };
+
         let obj = Arc::new(PCIBus {
             segment,
             secondary_bus: bus,
             devices: OnceCell::new(),
             bridge: bridge.cloned(),
+            acpi_device,
         });
 
         let mut devices = Vec::new();
@@ -442,6 +461,8 @@ impl PCIBus {
 pub fn enumerate_devices() {
     let mut root_busses: Vec<Arc<PCIBus>> = Vec::new();
 
+    println!("pci: enumerating PCI bus topology...");
+
     if enhanced_cam::ecam_supported() {
         for (segment, busses) in enhanced_cam::busses() {
             for bus in busses {
@@ -463,6 +484,13 @@ pub fn enumerate_devices() {
             // Single PCI host controller
             root_busses.push(PCIBus::new(0, 0, None));
         }
+    }
+
+    assert!(root_busses.len() > 0, "could not find any PCI root busses?");
+    if root_busses.len() == 1 {
+        println!("pci: enumerated 1 root bus");
+    } else {
+        println!("pci: enumerated {} root busses", root_busses.len());
     }
 
     if ROOT_BUSSES.set(root_busses).is_err() {

@@ -1,10 +1,13 @@
 //! Intel 8529A-compatible and APIC support.
 
+use crate::acpica;
 use crate::acpica::madt::MADT;
 use crate::asm::{msr, ports};
+use crate::interrupts;
 use crate::lock::{LockedGlobal, NoIRQSpinlock, NoIRQSpinlockGuard};
 
-use crate::paging::PhysicalPointer;
+use crate::paging;
+use crate::paging::{CacheType, PhysicalPointer};
 
 use alloc_crate::vec::Vec;
 use core::ptr;
@@ -16,9 +19,6 @@ static GSI_LIST: LockedGlobal<Vec<io_apic::GSIEntry>> = LockedGlobal::new();
 
 const PIC1: u16 = 0x0020;
 const PIC2: u16 = 0x00A0;
-
-const ISA_IRQ_BASE: u8 = 0x20;
-const DEFAULT_IRQ_BASE: u8 = 0x50;
 
 fn initialize_8529() {
     unsafe {
@@ -78,8 +78,12 @@ pub mod local_apic {
                 base_phys_addr
             });
 
-            let base = unsafe { PhysicalPointer::<u32>::new_unchecked(base_addr).as_mut_ptr() };
-            LocalAPIC { base }
+            let base = unsafe { PhysicalPointer::<u32>::new_unchecked(base_addr) };
+            paging::set_page_caching(base.virtual_address(), 1, CacheType::Uncacheable);
+
+            LocalAPIC {
+                base: base.as_mut_ptr(),
+            }
         }
 
         pub fn processor_id(&self) -> u8 {
@@ -368,28 +372,29 @@ pub mod io_apic {
                             continue;
                         }
 
-                        let vector = ISA_IRQ_BASE + irq_override.irq_src;
-                        entry.set_vector(vector);
+                        let vector = Self::init_acpi_vector_entry(&mut entry, gsi);
                         entry.set_pin_polarity(irq_override.active_low);
                         entry.set_trigger_mode(irq_override.level_triggered);
 
                         gsi_list.push(GSIEntry {
                             gsi,
                             vector,
+                            isa_irq: Some(irq_override.irq_src),
                             io_apic_id: self.id(),
                         });
                     } else {
                         // Assume this IRQ/GSI should be identity-mapped onto
                         // the corresponding ISA interrupt number
                         // (ISA interrupts are edge-triggered and active-high)
-                        let vector = ISA_IRQ_BASE + gsi;
-                        entry.set_vector(vector);
+
+                        let vector = Self::init_acpi_vector_entry(&mut entry, gsi);
                         entry.set_pin_polarity(false);
                         entry.set_trigger_mode(false);
 
                         gsi_list.push(GSIEntry {
                             gsi,
                             vector,
+                            isa_irq: Some(gsi),
                             io_apic_id: self.id(),
                         });
                     }
@@ -403,15 +408,9 @@ pub mod io_apic {
                 // IOAPIC
                 for gsi in max..max_irq {
                     let idx = gsi - min_irq;
-                    let vector = if gsi < 16 {
-                        ISA_IRQ_BASE + gsi
-                    } else {
-                        DEFAULT_IRQ_BASE + gsi
-                    };
-
                     let mut entry = RedirectionEntry::new();
 
-                    entry.set_vector(vector);
+                    let vector = Self::init_acpi_vector_entry(&mut entry, gsi);
                     entry.set_masked(true);
                     entry.set_destination_apic(0);
                     self.set_redirection_entry(idx, entry).unwrap();
@@ -419,6 +418,7 @@ pub mod io_apic {
                     gsi_list.push(GSIEntry {
                         gsi,
                         vector,
+                        isa_irq: None,
                         io_apic_id: self.id(),
                     });
                 }
@@ -429,10 +429,9 @@ pub mod io_apic {
 
                 for gsi in min_irq..max_irq {
                     let idx = gsi - min_irq;
-                    let vector = DEFAULT_IRQ_BASE + gsi;
                     let mut entry = RedirectionEntry::new();
 
-                    entry.set_vector(vector);
+                    let vector = Self::init_acpi_vector_entry(&mut entry, gsi);
                     entry.set_masked(true);
                     entry.set_destination_apic(0);
                     self.set_redirection_entry(idx, entry).unwrap();
@@ -440,10 +439,32 @@ pub mod io_apic {
                     gsi_list.push(GSIEntry {
                         gsi,
                         vector,
+                        isa_irq: None,
                         io_apic_id: self.id(),
                     });
                 }
             }
+        }
+
+        fn init_acpi_vector_entry(entry: &mut RedirectionEntry, gsi: u8) -> Option<u8> {
+            // If ACPI registered an SCI handler here, register it
+            // with the interrupt allocator and configure that vector
+            // in the IOAPIC
+
+            let vector = acpica::get_acpi_isr_vector(gsi as u32);
+            if let Some(v) = vector {
+                println!(
+                    "ioapic: registered ACPI SCI vector {:#04x} for GSI {}",
+                    v, gsi
+                );
+
+                entry.set_vector(v);
+                interrupts::allocate_specific(v, false).unwrap();
+            } else {
+                entry.set_vector(32 + gsi);
+            }
+
+            vector
         }
 
         fn initialize_list() -> Vec<(u8, NoIRQSpinlock<IOAPIC>)> {
@@ -452,8 +473,10 @@ pub mod io_apic {
 
             for io_apic in madt.io_apics.iter() {
                 let paddr = io_apic.address as usize;
-                let base_addr =
-                    unsafe { PhysicalPointer::<u32>::new_unchecked(paddr).as_mut_ptr() };
+                let phys_ptr = unsafe { PhysicalPointer::<u32>::new_unchecked(paddr) };
+                let base_addr = phys_ptr.as_mut_ptr();
+
+                paging::set_page_caching(phys_ptr.virtual_address(), 1, CacheType::Uncacheable);
 
                 let mut s = IOAPIC {
                     base_addr,
@@ -538,7 +561,10 @@ pub mod io_apic {
 
         pub fn mask_interrupt(irq: u8, masked: bool) -> Result<bool, u8> {
             let mut gsi_list = GSI_LIST.lock();
-            let entry = gsi_list.iter_mut().find(|e| e.vector == irq).ok_or(irq)?;
+            let entry = gsi_list
+                .iter_mut()
+                .find(|e| e.vector == Some(irq))
+                .ok_or(irq)?;
 
             Ok(entry.set_masked(masked))
         }
@@ -556,11 +582,28 @@ pub mod io_apic {
             Ok(())
         }
 
-        pub fn get_gsi_vector(gsi: u8) -> Result<u8, u8> {
+        pub unsafe fn set_gsi_vector(gsi: u8, vector: u8) -> Result<(), u8> {
+            let mut gsi_list = GSI_LIST.lock();
+            let entry = gsi_list.iter_mut().find(|e| e.gsi == gsi).ok_or(gsi)?;
+
+            println!("ioapic: configured GSI {} to vector {:#04x}", gsi, vector);
+
+            entry.set_vector(vector);
+            Ok(())
+        }
+
+        pub fn get_gsi_vector(gsi: u8) -> Result<Option<u8>, u8> {
             let gsi_list = GSI_LIST.lock();
             let entry = gsi_list.iter().find(|e| e.gsi == gsi).ok_or(gsi)?;
 
             Ok(entry.vector)
+        }
+
+        pub fn isa_irq_to_gsi(irq: u8) -> Option<u8> {
+            let gsi_list = GSI_LIST.lock();
+            let entry = gsi_list.iter().find(|e| e.isa_irq == Some(irq))?;
+
+            Some(entry.gsi)
         }
     }
 
@@ -569,7 +612,8 @@ pub mod io_apic {
 
     pub struct GSIEntry {
         gsi: u8,
-        vector: u8,
+        vector: Option<u8>,
+        isa_irq: Option<u8>,
         io_apic_id: u8,
     }
 
@@ -599,6 +643,22 @@ pub mod io_apic {
 
             apic.set_redirection_entry(idx, entry)
                 .expect("could not set redirection entry for IRQ");
+        }
+
+        fn set_vector(&mut self, vector: u8) {
+            let mut apic = self.get_io_apic().unwrap();
+            let idx = self.gsi - apic.irq_base();
+
+            let mut entry = apic
+                .get_redirection_entry(idx)
+                .expect("could not get redirection entry for IRQ");
+
+            entry.set_vector(vector);
+
+            apic.set_redirection_entry(idx, entry)
+                .expect("could not set redirection entry for IRQ");
+
+            self.vector = Some(vector);
         }
 
         fn set_masked(&mut self, masked: bool) -> bool {

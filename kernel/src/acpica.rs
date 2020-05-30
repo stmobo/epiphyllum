@@ -215,6 +215,7 @@ use binding_utils::{buffer_to_string, CalleeAllocatedBuffer};
 pub use bindings::AcpiError;
 use bindings::*;
 pub use device::{find_devices, get_device_map, AcpiDevice, PCIInterruptSource, PCIRoutingEntry};
+pub use os_services::get_acpi_isr_vector;
 
 pub type AcpiResult<T> = Result<T, AcpiError>;
 

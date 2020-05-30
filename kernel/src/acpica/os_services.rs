@@ -615,17 +615,18 @@ pub struct ISRData {
 }
 
 impl ISRData {
-    fn isr_address(routine: ACPI_OSD_HANDLER) -> usize {
-        routine.unwrap() as usize
-    }
-
-    fn new(irq_no: u8, handler: ACPI_OSD_HANDLER, context: *mut cty::c_void) -> ISRData {
+    fn new(
+        handler: ACPI_OSD_HANDLER,
+        context: *mut cty::c_void,
+    ) -> Result<ISRData, interrupts::InterruptAllocationError> {
         // type is "unsafe extern "C" fn(Context: *mut cty::c_void) -> UINT32"
         let func = handler.unwrap();
         let context = ISRContext(context);
 
-        let isr =
-            interrupts::register_handler(irq_no, move || -> interrupts::InterruptHandlerStatus {
+        interrupts::register_handler(
+            None,
+            false,
+            move || -> interrupts::InterruptHandlerStatus {
                 unsafe {
                     if func(context.0) == ACPI_INTERRUPT_HANDLED {
                         interrupts::InterruptHandlerStatus::Handled
@@ -633,15 +634,20 @@ impl ISRData {
                         interrupts::InterruptHandlerStatus::NotHandled
                     }
                 }
-            });
-
-        ISRData { isr, context }
+            },
+        )
+        .map(|isr| ISRData { isr, context })
     }
 }
 
-static ACPI_ISR_MAP: LockedGlobal<BTreeMap<usize, ISRData>> = LockedGlobal::new();
+static ACPI_ISR_MAP: LockedGlobal<BTreeMap<u32, ISRData>> = LockedGlobal::new();
 pub fn init_isr_map() {
     ACPI_ISR_MAP.init(BTreeMap::new);
+}
+
+pub fn get_acpi_isr_vector(gsi: u32) -> Option<u8> {
+    let map = ACPI_ISR_MAP.lock();
+    map.get(&gsi).map(|isr| isr.isr.interrupt_vector())
 }
 
 #[no_mangle]
@@ -654,16 +660,23 @@ pub extern "C" fn AcpiOsInstallInterruptHandler(
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
-    let isr_addr = ISRData::isr_address(ServiceRoutine);
     let mut map = ACPI_ISR_MAP.lock();
-    if map.contains_key(&isr_addr) {
+    if map.contains_key(&InterruptNumber) {
         return AcpiError::AE_ALREADY_EXISTS.into();
     }
 
-    let data = ISRData::new(InterruptNumber as u8, ServiceRoutine, Context);
-    map.insert(isr_addr, data);
+    if let Ok(data) = ISRData::new(ServiceRoutine, Context) {
+        // TODO: get this to update data tracked by the interrupt allocator
+        println!(
+            "acpi: registered SCI handler for interrupt {:#04x}",
+            InterruptNumber
+        );
 
-    AE_OK
+        map.insert(InterruptNumber, data);
+        AE_OK
+    } else {
+        AcpiError::AE_ALREADY_EXISTS.into()
+    }
 }
 
 #[no_mangle]
@@ -675,10 +688,9 @@ pub extern "C" fn AcpiOsRemoveInterruptHandler(
         return AcpiError::AE_BAD_PARAMETER.into();
     }
 
-    let isr_addr = ISRData::isr_address(ServiceRoutine);
     let mut map = ACPI_ISR_MAP.lock();
 
-    if let Some(isr) = map.remove(&isr_addr) {
+    if let Some(isr) = map.remove(&InterruptNumber) {
         drop(isr);
         AE_OK
     } else {

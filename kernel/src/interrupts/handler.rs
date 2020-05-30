@@ -3,12 +3,22 @@ use alloc_crate::boxed::Box;
 use super::exceptions;
 use super::InterruptFrame;
 use crate::devices::pic::local_apic;
+use crate::lock::NoIRQSpinlock;
 use crate::structures::handle_list::NodeHandle;
 use crate::structures::HandleList;
 
 static HANDLERS: [HandleList<BoxedInterruptHandler>; 255] = [HandleList::new(); 255];
+static HANDLER_STATUS: NoIRQSpinlock<[InterruptAllocation; 255]> =
+    NoIRQSpinlock::new([InterruptAllocation::Unallocated; 255]);
 
 type BoxedInterruptHandler = Box<dyn (FnMut() -> InterruptHandlerStatus) + Send + 'static>;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum InterruptAllocation {
+    Unallocated,
+    Exclusive,
+    Shared(usize),
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum InterruptHandlerStatus {
@@ -16,15 +26,159 @@ pub enum InterruptHandlerStatus {
     NotHandled,
 }
 
-pub struct IRQHandler(NodeHandle<'static, BoxedInterruptHandler>);
+pub struct IRQHandler(u8, NodeHandle<'static, BoxedInterruptHandler>);
 
-pub fn register_handler<T>(interrupt_no: u8, handler: T) -> IRQHandler
+impl IRQHandler {
+    pub fn interrupt_vector(&self) -> u8 {
+        self.0
+    }
+}
+
+impl Drop for IRQHandler {
+    fn drop(&mut self) {
+        let mut lock = HANDLER_STATUS.lock();
+        unsafe {
+            remove_interrupt_allocation(&mut *lock, self.0);
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum InterruptAllocationError {
+    NoFreeInterrupts,
+    AlreadyAllocated,
+}
+
+/// Increments the number of allocations for the given interrupt by one.
+///
+/// If `exclusive` is true, then the given interrupt will also be allocated
+/// exclusively.
+///
+/// On success, returns the new number of allocations for that interrupt.
+/// On error, returns the current (unchanged) allocation state for the
+/// interrupt.
+fn add_interrupt_allocation(
+    allocs: &mut [InterruptAllocation],
+    interrupt: u8,
+    exclusive: bool,
+) -> Result<usize, InterruptAllocation> {
+    let idx = interrupt as usize;
+    match allocs[idx] {
+        InterruptAllocation::Exclusive => Err(allocs[idx]),
+        InterruptAllocation::Unallocated => {
+            allocs[idx] = if exclusive {
+                InterruptAllocation::Exclusive
+            } else {
+                InterruptAllocation::Shared(1)
+            };
+            Ok(1)
+        }
+        InterruptAllocation::Shared(count) => {
+            if exclusive {
+                Err(allocs[idx])
+            } else {
+                allocs[idx] = InterruptAllocation::Shared(count + 1);
+                Ok(count + 1)
+            }
+        }
+    }
+}
+
+/// Decrements the number of allocations for the given interrupt by one.
+///
+/// If the number of allocations for that interrupt was already one, or if the
+/// interrupt was exclusively allocated, then the given interrupt will be
+/// marked as Unallocated.
+unsafe fn remove_interrupt_allocation(allocs: &mut [InterruptAllocation], interrupt: u8) {
+    let idx = interrupt as usize;
+    allocs[idx] = match allocs[idx] {
+        InterruptAllocation::Unallocated => panic!(
+            "attempted to deallocate unallocated interrupt {}",
+            interrupt
+        ),
+        InterruptAllocation::Exclusive => InterruptAllocation::Unallocated,
+        InterruptAllocation::Shared(count) => {
+            if count == 1 {
+                InterruptAllocation::Unallocated
+            } else {
+                InterruptAllocation::Shared(count - 1)
+            }
+        }
+    };
+}
+
+pub fn allocate_specific(interrupt: u8, exclusive: bool) -> Result<(), InterruptAllocation> {
+    let mut lock = HANDLER_STATUS.lock();
+    add_interrupt_allocation(&mut *lock, interrupt, exclusive)?;
+    Ok(())
+}
+
+pub unsafe fn deallocate_specific(interrupt: u8) {
+    let mut lock = HANDLER_STATUS.lock();
+    remove_interrupt_allocation(&mut *lock, interrupt);
+}
+
+pub fn get_interrupt_allocation(interrupt: u8) -> InterruptAllocation {
+    let lock = HANDLER_STATUS.lock();
+    let idx = interrupt as usize;
+    (*lock)[idx]
+}
+
+pub fn allocate_interrupt(exclusive: bool) -> Result<u8, ()> {
+    let mut lock = HANDLER_STATUS.lock();
+
+    let mut allocated: Option<usize> = None;
+    let mut min_share_count: usize = usize::MAX;
+
+    for irq in 32..256 {
+        if (*lock)[irq] == InterruptAllocation::Unallocated {
+            allocated = Some(irq);
+            break;
+        } else if !exclusive {
+            if let InterruptAllocation::Shared(count) = (*lock)[irq] {
+                if count < min_share_count {
+                    allocated = Some(irq);
+                    min_share_count = count;
+                }
+            }
+        }
+    }
+
+    if let Some(idx) = allocated {
+        if let Err(e) = add_interrupt_allocation(&mut *lock, idx as u8, exclusive) {
+            panic!("could not allocate interrupt {} with status {:?}", idx, e);
+        }
+
+        Ok(idx as u8)
+    } else {
+        Err(())
+    }
+}
+
+pub fn register_handler<T>(
+    interrupt_no: Option<u8>,
+    exclusive: bool,
+    handler: T,
+) -> Result<IRQHandler, InterruptAllocationError>
 where
     T: (FnMut() -> InterruptHandlerStatus) + Send + 'static,
 {
-    let idx = interrupt_no as usize;
+    let allocated = if let Some(irq) = interrupt_no {
+        let mut lock = HANDLER_STATUS.lock();
+        add_interrupt_allocation(&mut *lock, irq, exclusive)
+            .or(Err(InterruptAllocationError::AlreadyAllocated))?;
 
-    IRQHandler(HANDLERS[idx].push_back(Box::new(handler)))
+        drop(lock);
+        irq
+    } else {
+        allocate_interrupt(exclusive).or(Err(InterruptAllocationError::NoFreeInterrupts))?
+    };
+
+    let idx = allocated as usize;
+    Ok(IRQHandler(
+        allocated,
+        HANDLERS[idx].push_back(Box::new(handler)),
+    ))
 }
 
 pub fn handle_interrupt(frame: &mut InterruptFrame) {

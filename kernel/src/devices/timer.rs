@@ -1,5 +1,6 @@
 //! Intel PIT support.
 
+use super::pic::io_apic::IOAPIC;
 use super::pic::local_apic;
 use super::pic::local_apic::LocalAPIC;
 use crate::asm::ports;
@@ -27,6 +28,8 @@ struct CalibrationData {
     done: AtomicBool,
     lapic_fired: AtomicBool,
     lapic_active: AtomicBool,
+    pit_vector: OnceCell<u8>,
+    apic_vector: OnceCell<u8>,
 }
 
 impl CalibrationData {
@@ -37,6 +40,8 @@ impl CalibrationData {
             lapic_active: AtomicBool::new(false),
             accumulated_ticks: AtomicU64::new(0),
             cur_trial: AtomicU64::new(0),
+            pit_vector: OnceCell::new(),
+            apic_vector: OnceCell::new(),
         }
     }
 
@@ -67,7 +72,7 @@ impl CalibratingTimer {
         let data_pit = data.clone();
         let data_lapic = data.clone();
 
-        let pit_isr = interrupts::register_handler(0x20, move || {
+        let pit_isr = interrupts::register_handler(None, true, move || {
             let lapic = LocalAPIC::new();
 
             if data_pit.lapic_active.load(Ordering::SeqCst) {
@@ -82,22 +87,40 @@ impl CalibratingTimer {
             data_pit.lapic_fired.store(false, Ordering::SeqCst);
             data_pit.lapic_active.store(true, Ordering::SeqCst);
 
+            let vector = *data_pit.apic_vector.get().unwrap();
+
             lapic
-                .configure_timer(local_apic::TimerMode::OneShot, LAPIC_TIMER_DIVISOR, 0x30)
+                .configure_timer(local_apic::TimerMode::OneShot, LAPIC_TIMER_DIVISOR, vector)
                 .unwrap();
             lapic.set_timer_ticks(0xFFFF_FFFF);
 
             InterruptHandlerStatus::Handled
-        });
+        })
+        .expect("could not register PIT interrupt");
 
-        let lapic_isr = interrupts::register_handler(0x30, move || {
+        let pit_gsi = IOAPIC::isa_irq_to_gsi(0).expect("could not PIT timer GSI");
+        unsafe {
+            IOAPIC::set_gsi_vector(pit_gsi, pit_isr.interrupt_vector())
+                .expect("could not configure PIT timer vector");
+        }
+
+        data.pit_vector.set(pit_isr.interrupt_vector()).unwrap();
+
+        let lapic_isr = interrupts::register_handler(None, true, move || {
             data_lapic.lapic_fired.store(true, Ordering::SeqCst);
             InterruptHandlerStatus::Handled
-        });
+        })
+        .expect("could not register APIC timer interrupt");
+
+        data.apic_vector.set(lapic_isr.interrupt_vector()).unwrap();
 
         let lapic = LocalAPIC::new();
         lapic
-            .configure_timer(local_apic::TimerMode::OneShot, LAPIC_TIMER_DIVISOR, 0x30)
+            .configure_timer(
+                local_apic::TimerMode::OneShot,
+                LAPIC_TIMER_DIVISOR,
+                lapic_isr.interrupt_vector(),
+            )
             .unwrap();
 
         /* Set up the PIT timer in mode 2 (rate generator). */
@@ -143,15 +166,22 @@ impl LAPICTimer {
         let rate = calibrating.accumulated_ticks() / CALIBRATION_TRIALS;
         println!("timer: APIC timer rate is {} ticks per kernel tick", rate);
 
-        interrupts::mask_irq(0x20, true).expect("could not mask PIT interrupt");
+        let pit_vector = *calibrating.data.pit_vector.get().unwrap();
+
+        interrupts::mask_irq(pit_vector, true).expect("could not mask PIT interrupt");
         drop(calibrating);
 
+        let isr = interrupts::register_handler(None, true, timer_interrupt)
+            .expect("could not register LAPIC timer ISR");
         let lapic = LocalAPIC::new();
         lapic
-            .configure_timer(local_apic::TimerMode::Periodic, LAPIC_TIMER_DIVISOR, 0x30)
+            .configure_timer(
+                local_apic::TimerMode::Periodic,
+                LAPIC_TIMER_DIVISOR,
+                isr.interrupt_vector(),
+            )
             .unwrap();
 
-        let isr = interrupts::register_handler(0x30, timer_interrupt);
         lapic.set_timer_ticks(rate as u32);
 
         LAPICTimer { isr, rate }

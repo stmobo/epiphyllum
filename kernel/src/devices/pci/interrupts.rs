@@ -9,6 +9,7 @@ use super::{PCIAddress, PCIDevice};
 use crate::acpica::resource::{ExtendedIrq, Polarity, TriggerMode};
 use crate::acpica::{AcpiDevice, AcpiResult, PCIInterruptSource};
 use crate::devices::io_apic::IOAPIC;
+use crate::interrupts;
 use crate::lock::OnceCell;
 use crate::structures::HashMap;
 
@@ -190,6 +191,9 @@ impl InterruptLinkDevice {
             panic!("could not reconfigure GSI {} at IOAPIC", gsi);
         }
 
+        self.interrupt_vector
+            .store(get_gsi_vector(gsi as u8), Ordering::SeqCst);
+
         println!(
             "pci: {} => IRQ {} (weight {})",
             self.acpi_device, irq_no, self.weight
@@ -208,11 +212,10 @@ impl InterruptLinkDevice {
             print!("edge-triggered, ");
         }
 
-        let vector = IOAPIC::get_gsi_vector(gsi as u8).unwrap();
-        println!("vector {:02x}", vector);
+        let vector = self.interrupt_vector();
+        println!("vector {:#04x}", vector);
 
         self.current_irq.store(gsi, Ordering::SeqCst);
-        self.interrupt_vector.store(vector, Ordering::SeqCst);
 
         Ok(())
     }
@@ -225,15 +228,28 @@ impl InterruptLinkDevice {
         let vector = self.interrupt_vector.load(Ordering::SeqCst);
         assert_ne!(
             vector, 0,
-            "interrupt vector for device {} not configured",
+            "interrupt vector for device {} not initialized",
             self.acpi_device
         );
-
         vector
     }
 
     pub fn possible_irqs(&self) -> ExtendedIrq {
         self.possible_irqs.clone()
+    }
+}
+
+fn get_gsi_vector(gsi: u8) -> u8 {
+    if let Some(preset) = IOAPIC::get_gsi_vector(gsi as u8).unwrap() {
+        // there's already a vector allocated to this GSI
+        preset
+    } else {
+        // allocate a new shared interrupt vector for this GSI
+        let allocated =
+            interrupts::allocate_interrupt(false).expect("could not allocate interrupt vector");
+
+        unsafe { IOAPIC::set_gsi_vector(gsi as u8, allocated).unwrap() };
+        allocated
     }
 }
 
@@ -268,7 +284,7 @@ impl InterruptAssignment {
 
     pub fn interrupt_vector(self) -> u8 {
         match self {
-            InterruptAssignment::Hardwired(gsi) => IOAPIC::get_gsi_vector(gsi).unwrap(),
+            InterruptAssignment::Hardwired(gsi) => get_gsi_vector(gsi as u8),
             InterruptAssignment::Device(device_no) => {
                 let link_devices = INT_LINKS.get().expect("not initialized");
                 link_devices[device_no].interrupt_vector()

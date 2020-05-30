@@ -216,7 +216,7 @@ pub use bindings::AcpiError;
 use bindings::*;
 pub use device::{find_devices, get_device_map, AcpiDevice, PCIInterruptSource, PCIRoutingEntry};
 
-type AcpiResult<T> = Result<T, AcpiError>;
+pub type AcpiResult<T> = Result<T, AcpiError>;
 
 pub fn initialize() -> AcpiResult<()> {
     println!("acpi: initializing ACPI...");

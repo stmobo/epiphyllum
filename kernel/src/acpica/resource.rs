@@ -828,7 +828,7 @@ impl AcpiResource for ExtendedIrq {
 
 impl ExtendedIrq {
     /// TODO: move into AcpiResource trait
-    fn serialize(&self) -> ResourceBox {
+    pub fn serialize(&self) -> Resource {
         let sz = 6 + mem::size_of::<ACPI_RESOURCE_SOURCE>() + (self.interrupts.len() * 4);
         let mut data = ResourceBox::with_size(AcpiResourceType::ExtendedIrq, sz);
         let field = unsafe { &mut data.ExtendedIrq };
@@ -859,7 +859,7 @@ impl ExtendedIrq {
             }
         }
 
-        data
+        Resource { data }
     }
 }
 
@@ -1046,12 +1046,23 @@ impl Resource {
 
     pub fn into_buffer(resources: &Vec<Resource>) -> Box<[u8]> {
         let mut len = 0;
+        let mut contains_end_tag = false;
 
-        for rsc in resources.iter() {
-            len += rsc.data.layout.size();
+        for (i, rsc) in resources.iter().enumerate() {
+            if rsc.resource_type() == AcpiResourceType::EndTag {
+                assert_eq!(i, resources.len() - 1, "Resource list end tag not at end");
+                contains_end_tag = true;
+            }
+
+            len += rsc.data.layout.size() + 8;
         }
 
-        let align = mem::align_of::<ACPI_RESOURCE_DATA>();
+        if !contains_end_tag {
+            // Add space for a final EndTag resource
+            len += 9;
+        }
+
+        let align = mem::align_of::<ACPI_RESOURCE>();
 
         unsafe {
             let layout = Layout::from_size_align(len, align).expect("could not create layout");
@@ -1064,11 +1075,27 @@ impl Resource {
 
             let mut cur_dst = buf;
             for rsc in resources.iter() {
-                let src_ptr = rsc.data.data as *const u8;
                 let size = rsc.data.layout.size();
 
-                ptr::copy_nonoverlapping(src_ptr, cur_dst, size);
-                cur_dst = cur_dst.add(size);
+                // write resource type and length
+                let p = cur_dst as *mut u32;
+                p.write_unaligned(rsc.data.resource_type.into());
+                p.add(1).write_unaligned((size + 8) as u32);
+
+                let src_ptr = rsc.data.data as *const u8;
+                let dst_ptr = cur_dst.add(8);
+
+                ptr::copy_nonoverlapping(src_ptr, dst_ptr, size);
+                cur_dst = cur_dst.add(size + 8);
+            }
+
+            if !contains_end_tag {
+                // Add an EndTag:
+                let p = cur_dst as *mut u32;
+
+                p.write_unaligned(AcpiResourceType::EndTag.into());
+                p.add(1).write_unaligned(9u32);
+                cur_dst.add(8).write_unaligned(0);
             }
 
             let buf_slice = slice::from_raw_parts_mut(buf, len) as *mut [u8];

@@ -2,11 +2,12 @@ use alloc_crate::sync::Arc;
 use alloc_crate::vec::Vec;
 use core::fmt;
 use core::fmt::Display;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::device;
 use super::{PCIAddress, PCIDevice};
 use crate::acpica::resource::ExtendedIrq;
-use crate::acpica::{AcpiDevice, PCIInterruptSource};
+use crate::acpica::{AcpiDevice, AcpiResult, PCIInterruptSource};
 use crate::lock::OnceCell;
 use crate::structures::HashMap;
 
@@ -133,10 +134,33 @@ pub struct InterruptLinkDevice {
     segment_id: u16,
     bus_id: u8,
     acpi_device: &'static AcpiDevice,
-    current_irq: ExtendedIrq,
-    possible_irqs: Vec<ExtendedIrq>,
-    assignments: Vec<(PCIInterruptPin, Arc<PCIDevice>)>,
+    current_irq: AtomicU32,
+    possible_irqs: ExtendedIrq,
+    weight: u64,
     link_device_number: usize,
+}
+
+impl InterruptLinkDevice {
+    pub fn set_irq_number(&self, irq_no: u32) -> AcpiResult<()> {
+        assert!(self.possible_irqs.interrupts.contains(&irq_no));
+
+        let mut new_rsc = self.possible_irqs.clone();
+        new_rsc.interrupts = vec![irq_no];
+
+        let resources = vec![new_rsc.serialize()];
+        unsafe { self.acpi_device.set_current_resources(&resources)? };
+
+        self.current_irq.store(irq_no, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub fn irq_number(&self) -> u32 {
+        self.current_irq.load(Ordering::SeqCst)
+    }
+
+    pub fn possible_irqs(&self) -> ExtendedIrq {
+        self.possible_irqs.clone()
+    }
 }
 
 #[derive(Debug)]
@@ -174,7 +198,7 @@ pub fn enumerate_device_interrupts() {
                     })
                     .is_none()
                 {
-                    let prs = match link_device.possible_resources::<ExtendedIrq>() {
+                    let prs = match link_device.all_possible_resources() {
                         Ok(r) => r,
                         Err(e) => panic!(
                             "could not get possible resource settings for device {}: {:?}",
@@ -182,7 +206,7 @@ pub fn enumerate_device_interrupts() {
                         ),
                     };
 
-                    let crs = match link_device.current_resources::<ExtendedIrq>() {
+                    let crs = match link_device.all_current_resources() {
                         Ok(r) => r,
                         Err(e) => panic!(
                             "could not get current resource settings for device {}: {:?}",
@@ -191,16 +215,26 @@ pub fn enumerate_device_interrupts() {
                     };
 
                     assert_eq!(
-                        crs.len(),
+                        prs.len(),
                         1,
-                        "multiple/no current extended IRQ settings for device {}",
+                        "invalid number of possible resources for device {}",
                         link_device
                     );
 
                     assert_eq!(
-                        crs[0].interrupts.len(),
+                        crs.len(),
                         1,
-                        "multiple/no current IRQs for device {}",
+                        "invalid number of current resources for device {}",
+                        link_device
+                    );
+
+                    let current_irq: ExtendedIrq = crs[0].parse::<ExtendedIrq>().unwrap();
+                    let possible_irqs: ExtendedIrq = prs[0].parse::<ExtendedIrq>().unwrap();
+
+                    assert_eq!(
+                        current_irq.interrupts.len(),
+                        1,
+                        "invalid number of current IRQs for device {}",
                         link_device
                     );
 
@@ -208,9 +242,9 @@ pub fn enumerate_device_interrupts() {
                         segment_id: bus.segment_id(),
                         bus_id: bus.bus_id(),
                         acpi_device: link_device,
-                        current_irq: crs[0].clone(),
-                        possible_irqs: prs,
-                        assignments: Vec::new(),
+                        current_irq: AtomicU32::new(current_irq.interrupts[0]),
+                        possible_irqs,
+                        weight: 0,
                         link_device_number: link_devices.len(),
                     };
 
@@ -298,9 +332,9 @@ pub fn enumerate_device_interrupts() {
                         //let irq_no = linked.current_irq.interrupts[0];
                         //println!("pci:         {} => {} (IRQ {})", device_pin, d, irq_no);
 
-                        // Add this PCI device / interrupt pin combo to the int
-                        // device's list of mapped devices
-                        linked.assignments.push((device_pin, device.clone()));
+                        // increase the weight (# of linked interrupts) for this
+                        // interrupt device
+                        linked.weight += 1;
 
                         // Get its number, and use that for the interrupt asssignment
                         InterruptAssignment::Device(linked.link_device_number)
@@ -312,12 +346,45 @@ pub fn enumerate_device_interrupts() {
         int_map.insert(address, assignments);
     }
 
+    // Now reassign interrupts based on each link device's weight.
+
+    // Initialize a map from IRQ numbers to linked interrupt counts:
+    let mut int_counts: HashMap<u32, u64> = HashMap::new();
+    for device in link_devices.iter() {
+        for irq in device.possible_irqs.interrupts.iter() {
+            int_counts.insert(*irq, 0);
+        }
+    }
+
+    // Give interrupt devices with more linked interrupts first pick for IRQ
+    // numbers.
+    link_devices.sort_unstable_by(|a, b| a.weight.cmp(&b.weight).reverse());
+
     println!("pci: found {} interrupt link devices:", link_devices.len());
-    for link in link_devices.iter() {
+    for device in link_devices.iter() {
+        // Out of the possible IRQs for this device, find the one with the least
+        // number of currently-linked interrupts
+        let min_irq = *device
+            .possible_irqs
+            .interrupts
+            .iter()
+            .min_by_key(|irq| *int_counts.get(*irq).unwrap())
+            .unwrap();
+
+        let count = *int_counts.get(&min_irq).unwrap();
+        if let Err(e) = device.set_irq_number(min_irq) {
+            panic!(
+                "could not set IRQ number for interrupt link device {}: {:?}",
+                device.acpi_device, e
+            );
+        }
+
+        // Update the new count of linked interrupts for this IRQ number
+        int_counts.insert(min_irq, count + device.weight);
+
         println!(
-            "pci:     {} ({} interrupts)",
-            link.acpi_device,
-            link.assignments.len()
+            "pci:     {} => IRQ {} (weight {})",
+            device.acpi_device, min_irq, device.weight
         );
     }
 

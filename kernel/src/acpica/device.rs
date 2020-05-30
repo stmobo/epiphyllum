@@ -328,7 +328,7 @@ impl Display for AcpiDevice {
 
 impl PartialEq for AcpiDevice {
     fn eq(&self, other: &AcpiDevice) -> bool {
-        (self.handle as usize) == (other.handle as usize)
+        self.full_name == other.full_name
     }
 }
 

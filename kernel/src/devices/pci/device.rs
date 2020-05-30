@@ -26,7 +26,7 @@ pub struct PCIDevice {
     minor_class: u8,
     prog_if: u8,
     bars: Vec<BAR>,
-    parent_bus: Option<Weak<PCIBus>>,
+    parent_bus: Weak<PCIBus>,
     child_bus: OnceCell<Option<Arc<PCIBus>>>,
     acpi_device: Option<&'static AcpiDevice>,
 }
@@ -37,7 +37,7 @@ impl PCIDevice {
         bus: u8,
         device: u8,
         function: u8,
-        parent_bus: Option<Weak<PCIBus>>,
+        parent_bus: Weak<PCIBus>,
     ) -> Arc<PCIDevice> {
         let address = PCIAddress::new(segment, bus, device, function);
         let (major_class, minor_class, prog_if) =
@@ -201,6 +201,10 @@ impl PCIDevice {
         Some(r.bus_id())
     }
 
+    pub fn parent_bus(&self) -> Arc<PCIBus> {
+        self.parent_bus.upgrade().expect("parent bus was dropped")
+    }
+
     pub fn child_devices(&self) -> Option<&Vec<Arc<PCIDevice>>> {
         let r = self.bridge_data()?;
         Some(r.devices())
@@ -298,77 +302,6 @@ impl Display for BAR {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-#[repr(u8)]
-pub enum PCIInterruptPin {
-    LNKA = 0x00,
-    LNKB = 0x01,
-    LNKC = 0x02,
-    LNKD = 0x03,
-}
-
-impl PCIInterruptPin {
-    /// Maps an interrupt pin on a device downstream of a PCI-PCI bridge to the
-    /// corresponding upstream interrupt pin.
-    ///
-    /// # Examples
-    /// For device 0, this is simply an identity map: LNKA on the child maps to
-    /// LNKA on the parent bus, and so on.
-    ///
-    /// For device 1, all interrupt pins shift 1 over to the right: LNKA on the
-    /// child maps to LNK_B_ on the parent bus, etc.
-    ///
-    /// This should also carry over to nested busses as well.
-    /// Consider the following (contrived) PCI topology:
-    /// ```text
-    /// [0000:00]-+-00:00.0                                (Host Bridge)
-    ///           \-00:02.0-[01]-+-01:00.0                 (PCI-PCI bridge from bus 00 -> 01)
-    ///                          +-01:03.0-[02]-+-02:00.0  (PCI-PCI bridge from bus 01 -> 02)
-    ///                          |              \-02:02.0  (Device)
-    ///                          \-01:05.0                 (Device)
-    /// ```
-    ///
-    /// The routing of pin `LNKA` from device `02:02.0` would look like:
-    /// ```text
-    /// LNKA      -> LNKC      -> LNKB
-    /// (02:02.0)    (01:03.0)    (00:02.0)
-    /// [0]          [0+2 = 2]    [2+3 = 5 mod 4 = 1]
-    /// ```
-    ///
-    /// The routing of pin `LNKC` from device `01:05.0` is:
-    /// ```text
-    /// LNKC      -> LNKD
-    /// (01:05.0)    (00:02.0)
-    /// [2]          [2+5 = 7 mod 4 = 3]
-    /// ```
-    ///
-    /// For devices on the root bridge, the ACPI `_PRT` table specifies what
-    /// PCI interrupt link devices correspond to each interrupt pin.
-    pub fn bridge_swizzle(self, device_no: u8) -> PCIInterruptPin {
-        debug_assert!(device_no < 0x1F, "invalid device number {:02x}", device_no);
-
-        let new_pin = ((self as u8) + device_no) & 0x03;
-        match new_pin {
-            0 => PCIInterruptPin::LNKA,
-            1 => PCIInterruptPin::LNKB,
-            2 => PCIInterruptPin::LNKC,
-            3 => PCIInterruptPin::LNKD,
-            _ => unreachable!(),
-        }
-    }
-}
-
-impl Display for PCIInterruptPin {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            PCIInterruptPin::LNKA => write!(f, "LNKA"),
-            PCIInterruptPin::LNKB => write!(f, "LNKB"),
-            PCIInterruptPin::LNKC => write!(f, "LNKC"),
-            PCIInterruptPin::LNKD => write!(f, "LNKD"),
-        }
-    }
-}
-
 pub struct PCIBus {
     segment: u16,
     secondary_bus: u8,
@@ -393,6 +326,9 @@ impl PCIBus {
         } else {
             // This is a root bus, so get the ACPI device for the root bridge
             // (i.e. \_SB_.PCI0)
+            //
+            // TODO: this will probably explode in systems with multiple host
+            // bridges
             acpi::get_root_bridge_device()
         };
 
@@ -413,13 +349,7 @@ impl PCIBus {
                 continue;
             }
 
-            devices.push(PCIDevice::new(
-                segment,
-                bus,
-                device,
-                0,
-                Some(parent_bus.clone()),
-            ));
+            devices.push(PCIDevice::new(segment, bus, device, 0, parent_bus.clone()));
 
             if enumeration::is_multi_function(segment, bus, device, 0) {
                 for function in 1..8 {
@@ -429,7 +359,7 @@ impl PCIBus {
                             bus,
                             device,
                             function,
-                            Some(parent_bus.clone()),
+                            parent_bus.clone(),
                         ));
                     }
                 }
@@ -450,11 +380,17 @@ impl PCIBus {
     }
 
     pub fn bridge(&self) -> Option<Arc<PCIDevice>> {
-        self.bridge.clone().and_then(|weak| weak.upgrade())
+        self.bridge
+            .clone()
+            .map(|weak| weak.upgrade().expect("bus bridge device was dropped"))
     }
 
     pub fn devices(&self) -> &Vec<Arc<PCIDevice>> {
         self.devices.get().unwrap()
+    }
+
+    pub fn acpi_device(&self) -> &'static AcpiDevice {
+        self.acpi_device
     }
 }
 
@@ -604,4 +540,12 @@ fn print_pci_topology_indent(device_count: &Vec<usize>) {
 
         print!("              ");
     }
+}
+
+pub fn get_root_busses() -> &'static Vec<Arc<PCIBus>> {
+    ROOT_BUSSES.get().unwrap()
+}
+
+pub fn get_device_map() -> &'static HashMap<PCIAddress, Arc<PCIDevice>> {
+    DEVICES.get().unwrap()
 }

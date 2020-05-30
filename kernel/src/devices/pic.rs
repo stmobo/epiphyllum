@@ -18,6 +18,7 @@ const PIC1: u16 = 0x0020;
 const PIC2: u16 = 0x00A0;
 
 const ISA_IRQ_BASE: u8 = 0x20;
+const DEFAULT_IRQ_BASE: u8 = 0x50;
 
 fn initialize_8529() {
     unsafe {
@@ -367,26 +368,28 @@ pub mod io_apic {
                             continue;
                         }
 
-                        entry.set_vector(ISA_IRQ_BASE + irq_override.irq_src);
+                        let vector = ISA_IRQ_BASE + irq_override.irq_src;
+                        entry.set_vector(vector);
                         entry.set_pin_polarity(irq_override.active_low);
                         entry.set_trigger_mode(irq_override.level_triggered);
 
                         gsi_list.push(GSIEntry {
                             gsi,
-                            vector: ISA_IRQ_BASE + irq_override.irq_src,
+                            vector,
                             io_apic_id: self.id(),
                         });
                     } else {
                         // Assume this IRQ/GSI should be identity-mapped onto
                         // the corresponding ISA interrupt number
                         // (ISA interrupts are edge-triggered and active-high)
-                        entry.set_vector(ISA_IRQ_BASE + gsi);
+                        let vector = ISA_IRQ_BASE + gsi;
+                        entry.set_vector(vector);
                         entry.set_pin_polarity(false);
                         entry.set_trigger_mode(false);
 
                         gsi_list.push(GSIEntry {
                             gsi,
-                            vector: ISA_IRQ_BASE + gsi,
+                            vector,
                             io_apic_id: self.id(),
                         });
                     }
@@ -394,6 +397,51 @@ pub mod io_apic {
                     entry.set_masked(false);
                     entry.set_destination_apic(0);
                     self.set_redirection_entry(idx, entry).unwrap();
+                }
+
+                // Add GSI entries for the rest of the interrupts on this
+                // IOAPIC
+                for gsi in max..max_irq {
+                    let idx = gsi - min_irq;
+                    let vector = if gsi < 16 {
+                        ISA_IRQ_BASE + gsi
+                    } else {
+                        DEFAULT_IRQ_BASE + gsi
+                    };
+
+                    let mut entry = RedirectionEntry::new();
+
+                    entry.set_vector(vector);
+                    entry.set_masked(true);
+                    entry.set_destination_apic(0);
+                    self.set_redirection_entry(idx, entry).unwrap();
+
+                    gsi_list.push(GSIEntry {
+                        gsi,
+                        vector,
+                        io_apic_id: self.id(),
+                    });
+                }
+            } else {
+                // The GSI range for this IOAPIC has all non-ISA interrupts.
+                // Add default GSI entries, but don't try to configure these
+                // interrupts
+
+                for gsi in min_irq..max_irq {
+                    let idx = gsi - min_irq;
+                    let vector = DEFAULT_IRQ_BASE + gsi;
+                    let mut entry = RedirectionEntry::new();
+
+                    entry.set_vector(vector);
+                    entry.set_masked(true);
+                    entry.set_destination_apic(0);
+                    self.set_redirection_entry(idx, entry).unwrap();
+
+                    gsi_list.push(GSIEntry {
+                        gsi,
+                        vector,
+                        io_apic_id: self.id(),
+                    });
                 }
             }
         }
@@ -494,6 +542,26 @@ pub mod io_apic {
 
             Ok(entry.set_masked(masked))
         }
+
+        pub fn configure_gsi(
+            gsi: u8,
+            low_active: bool,
+            level_sensitive: bool,
+            masked: bool,
+        ) -> Result<(), u8> {
+            let mut gsi_list = GSI_LIST.lock();
+            let entry = gsi_list.iter_mut().find(|e| e.gsi == gsi).ok_or(gsi)?;
+
+            entry.reconfigure(low_active, level_sensitive, masked);
+            Ok(())
+        }
+
+        pub fn get_gsi_vector(gsi: u8) -> Result<u8, u8> {
+            let gsi_list = GSI_LIST.lock();
+            let entry = gsi_list.iter().find(|e| e.gsi == gsi).ok_or(gsi)?;
+
+            Ok(entry.vector)
+        }
     }
 
     unsafe impl Send for IOAPIC {}
@@ -515,6 +583,22 @@ pub mod io_apic {
             }
 
             None
+        }
+
+        fn reconfigure(&mut self, low_active: bool, level_sensitive: bool, masked: bool) {
+            let mut apic = self.get_io_apic().unwrap();
+            let idx = self.gsi - apic.irq_base();
+
+            let mut entry = apic
+                .get_redirection_entry(idx)
+                .expect("could not get redirection entry for IRQ");
+
+            entry.set_pin_polarity(low_active);
+            entry.set_trigger_mode(level_sensitive);
+            entry.set_masked(masked);
+
+            apic.set_redirection_entry(idx, entry)
+                .expect("could not set redirection entry for IRQ");
         }
 
         fn set_masked(&mut self, masked: bool) -> bool {

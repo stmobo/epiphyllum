@@ -2,12 +2,13 @@ use alloc_crate::sync::Arc;
 use alloc_crate::vec::Vec;
 use core::fmt;
 use core::fmt::Display;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 use super::device;
 use super::{PCIAddress, PCIDevice};
-use crate::acpica::resource::ExtendedIrq;
+use crate::acpica::resource::{ExtendedIrq, Polarity, TriggerMode};
 use crate::acpica::{AcpiDevice, AcpiResult, PCIInterruptSource};
+use crate::devices::io_apic::IOAPIC;
 use crate::lock::OnceCell;
 use crate::structures::HashMap;
 
@@ -136,6 +137,7 @@ pub struct InterruptLinkDevice {
     acpi_device: &'static AcpiDevice,
     current_irq: AtomicU32,
     possible_irqs: ExtendedIrq,
+    interrupt_vector: AtomicU8,
     weight: u64,
     link_device_number: usize,
 }
@@ -150,7 +152,68 @@ impl InterruptLinkDevice {
         let resources = vec![new_rsc.serialize()];
         unsafe { self.acpi_device.set_current_resources(&resources)? };
 
-        self.current_irq.store(irq_no, Ordering::SeqCst);
+        let new_cur_rsc = match self.acpi_device.current_resources::<ExtendedIrq>() {
+            Ok(r) => {
+                assert_eq!(
+                    r.len(),
+                    1,
+                    "invalid resource vector length for device {}",
+                    self.acpi_device
+                );
+
+                let rsc: ExtendedIrq = r[0].clone();
+                assert_eq!(
+                    rsc.interrupts.len(),
+                    1,
+                    "invalid number of interrupts for device {}",
+                    self.acpi_device
+                );
+                rsc
+            }
+            Err(e) => panic!("could not get CRS for {}: {:?}", self.acpi_device, e),
+        };
+
+        let gsi: u32 = new_cur_rsc.interrupts[0];
+        assert_eq!(gsi, irq_no);
+
+        let low_active = match new_cur_rsc.polarity {
+            Polarity::Low | Polarity::Both => true,
+            Polarity::High => false,
+        };
+
+        let level_sensitive = match new_cur_rsc.triggering {
+            TriggerMode::LevelSensitive => true,
+            TriggerMode::EdgeSensitive => false,
+        };
+
+        if let Err(_) = IOAPIC::configure_gsi(gsi as u8, low_active, level_sensitive, false) {
+            panic!("could not reconfigure GSI {} at IOAPIC", gsi);
+        }
+
+        println!(
+            "pci: {} => IRQ {} (weight {})",
+            self.acpi_device, irq_no, self.weight
+        );
+
+        print!("pci:     ");
+        if low_active {
+            print!("active low, ");
+        } else {
+            print!("active high, ");
+        }
+
+        if level_sensitive {
+            print!("level-triggered, ");
+        } else {
+            print!("edge-triggered, ");
+        }
+
+        let vector = IOAPIC::get_gsi_vector(gsi as u8).unwrap();
+        println!("vector {:02x}", vector);
+
+        self.current_irq.store(gsi, Ordering::SeqCst);
+        self.interrupt_vector.store(vector, Ordering::SeqCst);
+
         Ok(())
     }
 
@@ -158,15 +221,60 @@ impl InterruptLinkDevice {
         self.current_irq.load(Ordering::SeqCst)
     }
 
+    pub fn interrupt_vector(&self) -> u8 {
+        let vector = self.interrupt_vector.load(Ordering::SeqCst);
+        assert_ne!(
+            vector, 0,
+            "interrupt vector for device {} not configured",
+            self.acpi_device
+        );
+
+        vector
+    }
+
     pub fn possible_irqs(&self) -> ExtendedIrq {
         self.possible_irqs.clone()
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum InterruptAssignment {
     Device(usize),
     Hardwired(u8),
+}
+
+impl InterruptAssignment {
+    pub fn get(address: PCIAddress, pin: PCIInterruptPin) -> Option<InterruptAssignment> {
+        let map = INT_ASSIGNMENTS.get().expect("not initialized");
+        let assignments = map.get(&address)?;
+
+        Some(match pin {
+            PCIInterruptPin::LNKA => assignments[0],
+            PCIInterruptPin::LNKB => assignments[1],
+            PCIInterruptPin::LNKC => assignments[2],
+            PCIInterruptPin::LNKD => assignments[3],
+        })
+    }
+
+    pub fn gsi(self) -> u32 {
+        match self {
+            InterruptAssignment::Hardwired(gsi) => gsi as u32,
+            InterruptAssignment::Device(device_no) => {
+                let link_devices = INT_LINKS.get().expect("not initialized");
+                link_devices[device_no].irq_number()
+            }
+        }
+    }
+
+    pub fn interrupt_vector(self) -> u8 {
+        match self {
+            InterruptAssignment::Hardwired(gsi) => IOAPIC::get_gsi_vector(gsi).unwrap(),
+            InterruptAssignment::Device(device_no) => {
+                let link_devices = INT_LINKS.get().expect("not initialized");
+                link_devices[device_no].interrupt_vector()
+            }
+        }
+    }
 }
 
 pub fn enumerate_device_interrupts() {
@@ -246,6 +354,7 @@ pub fn enumerate_device_interrupts() {
                         possible_irqs,
                         weight: 0,
                         link_device_number: link_devices.len(),
+                        interrupt_vector: AtomicU8::new(0),
                     };
 
                     link_devices.push(link_dev);
@@ -311,7 +420,12 @@ pub fn enumerate_device_interrupts() {
 
                 match entry.interrupt_source() {
                     PCIInterruptSource::Hardwired(gsi) => {
-                        //println!("pci:         {} => GSI {} (hardwired)", device_pin, gsi);
+                        // Configure GSI as level-triggered, active low as per
+                        // PCI spec by default
+                        if let Err(_) = IOAPIC::configure_gsi(gsi, true, true, false) {
+                            panic!("could not configure hardwired GSI {}", gsi);
+                        }
+
                         InterruptAssignment::Hardwired(gsi)
                     }
                     PCIInterruptSource::Device(d) => {
@@ -328,9 +442,6 @@ pub fn enumerate_device_interrupts() {
                         );
 
                         let linked = linked.unwrap();
-
-                        //let irq_no = linked.current_irq.interrupts[0];
-                        //println!("pci:         {} => {} (IRQ {})", device_pin, d, irq_no);
 
                         // increase the weight (# of linked interrupts) for this
                         // interrupt device
@@ -360,7 +471,11 @@ pub fn enumerate_device_interrupts() {
     // numbers.
     link_devices.sort_unstable_by(|a, b| a.weight.cmp(&b.weight).reverse());
 
-    println!("pci: found {} interrupt link devices:", link_devices.len());
+    println!(
+        "pci: enumerated {} interrupt link devices",
+        link_devices.len()
+    );
+
     for device in link_devices.iter() {
         // Out of the possible IRQs for this device, find the one with the least
         // number of currently-linked interrupts
@@ -381,11 +496,6 @@ pub fn enumerate_device_interrupts() {
 
         // Update the new count of linked interrupts for this IRQ number
         int_counts.insert(min_irq, count + device.weight);
-
-        println!(
-            "pci:     {} => IRQ {} (weight {})",
-            device.acpi_device, min_irq, device.weight
-        );
     }
 
     if INT_LINKS.set(link_devices).is_err() {

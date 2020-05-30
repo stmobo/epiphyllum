@@ -7,12 +7,12 @@ use core::convert::TryFrom;
 use core::fmt;
 use core::fmt::Debug;
 use core::mem;
-use core::ops::Deref;
+use core::ops::{Deref, DerefMut};
 use core::ptr;
 use core::slice;
 use core::str;
 
-use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
+use num_enum::{IntoPrimitive, TryFromPrimitive, TryFromPrimitiveError};
 
 use super::bindings::*;
 use super::{AcpiResult, AcpiStatus, AE_OK};
@@ -42,7 +42,7 @@ pub enum ParseFailure {
     WrongResourceType(AcpiResourceType),
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u32)]
 pub enum AcpiResourceType {
     Irq = 0,
@@ -78,7 +78,7 @@ impl AcpiResourceType {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 /// I/O port descriptor decode mode
 pub enum IOAddressDecode {
@@ -86,7 +86,7 @@ pub enum IOAddressDecode {
     SixteenBit = 0x01,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 /// Interrupt triggering mode.
 pub enum TriggerMode {
@@ -94,7 +94,7 @@ pub enum TriggerMode {
     EdgeSensitive = 0x01,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 /// Interrupt triggering polarity.
 pub enum Polarity {
@@ -103,7 +103,7 @@ pub enum Polarity {
     Both = 0x02,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 /// Memory caching attributes.
 pub enum MemoryCacheMode {
@@ -113,7 +113,7 @@ pub enum MemoryCacheMode {
     Prefetchable = 0x03,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 /// Acceptable ranges for IO ports.
 pub enum AcceptableIORange {
@@ -122,7 +122,7 @@ pub enum AcceptableIORange {
     Any = 0x03,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum DMAType {
     Compatibility = 0x00,
@@ -131,7 +131,7 @@ pub enum DMAType {
     F = 0x03,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum DMATransferType {
     Eight = 0x00,
@@ -139,7 +139,7 @@ pub enum DMATransferType {
     Sixteen = 0x02,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum FixedDMATransferWidth {
     Width8 = 0,
@@ -150,7 +150,7 @@ pub enum FixedDMATransferWidth {
     Width256 = 5,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum SDFPriority {
     Good = 0x00,
@@ -158,7 +158,7 @@ pub enum SDFPriority {
     SubOptimal = 0x02,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum AddressType {
     Memory = 0x00,
@@ -166,7 +166,7 @@ pub enum AddressType {
     BusNumber = 0x02,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum MemoryRangeType {
     Default = 0,
@@ -175,14 +175,14 @@ pub enum MemoryRangeType {
     NVS = 3,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum AddressDecode {
     Positive = 0x00,
     Subtractive = 0x01,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum AddressSpaceID {
     Memory = 0x00,
@@ -199,7 +199,7 @@ pub enum AddressSpaceID {
     FunctionalFixedHardware = 0x7F,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum RegisterAccessSize {
     Undefined = 0x00,
@@ -209,7 +209,7 @@ pub enum RegisterAccessSize {
     QWord = 0x04,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum ResourceMode {
     Producer = 0x00,
@@ -581,6 +581,17 @@ impl ResourceSource {
             })
         }
     }
+
+    fn serialize(&self, data: &mut ACPI_RESOURCE_SOURCE) {
+        let mut bytes: Vec<u8> = self.string.as_bytes().iter().copied().collect();
+        bytes.push(0);
+
+        data.StringLength = bytes.len() as u16;
+        data.StringPtr = bytes.as_ptr() as *mut cty::c_char;
+        data.Index = self.index.unwrap_or(0);
+
+        mem::forget(bytes);
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -815,6 +826,43 @@ impl AcpiResource for ExtendedIrq {
     }
 }
 
+impl ExtendedIrq {
+    /// TODO: move into AcpiResource trait
+    fn serialize(&self) -> ResourceBox {
+        let sz = 6 + mem::size_of::<ACPI_RESOURCE_SOURCE>() + (self.interrupts.len() * 4);
+        let mut data = ResourceBox::with_size(AcpiResourceType::ExtendedIrq, sz);
+        let field = unsafe { &mut data.ExtendedIrq };
+
+        field.ProducerConsumer = self.producer_consumer.into();
+        field.Triggering = self.triggering.into();
+        field.Polarity = self.polarity.into();
+        field.Shareable = if self.sharable { 1 } else { 0 };
+        field.WakeCapable = if self.wake_capable { 1 } else { 0 };
+        field.InterruptCount = self.interrupts.len() as u8;
+
+        let mut rsc_source = ACPI_RESOURCE_SOURCE {
+            Index: 0,
+            StringLength: 0,
+            StringPtr: ptr::null_mut(),
+        };
+        self.source.serialize(&mut rsc_source);
+
+        unsafe {
+            let p = &mut field.ResourceSource as *mut ACPI_RESOURCE_SOURCE;
+            p.write_unaligned(rsc_source);
+
+            let interrupts_addr = (data.data as usize) + 6 + mem::size_of::<ACPI_RESOURCE_SOURCE>();
+            let p = interrupts_addr as *mut u32;
+
+            for (i, int) in self.interrupts.iter().enumerate() {
+                p.add(i).write_unaligned(*int);
+            }
+        }
+
+        data
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct GenericRegister {
     pub address_space: AddressSpaceID,
@@ -845,7 +893,7 @@ impl AcpiResource for GenericRegister {
 #[derive(Debug)]
 pub struct ResourceBox {
     resource_type: AcpiResourceType,
-    data: *const ACPI_RESOURCE_DATA,
+    data: *mut ACPI_RESOURCE_DATA,
     layout: Layout,
 }
 
@@ -881,13 +929,37 @@ impl ResourceBox {
             // we just allocated new_buf, so it should not overlap with data_ptr
             // also, the alignment of u8 should always be 1 AFAIK
             ptr::copy_nonoverlapping(data_ptr, new_buf, data_len);
-            let data = new_buf as *const ACPI_RESOURCE_DATA;
+            let data = new_buf as *mut ACPI_RESOURCE_DATA;
 
             Ok(ResourceBox {
                 resource_type,
                 data,
                 layout,
             })
+        }
+    }
+
+    fn with_size(resource_type: AcpiResourceType, size: usize) -> ResourceBox {
+        let align = mem::align_of::<ACPI_RESOURCE_DATA>();
+        let min_sz = mem::size_of::<ACPI_RESOURCE_DATA>();
+
+        let alloc_len = if size < min_sz { min_sz } else { size };
+        let layout = Layout::from_size_align(alloc_len, align).expect("could not create layout");
+
+        unsafe {
+            let new_buf = alloc::alloc(layout);
+            if new_buf.is_null() {
+                alloc::handle_alloc_error(layout);
+            }
+
+            ptr::write_bytes(new_buf, 0, alloc_len);
+            let data = new_buf as *mut ACPI_RESOURCE_DATA;
+
+            ResourceBox {
+                resource_type,
+                data,
+                layout,
+            }
         }
     }
 
@@ -953,6 +1025,12 @@ impl Deref for ResourceBox {
     }
 }
 
+impl DerefMut for ResourceBox {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.data }
+    }
+}
+
 pub struct Resource {
     data: ResourceBox,
 }
@@ -964,6 +1042,38 @@ impl Resource {
 
     pub fn resource_type(&self) -> AcpiResourceType {
         self.data.resource_type
+    }
+
+    pub fn into_buffer(resources: &Vec<Resource>) -> Box<[u8]> {
+        let mut len = 0;
+
+        for rsc in resources.iter() {
+            len += rsc.data.layout.size();
+        }
+
+        let align = mem::align_of::<ACPI_RESOURCE_DATA>();
+
+        unsafe {
+            let layout = Layout::from_size_align(len, align).expect("could not create layout");
+            let buf = alloc::alloc(layout);
+            if buf.is_null() {
+                alloc::handle_alloc_error(layout);
+            }
+
+            ptr::write_bytes(buf, 0, len);
+
+            let mut cur_dst = buf;
+            for rsc in resources.iter() {
+                let src_ptr = rsc.data.data as *const u8;
+                let size = rsc.data.layout.size();
+
+                ptr::copy_nonoverlapping(src_ptr, cur_dst, size);
+                cur_dst = cur_dst.add(size);
+            }
+
+            let buf_slice = slice::from_raw_parts_mut(buf, len) as *mut [u8];
+            Box::from_raw(buf_slice)
+        }
     }
 }
 

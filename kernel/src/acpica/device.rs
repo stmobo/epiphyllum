@@ -271,6 +271,17 @@ impl AcpiDevice {
 
         Ok(filtered)
     }
+
+    pub unsafe fn set_current_resources(&self, resources: &Vec<Resource>) -> AcpiResult<()> {
+        let mut rust_buf = Resource::into_buffer(resources);
+        let mut acpi_buf = ACPI_BUFFER {
+            Length: rust_buf.len() as u64,
+            Pointer: rust_buf.as_mut_ptr() as *mut cty::c_void,
+        };
+
+        AcpiStatus::from(AcpiSetCurrentResources(self.handle, &mut acpi_buf))?;
+        Ok(())
+    }
 }
 
 unsafe impl Send for AcpiDevice {}

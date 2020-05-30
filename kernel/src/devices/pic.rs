@@ -346,26 +346,54 @@ pub mod io_apic {
 
             let mut gsi_list = GSI_LIST.lock();
 
-            for irq in madt.irqs.iter() {
-                let gsi = irq.gsi as u8;
+            if min_irq < 16 {
+                // Handle the ISA interrupts specially.
+                let max = if max_irq >= 16 { 16 } else { max_irq };
 
-                if gsi >= min_irq && gsi < max_irq {
+                for gsi in min_irq..max {
                     let idx = gsi - min_irq;
                     let mut entry = RedirectionEntry::new();
 
-                    entry.set_vector(ISA_IRQ_BASE + irq.irq_src);
-                    entry.set_pin_polarity(irq.active_low);
-                    entry.set_trigger_mode(irq.level_triggered);
+                    let irq_override = madt
+                        .irqs
+                        .iter()
+                        .find(|item| (item.irq_src == gsi) || ((item.gsi as u8) == gsi));
+
+                    if let Some(irq_override) = irq_override {
+                        // The identity map for this IRQ is overridden in the
+                        // MADT
+
+                        if (irq_override.gsi as u8) != gsi {
+                            continue;
+                        }
+
+                        entry.set_vector(ISA_IRQ_BASE + irq_override.irq_src);
+                        entry.set_pin_polarity(irq_override.active_low);
+                        entry.set_trigger_mode(irq_override.level_triggered);
+
+                        gsi_list.push(GSIEntry {
+                            gsi,
+                            vector: ISA_IRQ_BASE + irq_override.irq_src,
+                            io_apic_id: self.id(),
+                        });
+                    } else {
+                        // Assume this IRQ/GSI should be identity-mapped onto
+                        // the corresponding ISA interrupt number
+                        // (ISA interrupts are edge-triggered and active-high)
+                        entry.set_vector(ISA_IRQ_BASE + gsi);
+                        entry.set_pin_polarity(false);
+                        entry.set_trigger_mode(false);
+
+                        gsi_list.push(GSIEntry {
+                            gsi,
+                            vector: ISA_IRQ_BASE + gsi,
+                            io_apic_id: self.id(),
+                        });
+                    }
+
                     entry.set_masked(false);
                     entry.set_destination_apic(0);
-
                     self.set_redirection_entry(idx, entry).unwrap();
-
-                    gsi_list.push(GSIEntry {
-                        gsi,
-                        vector: ISA_IRQ_BASE + irq.irq_src,
-                        io_apic_id: self.id(),
-                    });
                 }
             }
         }

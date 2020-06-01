@@ -56,45 +56,54 @@ impl PCIDevice {
         let header_type = (((data >> 16) & 0xFF) as u8) & 0x7F;
         let mut bars = Vec::new();
 
+        let mut nonzero_bars = false;
         unsafe {
             if header_type == 0x00 {
                 // Enumerate BARs:
                 let mut offset: u16 = 0x10;
                 while offset <= 0x24 {
-                    if let Some(bar) = BAR::new(address, offset) {
-                        if bar.large {
-                            offset += 8;
-                        } else {
-                            offset += 4;
-                        }
+                    let bar = BAR::new(address, offset);
+                    if bar.size > 0 {
+                        nonzero_bars = true;
+                    }
 
-                        bars.push(bar);
+                    if bar.large {
+                        offset += 8;
                     } else {
                         offset += 4;
                     }
+
+                    bars.push(bar);
                 }
             } else if header_type == 0x01 {
                 // PCI-to-PCI bridges have up to two BARs:
 
-                let test_bar1;
-                if let Some(bar) = BAR::new(address, 0x10) {
-                    test_bar1 = !bar.large;
-                    bars.push(bar);
-                } else {
-                    test_bar1 = true;
+                let bar0 = BAR::new(address, 0x10);
+                if bar0.size > 0 {
+                    nonzero_bars = true;
                 }
 
-                if test_bar1 {
-                    if let Some(bar) = BAR::new(address, 0x14) {
-                        bars.push(bar);
+                if !bar0.large {
+                    let bar1 = BAR::new(address, 0x14);
+                    if bar1.size > 0 {
+                        nonzero_bars = true;
                     }
+
+                    bars.push(bar0);
+                    bars.push(bar1);
+                } else {
+                    bars.push(bar0);
                 }
             }
         }
 
-        if bars.len() > 0 {
+        if nonzero_bars {
             println!("pci:    Device BARs:");
             for bar in bars.iter() {
+                if bar.size == 0 {
+                    continue;
+                }
+
                 println!("pci:        {}", bar);
 
                 if !bar.io {
@@ -252,7 +261,7 @@ pub struct BAR {
 }
 
 impl BAR {
-    unsafe fn new(address: PCIAddress, offset: u16) -> Option<BAR> {
+    unsafe fn new(address: PCIAddress, offset: u16) -> BAR {
         let d1 = config_space::read_config(address, offset);
         let io = (d1 & 1) == 1;
         let large = (d1 & 0b110) == 0b100;
@@ -271,11 +280,8 @@ impl BAR {
             let s2 = config_space::read_config(address, offset + 4);
 
             let t = ((s2 as usize) << 32) | ((s1 & 0xFFFF_FFF0) as usize);
-            if t == 0 {
-                return None;
-            }
 
-            size = (!t) + 1;
+            size = (!t).overflowing_add(1).0;
             config_space::write_config(address, offset, d1);
             config_space::write_config(address, offset + 4, d2);
         } else {
@@ -284,22 +290,19 @@ impl BAR {
 
             let s1 = config_space::read_config(address, offset);
             let t = s1 & 0xFFFF_FFF0;
-            if t == 0 {
-                return None;
-            }
 
-            size = ((!t) + 1) as usize;
+            size = (!t).overflowing_add(1).0 as usize;
             config_space::write_config(address, offset, d1);
         }
 
-        Some(BAR {
+        BAR {
             address: bar_addr,
             size,
             io,
             large,
             prefetch,
             offset,
-        })
+        }
     }
 
     /// The number of this BAR in its device's PCI configuration space.

@@ -7,12 +7,14 @@ use crate::acpica::AcpiDevice;
 use crate::lock::OnceCell;
 use crate::malloc::physical_mem;
 use crate::paging;
+use crate::paging::PhysicalPointer;
 use crate::structures::HashMap;
 
 use super::acpi;
 use super::config_space;
 use super::enhanced_cam;
 use super::enumeration;
+use super::interrupts::{InterruptAssignment, PCIInterruptPin};
 use super::PCIAddress;
 
 static DEVICES: OnceCell<HashMap<PCIAddress, Arc<PCIDevice>>> = OnceCell::new();
@@ -209,6 +211,34 @@ impl PCIDevice {
         let r = self.bridge_data()?;
         Some(r.devices())
     }
+
+    pub fn get_interrupt(&self, pin: PCIInterruptPin) -> InterruptAssignment {
+        match InterruptAssignment::get(self.address, pin) {
+            Some(v) => v,
+            None => panic!(
+                "could not get interrupt assignment for device {}",
+                self.address
+            ),
+        }
+    }
+
+    /// Gets the vector mapped to the given interrupt pin for this device.
+    pub fn get_interrupt_vector(&self, pin: PCIInterruptPin) -> u8 {
+        self.get_interrupt(pin).interrupt_vector()
+    }
+
+    /// Get the ACPI device object that corresponds to this device, if any.
+    pub fn acpi_device(&self) -> Option<&'static AcpiDevice> {
+        self.acpi_device
+    }
+
+    /// Get the Base Address Registers for this device.
+    ///
+    /// Registers not listed here were read as having a value of zero during
+    /// device enumeration and initialization.
+    pub fn bars(&self) -> &Vec<BAR> {
+        &self.bars
+    }
 }
 
 #[derive(Debug)]
@@ -270,6 +300,70 @@ impl BAR {
             prefetch,
             offset,
         })
+    }
+
+    /// The number of this BAR in its device's PCI configuration space.
+    ///
+    /// For ordinary devices, BAR numbers range from 0 to 5 (inclusive).
+    /// For PCI-PCI bridges, BAR numbers can be either 0 or 1.
+    pub fn number(&self) -> usize {
+        let offset = self.offset as usize;
+        (offset - 0x10) / 4
+    }
+
+    /// Gets whether this BAR refers to a region in memory or to a region in
+    /// the I/O port address space.
+    pub fn io(&self) -> bool {
+        self.io
+    }
+
+    /// For memory BARs, if this flag is set, reads from this region will not
+    /// cause any side effects.
+    ///
+    /// When this flag is set, the memory region covered by this BAR can be
+    /// safely mapped as Write-Through instead of as purely Uncacheable to
+    /// improve performance.
+    pub fn prefetch(&self) -> bool {
+        self.prefetch
+    }
+
+    /// For memory BARs, gets whether this region supports 64-bit addresses.
+    pub fn large(&self) -> bool {
+        self.large
+    }
+
+    /// Gets the size of this region in its address space.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Gets the address in memory referenced by this BAR.
+    ///
+    /// If this returns None, this BAR either refers to an I/O port address, or
+    /// is otherwise an invalid address in memory.
+    pub fn memory_address<T>(&self) -> Option<PhysicalPointer<T>> {
+        if self.io {
+            return None;
+        }
+
+        PhysicalPointer::new(self.address)
+    }
+
+    /// Gets the address in I/O port space referenced by this BAR.
+    ///
+    /// If this returns None, this BAR refers to an address in memory instead.
+    pub fn io_address(&self) -> Option<u16> {
+        if !self.io {
+            return None;
+        }
+
+        assert!(
+            self.address < 0xFFFF,
+            "invalid IO BAR address {:#x}",
+            self.address
+        );
+
+        Some(self.address as u16)
     }
 }
 

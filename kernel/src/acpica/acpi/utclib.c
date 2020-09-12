@@ -195,12 +195,10 @@
  *
  ******************************************************************************/
 
-#define _COMPONENT          ACPI_UTILITIES
-        ACPI_MODULE_NAME    ("utclib")
+#define _COMPONENT ACPI_UTILITIES
+ACPI_MODULE_NAME("utclib")
 
-
-#ifndef ACPI_USE_SYSTEM_CLIBRARY    /* Entire module */
-
+#ifndef ACPI_USE_SYSTEM_CLIBRARY /* Entire module */
 
 /*******************************************************************************
  *
@@ -216,24 +214,22 @@
  *
  ******************************************************************************/
 
-int
-memcmp (
-    void                    *VBuffer1,
-    void                    *VBuffer2,
-    ACPI_SIZE               Count)
-{
-    char                    *Buffer1 = (char *) VBuffer1;
-    char                    *Buffer2 = (char *) VBuffer2;
+// int
+// memcmp (
+//     void                    *VBuffer1,
+//     void                    *VBuffer2,
+//     ACPI_SIZE               Count)
+// {
+//     char                    *Buffer1 = (char *) VBuffer1;
+//     char                    *Buffer2 = (char *) VBuffer2;
 
+//     for ( ; Count-- && (*Buffer1 == *Buffer2); Buffer1++, Buffer2++)
+//     {
+//     }
 
-    for ( ; Count-- && (*Buffer1 == *Buffer2); Buffer1++, Buffer2++)
-    {
-    }
-
-    return ((Count == ACPI_SIZE_MAX) ? 0 : ((unsigned char) *Buffer1 -
-        (unsigned char) *Buffer2));
-}
-
+//     return ((Count == ACPI_SIZE_MAX) ? 0 : ((unsigned char) *Buffer1 -
+//         (unsigned char) *Buffer2));
+// }
 
 /*******************************************************************************
  *
@@ -249,46 +245,44 @@ memcmp (
  *
  ******************************************************************************/
 
-void *
-memmove (
-    void                    *Dest,
-    const void              *Src,
-    ACPI_SIZE               Count)
-{
-    char                    *New = (char *) Dest;
-    char                    *Old = (char *) Src;
+// void *
+// memmove(
+//     void *Dest,
+//     const void *Src,
+//     ACPI_SIZE Count)
+// {
+//     char *New = (char *)Dest;
+//     char *Old = (char *)Src;
 
+//     if (Old > New)
+//     {
+//         /* Copy from the beginning */
 
-    if (Old > New)
-    {
-        /* Copy from the beginning */
+//         while (Count)
+//         {
+//             *New = *Old;
+//             New++;
+//             Old++;
+//             Count--;
+//         }
+//     }
+//     else if (Old < New)
+//     {
+//         /* Copy from the end */
 
-        while (Count)
-        {
-            *New = *Old;
-            New++;
-            Old++;
-            Count--;
-        }
-    }
-    else if (Old < New)
-    {
-        /* Copy from the end */
+//         New = New + Count - 1;
+//         Old = Old + Count - 1;
+//         while (Count)
+//         {
+//             *New = *Old;
+//             New--;
+//             Old--;
+//             Count--;
+//         }
+//     }
 
-        New = New + Count - 1;
-        Old = Old + Count - 1;
-        while (Count)
-        {
-            *New = *Old;
-            New--;
-            Old--;
-            Count--;
-        }
-    }
-
-    return (Dest);
-}
-
+//     return (Dest);
+// }
 
 /*******************************************************************************
  *
@@ -304,27 +298,25 @@ memmove (
  *
  ******************************************************************************/
 
-void *
-memcpy (
-    void                    *Dest,
-    const void              *Src,
-    ACPI_SIZE               Count)
-{
-    char                    *New = (char *) Dest;
-    char                    *Old = (char *) Src;
+// void *
+// memcpy (
+//     void                    *Dest,
+//     const void              *Src,
+//     ACPI_SIZE               Count)
+// {
+//     char                    *New = (char *) Dest;
+//     char                    *Old = (char *) Src;
 
+//     while (Count)
+//     {
+//         *New = *Old;
+//         New++;
+//         Old++;
+//         Count--;
+//     }
 
-    while (Count)
-    {
-        *New = *Old;
-        New++;
-        Old++;
-        Count--;
-    }
-
-    return (Dest);
-}
-
+//     return (Dest);
+// }
 
 /*******************************************************************************
  *
@@ -340,25 +332,23 @@ memcpy (
  *
  ******************************************************************************/
 
-void *
-memset (
-    void                    *Dest,
-    int                     Value,
-    ACPI_SIZE               Count)
-{
-    char                    *New = (char *) Dest;
+// void *
+// memset (
+//     void                    *Dest,
+//     int                     Value,
+//     ACPI_SIZE               Count)
+// {
+//     char                    *New = (char *) Dest;
 
+//     while (Count)
+//     {
+//         *New = (char) Value;
+//         New++;
+//         Count--;
+//     }
 
-    while (Count)
-    {
-        *New = (char) Value;
-        New++;
-        Count--;
-    }
-
-    return (Dest);
-}
-
+//     return (Dest);
+// }
 
 /*******************************************************************************
  *
@@ -372,13 +362,11 @@ memset (
  *
  ******************************************************************************/
 
-
 ACPI_SIZE
-strlen (
-    const char              *String)
+strlen(
+    const char *String)
 {
-    UINT32                  Length = 0;
-
+    UINT32 Length = 0;
 
     /* Count the string until a null is encountered */
 
@@ -390,7 +378,6 @@ strlen (
 
     return (Length);
 }
-
 
 /*******************************************************************************
  *
@@ -407,27 +394,25 @@ strlen (
  ******************************************************************************/
 
 char *
-strpbrk (
-    const char              *String,
-    const char              *Delimiters)
+strpbrk(
+    const char *String,
+    const char *Delimiters)
 {
-    const char              *Delimiter;
+    const char *Delimiter;
 
-
-    for ( ; *String != '\0'; ++String)
+    for (; *String != '\0'; ++String)
     {
         for (Delimiter = Delimiters; *Delimiter != '\0'; Delimiter++)
         {
             if (*String == *Delimiter)
             {
-                return (ACPI_CAST_PTR (char, String));
+                return (ACPI_CAST_PTR(char, String));
             }
         }
     }
 
     return (NULL);
 }
-
 
 /*******************************************************************************
  *
@@ -442,14 +427,13 @@ strpbrk (
  *
  ******************************************************************************/
 
-char*
-strtok (
-    char                    *String,
-    const char              *Delimiters)
+char *
+strtok(
+    char *String,
+    const char *Delimiters)
 {
-    char                    *Begin = String;
-    static char             *SavedPtr;
-
+    char *Begin = String;
+    static char *SavedPtr;
 
     if (Begin == NULL)
     {
@@ -460,11 +444,11 @@ strtok (
         Begin = SavedPtr;
     }
 
-    SavedPtr = strpbrk (Begin, Delimiters);
+    SavedPtr = strpbrk(Begin, Delimiters);
     while (SavedPtr == Begin)
     {
         *Begin++ = '\0';
-        SavedPtr = strpbrk (Begin, Delimiters);
+        SavedPtr = strpbrk(Begin, Delimiters);
     }
 
     if (SavedPtr)
@@ -477,7 +461,6 @@ strtok (
         return (NULL);
     }
 }
-
 
 /*******************************************************************************
  *
@@ -493,12 +476,11 @@ strtok (
  ******************************************************************************/
 
 char *
-strcpy (
-    char                    *DstString,
-    const char              *SrcString)
+strcpy(
+    char *DstString,
+    const char *SrcString)
 {
-    char                    *String = DstString;
-
+    char *String = DstString;
 
     /* Move bytes brute force */
 
@@ -516,7 +498,6 @@ strcpy (
     return (DstString);
 }
 
-
 /*******************************************************************************
  *
  * FUNCTION:    strncpy
@@ -532,19 +513,20 @@ strcpy (
  ******************************************************************************/
 
 char *
-strncpy (
-    char                    *DstString,
-    const char              *SrcString,
-    ACPI_SIZE               Count)
+strncpy(
+    char *DstString,
+    const char *SrcString,
+    ACPI_SIZE Count)
 {
-    char                    *String = DstString;
-
+    char *String = DstString;
 
     /* Copy the string */
 
     for (String = DstString;
-        Count && (Count--, (*String++ = *SrcString++)); )
-    {;}
+         Count && (Count--, (*String++ = *SrcString++));)
+    {
+        ;
+    }
 
     /* Pad with nulls if necessary */
 
@@ -559,7 +541,6 @@ strncpy (
     return (DstString);
 }
 
-
 /*******************************************************************************
  *
  * FUNCTION:    strcmp
@@ -573,14 +554,12 @@ strncpy (
  *
  ******************************************************************************/
 
-int
-strcmp (
-    const char              *String1,
-    const char              *String2)
+int strcmp(
+    const char *String1,
+    const char *String2)
 {
 
-
-    for ( ; (*String1 == *String2); String2++)
+    for (; (*String1 == *String2); String2++)
     {
         if (!*String1++)
         {
@@ -588,9 +567,8 @@ strcmp (
         }
     }
 
-    return ((unsigned char) *String1 - (unsigned char) *String2);
+    return ((unsigned char)*String1 - (unsigned char)*String2);
 }
-
 
 /*******************************************************************************
  *
@@ -606,23 +584,21 @@ strcmp (
  ******************************************************************************/
 
 char *
-strchr (
-    const char              *String,
-    int                     ch)
+strchr(
+    const char *String,
+    int ch)
 {
 
-
-    for ( ; (*String); String++)
+    for (; (*String); String++)
     {
-        if ((*String) == (char) ch)
+        if ((*String) == (char)ch)
         {
-            return ((char *) String);
+            return ((char *)String);
         }
     }
 
     return (NULL);
 }
-
 
 /*******************************************************************************
  *
@@ -638,15 +614,13 @@ strchr (
  *
  ******************************************************************************/
 
-int
-strncmp (
-    const char              *String1,
-    const char              *String2,
-    ACPI_SIZE               Count)
+int strncmp(
+    const char *String1,
+    const char *String2,
+    ACPI_SIZE Count)
 {
 
-
-    for ( ; Count-- && (*String1 == *String2); String2++)
+    for (; Count-- && (*String1 == *String2); String2++)
     {
         if (!*String1++)
         {
@@ -654,10 +628,8 @@ strncmp (
         }
     }
 
-    return ((Count == ACPI_SIZE_MAX) ? 0 : ((unsigned char) *String1 -
-        (unsigned char) *String2));
+    return ((Count == ACPI_SIZE_MAX) ? 0 : ((unsigned char)*String1 - (unsigned char)*String2));
 }
-
 
 /*******************************************************************************
  *
@@ -673,26 +645,28 @@ strncmp (
  ******************************************************************************/
 
 char *
-strcat (
-    char                    *DstString,
-    const char              *SrcString)
+strcat(
+    char *DstString,
+    const char *SrcString)
 {
-    char                    *String;
-
+    char *String;
 
     /* Find end of the destination string */
 
-    for (String = DstString; *String++; )
-    { ; }
+    for (String = DstString; *String++;)
+    {
+        ;
+    }
 
     /* Concatenate the string */
 
-    for (--String; (*String++ = *SrcString++); )
-    { ; }
+    for (--String; (*String++ = *SrcString++);)
+    {
+        ;
+    }
 
     return (DstString);
 }
-
 
 /*******************************************************************************
  *
@@ -710,25 +684,28 @@ strcat (
  ******************************************************************************/
 
 char *
-strncat (
-    char                    *DstString,
-    const char              *SrcString,
-    ACPI_SIZE               Count)
+strncat(
+    char *DstString,
+    const char *SrcString,
+    ACPI_SIZE Count)
 {
-    char                    *String;
-
+    char *String;
 
     if (Count)
     {
         /* Find end of the destination string */
 
-        for (String = DstString; *String++; )
-        { ; }
+        for (String = DstString; *String++;)
+        {
+            ;
+        }
 
         /* Concatenate the string */
 
-        for (--String; (*String++ = *SrcString++) && --Count; )
-        { ; }
+        for (--String; (*String++ = *SrcString++) && --Count;)
+        {
+            ;
+        }
 
         /* Null terminate if necessary */
 
@@ -740,7 +717,6 @@ strncat (
 
     return (DstString);
 }
-
 
 /*******************************************************************************
  *
@@ -758,22 +734,21 @@ strncat (
  ******************************************************************************/
 
 char *
-strstr (
-    char                    *String1,
-    char                    *String2)
+strstr(
+    char *String1,
+    char *String2)
 {
-    ACPI_SIZE               Length;
+    ACPI_SIZE Length;
 
-
-    Length = strlen (String2);
+    Length = strlen(String2);
     if (!Length)
     {
         return (String1);
     }
 
-    while (strlen (String1) >= Length)
+    while (strlen(String1) >= Length)
     {
-        if (memcmp (String1, String2, Length) == 0)
+        if (memcmp(String1, String2, Length) == 0)
         {
             return (String1);
         }
@@ -782,7 +757,6 @@ strstr (
 
     return (NULL);
 }
-
 
 /*******************************************************************************
  *
@@ -801,18 +775,17 @@ strstr (
  ******************************************************************************/
 
 UINT32
-strtoul (
-    const char              *String,
-    char                    **Terminator,
-    UINT32                  Base)
+strtoul(
+    const char *String,
+    char **Terminator,
+    UINT32 Base)
 {
-    UINT32                  converted = 0;
-    UINT32                  index;
-    UINT32                  sign;
-    const char              *StringStart;
-    UINT32                  ReturnValue = 0;
-    ACPI_STATUS             Status = AE_OK;
-
+    UINT32 converted = 0;
+    UINT32 index;
+    UINT32 sign;
+    const char *StringStart;
+    UINT32 ReturnValue = 0;
+    ACPI_STATUS Status = AE_OK;
 
     /*
      * Save the value of the pointer to the buffer's first
@@ -820,7 +793,7 @@ strtoul (
      * skip over any white space in the buffer:
      */
     StringStart = String;
-    while (isspace (*String) || *String == '\t')
+    while (isspace(*String) || *String == '\t')
     {
         ++String;
     }
@@ -852,7 +825,7 @@ strtoul (
     {
         if (*String == '0')
         {
-            if (tolower (*(++String)) == 'x')
+            if (tolower(*(++String)) == 'x')
             {
                 Base = 16;
                 ++String;
@@ -887,7 +860,7 @@ strtoul (
 
     if (Base == 16 &&
         *String == '0' &&
-        tolower (*(++String)) == 'x')
+        tolower(*(++String)) == 'x')
     {
         String++;
     }
@@ -897,14 +870,14 @@ strtoul (
      */
     while (*String)
     {
-        if (isdigit (*String))
+        if (isdigit(*String))
         {
-            index = (UINT32) ((UINT8) *String - '0');
+            index = (UINT32)((UINT8)*String - '0');
         }
         else
         {
-            index = (UINT32) toupper (*String);
-            if (isupper (index))
+            index = (UINT32)toupper(*String);
+            if (isupper(index))
             {
                 index = index - 'A' + 10;
             }
@@ -923,11 +896,11 @@ strtoul (
          * Check to see if value is out of range:
          */
 
-        if (ReturnValue > ((ACPI_UINT32_MAX - (UINT32) index) /
-                            (UINT32) Base))
+        if (ReturnValue > ((ACPI_UINT32_MAX - (UINT32)index) /
+                           (UINT32)Base))
         {
             Status = AE_ERROR;
-            ReturnValue = 0;           /* reset */
+            ReturnValue = 0; /* reset */
         }
         else
         {
@@ -948,11 +921,11 @@ done:
     {
         if (converted == 0 && ReturnValue == 0 && String != NULL)
         {
-            *Terminator = (char *) StringStart;
+            *Terminator = (char *)StringStart;
         }
         else
         {
-            *Terminator = (char *) String;
+            *Terminator = (char *)String;
         }
     }
 
@@ -972,7 +945,6 @@ done:
     return (ReturnValue);
 }
 
-
 /*******************************************************************************
  *
  * FUNCTION:    toupper
@@ -985,14 +957,12 @@ done:
  *
  ******************************************************************************/
 
-int
-toupper (
-    int                     c)
+int toupper(
+    int c)
 {
 
     return (islower(c) ? ((c)-0x20) : (c));
 }
-
 
 /*******************************************************************************
  *
@@ -1006,14 +976,12 @@ toupper (
  *
  ******************************************************************************/
 
-int
-tolower (
-    int                     c)
+int tolower(
+    int c)
 {
 
-    return (isupper(c) ? ((c)+0x20) : (c));
+    return (isupper(c) ? ((c) + 0x20) : (c));
 }
-
 
 /*******************************************************************************
  *
@@ -1033,11 +1001,11 @@ const UINT8 AcpiGbl_Ctypes[257] = {
     _ACPI_CN,            /* 0x06     6 ACK */
     _ACPI_CN,            /* 0x07     7 BEL */
     _ACPI_CN,            /* 0x08     8 BS  */
-    _ACPI_CN|_ACPI_SP,   /* 0x09     9 TAB */
-    _ACPI_CN|_ACPI_SP,   /* 0x0A    10 LF  */
-    _ACPI_CN|_ACPI_SP,   /* 0x0B    11 VT  */
-    _ACPI_CN|_ACPI_SP,   /* 0x0C    12 FF  */
-    _ACPI_CN|_ACPI_SP,   /* 0x0D    13 CR  */
+    _ACPI_CN | _ACPI_SP, /* 0x09     9 TAB */
+    _ACPI_CN | _ACPI_SP, /* 0x0A    10 LF  */
+    _ACPI_CN | _ACPI_SP, /* 0x0B    11 VT  */
+    _ACPI_CN | _ACPI_SP, /* 0x0C    12 FF  */
+    _ACPI_CN | _ACPI_SP, /* 0x0D    13 CR  */
     _ACPI_CN,            /* 0x0E    14 SO  */
     _ACPI_CN,            /* 0x0F    15 SI  */
     _ACPI_CN,            /* 0x10    16 DLE */
@@ -1056,7 +1024,7 @@ const UINT8 AcpiGbl_Ctypes[257] = {
     _ACPI_CN,            /* 0x1D    29 GS  */
     _ACPI_CN,            /* 0x1E    30 RS  */
     _ACPI_CN,            /* 0x1F    31 US  */
-    _ACPI_XS|_ACPI_SP,   /* 0x20    32 ' ' */
+    _ACPI_XS | _ACPI_SP, /* 0x20    32 ' ' */
     _ACPI_PU,            /* 0x21    33 '!' */
     _ACPI_PU,            /* 0x22    34 '"' */
     _ACPI_PU,            /* 0x23    35 '#' */
@@ -1072,16 +1040,16 @@ const UINT8 AcpiGbl_Ctypes[257] = {
     _ACPI_PU,            /* 0x2D    45 '-' */
     _ACPI_PU,            /* 0x2E    46 '.' */
     _ACPI_PU,            /* 0x2F    47 '/' */
-    _ACPI_XD|_ACPI_DI,   /* 0x30    48 '0' */
-    _ACPI_XD|_ACPI_DI,   /* 0x31    49 '1' */
-    _ACPI_XD|_ACPI_DI,   /* 0x32    50 '2' */
-    _ACPI_XD|_ACPI_DI,   /* 0x33    51 '3' */
-    _ACPI_XD|_ACPI_DI,   /* 0x34    52 '4' */
-    _ACPI_XD|_ACPI_DI,   /* 0x35    53 '5' */
-    _ACPI_XD|_ACPI_DI,   /* 0x36    54 '6' */
-    _ACPI_XD|_ACPI_DI,   /* 0x37    55 '7' */
-    _ACPI_XD|_ACPI_DI,   /* 0x38    56 '8' */
-    _ACPI_XD|_ACPI_DI,   /* 0x39    57 '9' */
+    _ACPI_XD | _ACPI_DI, /* 0x30    48 '0' */
+    _ACPI_XD | _ACPI_DI, /* 0x31    49 '1' */
+    _ACPI_XD | _ACPI_DI, /* 0x32    50 '2' */
+    _ACPI_XD | _ACPI_DI, /* 0x33    51 '3' */
+    _ACPI_XD | _ACPI_DI, /* 0x34    52 '4' */
+    _ACPI_XD | _ACPI_DI, /* 0x35    53 '5' */
+    _ACPI_XD | _ACPI_DI, /* 0x36    54 '6' */
+    _ACPI_XD | _ACPI_DI, /* 0x37    55 '7' */
+    _ACPI_XD | _ACPI_DI, /* 0x38    56 '8' */
+    _ACPI_XD | _ACPI_DI, /* 0x39    57 '9' */
     _ACPI_PU,            /* 0x3A    58 ':' */
     _ACPI_PU,            /* 0x3B    59 ';' */
     _ACPI_PU,            /* 0x3C    60 '<' */
@@ -1089,12 +1057,12 @@ const UINT8 AcpiGbl_Ctypes[257] = {
     _ACPI_PU,            /* 0x3E    62 '>' */
     _ACPI_PU,            /* 0x3F    63 '?' */
     _ACPI_PU,            /* 0x40    64 '@' */
-    _ACPI_XD|_ACPI_UP,   /* 0x41    65 'A' */
-    _ACPI_XD|_ACPI_UP,   /* 0x42    66 'B' */
-    _ACPI_XD|_ACPI_UP,   /* 0x43    67 'C' */
-    _ACPI_XD|_ACPI_UP,   /* 0x44    68 'D' */
-    _ACPI_XD|_ACPI_UP,   /* 0x45    69 'E' */
-    _ACPI_XD|_ACPI_UP,   /* 0x46    70 'F' */
+    _ACPI_XD | _ACPI_UP, /* 0x41    65 'A' */
+    _ACPI_XD | _ACPI_UP, /* 0x42    66 'B' */
+    _ACPI_XD | _ACPI_UP, /* 0x43    67 'C' */
+    _ACPI_XD | _ACPI_UP, /* 0x44    68 'D' */
+    _ACPI_XD | _ACPI_UP, /* 0x45    69 'E' */
+    _ACPI_XD | _ACPI_UP, /* 0x46    70 'F' */
     _ACPI_UP,            /* 0x47    71 'G' */
     _ACPI_UP,            /* 0x48    72 'H' */
     _ACPI_UP,            /* 0x49    73 'I' */
@@ -1121,12 +1089,12 @@ const UINT8 AcpiGbl_Ctypes[257] = {
     _ACPI_PU,            /* 0x5E    94 '^' */
     _ACPI_PU,            /* 0x5F    95 '_' */
     _ACPI_PU,            /* 0x60    96 '`' */
-    _ACPI_XD|_ACPI_LO,   /* 0x61    97 'a' */
-    _ACPI_XD|_ACPI_LO,   /* 0x62    98 'b' */
-    _ACPI_XD|_ACPI_LO,   /* 0x63    99 'c' */
-    _ACPI_XD|_ACPI_LO,   /* 0x64   100 'd' */
-    _ACPI_XD|_ACPI_LO,   /* 0x65   101 'e' */
-    _ACPI_XD|_ACPI_LO,   /* 0x66   102 'f' */
+    _ACPI_XD | _ACPI_LO, /* 0x61    97 'a' */
+    _ACPI_XD | _ACPI_LO, /* 0x62    98 'b' */
+    _ACPI_XD | _ACPI_LO, /* 0x63    99 'c' */
+    _ACPI_XD | _ACPI_LO, /* 0x64   100 'd' */
+    _ACPI_XD | _ACPI_LO, /* 0x65   101 'e' */
+    _ACPI_XD | _ACPI_LO, /* 0x66   102 'f' */
     _ACPI_LO,            /* 0x67   103 'g' */
     _ACPI_LO,            /* 0x68   104 'h' */
     _ACPI_LO,            /* 0x69   105 'i' */
@@ -1153,16 +1121,15 @@ const UINT8 AcpiGbl_Ctypes[257] = {
     _ACPI_PU,            /* 0x7E   126 '~' */
     _ACPI_CN,            /* 0x7F   127 DEL */
 
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  /* 0x80 to 0x8F    */
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  /* 0x90 to 0x9F    */
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  /* 0xA0 to 0xAF    */
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  /* 0xB0 to 0xBF    */
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  /* 0xC0 to 0xCF    */
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  /* 0xD0 to 0xDF    */
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  /* 0xE0 to 0xEF    */
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  /* 0xF0 to 0xFF    */
-    0                                 /* 0x100 */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0x80 to 0x8F    */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0x90 to 0x9F    */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0xA0 to 0xAF    */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0xB0 to 0xBF    */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0xC0 to 0xCF    */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0xD0 to 0xDF    */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0xE0 to 0xEF    */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0xF0 to 0xFF    */
+    0                                               /* 0x100 */
 };
-
 
 #endif /* ACPI_USE_SYSTEM_CLIBRARY */

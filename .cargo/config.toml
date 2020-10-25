@@ -1,0 +1,2 @@
+[unstable]
+features=["itarget", "host_dep", "dev_dep"]

@@ -2,8 +2,6 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
-use super::scheduler;
-use super::scheduling::{current_task, yield_cpu};
 use super::structs::TaskStatus;
 use crate::structures::handle_list::NodeHandle;
 use crate::structures::HandleList;
@@ -73,30 +71,23 @@ impl WaitQueue {
     /// Wait for a condition to become true, sleeping on this queue in the
     /// meanwhile.
     pub fn wait<F: FnMut() -> bool>(&self, mut condition: F, mode: WaitMode) {
-        let p = scheduler().running_task_ptr();
+        let p = super::current_task();
 
         loop {
-            unsafe {
-                (*p).set_wakeup_pending(false);
-            }
-
-            let _h = self.add_waiter(Some(current_task().waker()), mode);
+            p.set_wakeup_pending(false);
+            let _h = self.add_waiter(Some(super::current_task().waker()), mode);
 
             if condition() {
                 break;
             }
 
-            unsafe {
-                (*p).set_status(TaskStatus::Sleeping);
-            }
-
-            yield_cpu();
+            p.set_status(TaskStatus::Sleeping);
+            //direct_println!("task {} sleeping", p.id());
+            super::scheduler().update();
         }
 
-        unsafe {
-            (*p).set_wakeup_pending(false);
-            (*p).set_status(TaskStatus::Running);
-        }
+        p.set_wakeup_pending(false);
+        p.set_status(TaskStatus::Running);
     }
 
     /// Creates a Future that sleeps on this queue until the given condition

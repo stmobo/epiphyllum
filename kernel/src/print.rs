@@ -85,6 +85,7 @@ pub fn initialize() {
     .schedule();
 
     LOGGING_TASK_ENABLED.store(true, Ordering::SeqCst);
+    println!("print: initialized logging task");
 }
 
 fn logging_task(log_recv: Receiver<String>) {
@@ -156,18 +157,8 @@ pub fn do_panic(info: &PanicInfo) -> ! {
         }
     }
 
-    if let Some(ctx) = task::current_context() {
-        println!("\n== [Task Context] ==\n{}", unsafe { &*ctx });
-        print_control_regs();
-
-        println!("\n== [Task Stack Trace] ==");
-        for frame in unsafe { (*ctx).trace_stack() } {
-            println!("    {:#018x}", frame.frame_ip);
-        }
-    } else {
-        println!("\nUnable to identify task context.\n== [Control Registers] ==");
-        print_control_regs();
-    }
+    println!("\n== [Control Registers] ==");
+    print_control_regs();
 
     #[cfg(test)]
     test::test_panic();

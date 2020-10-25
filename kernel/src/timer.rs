@@ -19,6 +19,7 @@ pub fn get_kernel_ticks() -> u64 {
 
 pub fn initialize() {
     wheel::init_timer_wheel();
+    println!("timer: timer wheel initialized");
 }
 
 mod sleep_funcs {
@@ -35,7 +36,7 @@ mod sleep_funcs {
     use super::wheel::{TimerData, TimerDeadline};
 
     pub fn sleep(deadline: TimerDeadline) -> Result<(), u64> {
-        let cur_task = task::current_task();
+        let cur_task = task::current_task_handle();
         let flag = Arc::new(AtomicBool::new(false));
         let cb_flag = flag.clone();
         let cb_handle = cur_task.clone();

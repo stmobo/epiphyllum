@@ -9,6 +9,9 @@ clean:
 bootloader:
 	cd bootloader && RUST_TARGET_PATH=`pwd` xargo +nightly build --target x86_64-bootloader
 
+build: bootloader grub.cfg
+	cd kernel && RUST_TARGET_PATH=`pwd` xargo +nightly -Z features=all build --target x86_64-epiphyllum
+
 run: bootloader grub.cfg
 	cd kernel && RUST_TARGET_PATH=`pwd` xargo +nightly -Zfeatures=all run --target x86_64-epiphyllum
 

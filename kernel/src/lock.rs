@@ -113,12 +113,12 @@ impl<T> LockedGlobal<T> {
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.data.wait().is_some()
+        self.data.is_completed()
     }
 
     fn get(&self) -> &NoIRQSpinlock<T> {
         // panic if data is not initialized yet
-        if let Some(lock) = self.data.wait() {
+        if let Some(lock) = self.data.poll() {
             lock
         } else {
             panic!("attempted to access global before initialization");
@@ -152,11 +152,11 @@ impl<T> OnceCell<T> {
     }
 
     pub fn get(&self) -> Option<&T> {
-        self.data.r#try()
+        self.data.get()
     }
 
     pub fn wait(&self) -> Option<&T> {
-        self.data.wait()
+        self.data.poll()
     }
 
     pub fn set(&self, value: T) -> Result<(), T> {

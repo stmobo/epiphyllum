@@ -203,13 +203,14 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
         h.schedule();
         let scheduler = task::scheduler();
-        scheduler.force_set_running_task(h);
-        scheduler.force_context_switch();
+        scheduler.force_set_running_task(h.clone());
+        task::start_initial_task(&h);
     }
 }
 
 fn kernel_stage2_main(arg: u64) -> u64 {
     println!("init: arg = {}", arg);
+    println!("init: id = {}", task::current_task().id());
 
     unsafe {
         asm::interrupts::set_if(true);
@@ -238,7 +239,7 @@ fn kernel_stage2_main(arg: u64) -> u64 {
 }
 
 fn test_task(_: u64) -> u64 {
-    let handle = task::current_task();
+    let handle = task::current_task_handle();
     let mut val: u64 = 0;
 
     task::run_future(async {
@@ -263,7 +264,7 @@ fn test_task(_: u64) -> u64 {
 }
 
 fn schedule_timer(handle: task::TaskHandle) {
-    let deadline = timer::TimerDeadline::Relative(8192);
+    let deadline = timer::TimerDeadline::Relative(4096);
     let timer = timer::TimerData::new(
         move || {
             handle.schedule();

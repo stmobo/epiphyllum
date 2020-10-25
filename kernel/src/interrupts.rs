@@ -172,20 +172,10 @@ pub fn mask_irq(irq: u8, masked: bool) -> Result<bool, u8> {
 }
 
 #[no_mangle]
-pub extern "C" fn kernel_entry(frame: *mut InterruptFrame) -> *mut InterruptFrame {
+pub extern "C" fn kernel_entry(frame: *mut InterruptFrame) {
     INTERRUPT_CONTEXT.store(frame, Ordering::SeqCst);
 
-    if task::scheduler_initialized() {
-        task::scheduler().update_cur_context(frame);
-    }
-
     handler::handle_interrupt(unsafe { &mut *frame });
-    INTERRUPT_CONTEXT.store(ptr::null_mut(), Ordering::SeqCst);
 
-    if let Some(new_ctx) = task::current_context() {
-        unsafe { task::scheduling::prepare_context_switch() };
-        new_ctx
-    } else {
-        frame
-    }
+    INTERRUPT_CONTEXT.store(ptr::null_mut(), Ordering::SeqCst);
 }

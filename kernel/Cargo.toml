@@ -20,29 +20,31 @@ path = "src/main.rs"
 
 [build-dependencies]
 cc = "1.0"
-bindgen = "^0.53"
+bindgen = {version="^0.53", default-features=false, features=["clap", "runtime", "which-rustfmt"]}
+#regex = {version="=1.3.7", default-features=false, features=["std", "unicode"]}
 
 [dependencies]
-spin = "*"
-x86_64 = "^0.11"
-cstr_core = "^0.1"
+spin = {version="^0.7", default-features=false, features=["lock_api"]}
+x86_64 = "^0.12"
 cty = "^0.2"
 kernel_test_macro = { path = "./kernel_test_macro" }
-hashbrown = "0.7"
+hashbrown = "0.9"
+cstr_core = "^0.1"
+memchr = { version = "=2.1", default-features = false }
 
 [target.x86_64-epiphyllum.dependencies]
 compiler_builtins = { version="*", features = ["mem"] }
 
 [dependencies.num_enum]
-version = "^0.4"
+version = "^0.5"
 default-features = false
 features = []
 
 [dependencies.lazy_static]
-version = "^1.0"
+version = "^1.4"
 features = ["spin_no_std"]
 
 [dependencies.crossbeam]
-version = "0.7"
+version = "0.8"
 default-features = false
 features = ["alloc", "nightly"]

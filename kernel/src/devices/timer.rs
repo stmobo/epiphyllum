@@ -199,4 +199,5 @@ pub fn initialize() {
     if LAPIC_TIMER.set(LAPICTimer::new()).is_err() {
         panic!("already initialized");
     }
+    println!("timer: LAPIC timer initialized");
 }

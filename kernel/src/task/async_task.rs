@@ -15,58 +15,53 @@ const TASK_WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(clone_task, wake_task, wake_task_ref, drop_task);
 
 unsafe fn wake_task(task: *const ()) {
-    let handle = Arc::from_raw(task as *const Task);
+    let handle = TaskHandle::from_raw(task as *const Task).unwrap();
     handle.schedule();
 }
 
 unsafe fn wake_task_ref(task: *const ()) {
-    let handle = Arc::from_raw(task as *const Task);
-    handle.schedule();
-
-    // avoid decreasing refcount
-    mem::forget(handle);
+    let p = task as *const Task;
+    unsafe {
+        (*p).schedule();
+    }
 }
 
 unsafe fn drop_task(task: *const ()) {
-    Arc::from_raw(task as *const Task);
+    TaskHandle::from_raw(task as *const Task);
 }
 
 unsafe fn clone_task(task: *const ()) -> RawWaker {
-    let handle = Arc::from_raw(task as *const Task);
-    let new_handle = Arc::into_raw(handle.clone());
+    let p = task as *const Task;
 
-    mem::forget(handle);
-    RawWaker::new(new_handle as *const (), &TASK_WAKER_VTABLE)
+    unsafe {
+        (*p).inc_refcount();
+        RawWaker::new(task, &TASK_WAKER_VTABLE)
+    }
 }
 
 pub fn make_task_waker(task: TaskHandle) -> Waker {
-    let handle = Arc::into_raw(task) as *const ();
+    let handle = task.as_raw() as *const ();
     let raw = RawWaker::new(handle, &TASK_WAKER_VTABLE);
 
     unsafe { Waker::from_raw(raw) }
 }
 
 pub fn run_future<T>(mut future: impl Future<Output = T>) -> T {
-    let waker = scheduling::current_task().waker();
+    let waker = super::current_task().waker();
     let mut context = Context::from_waker(&waker);
 
     loop {
         // this should be safe since nothing else gets its hands on the future
         // anyway (it's moved into this function)
         let future = unsafe { Pin::new_unchecked(&mut future) };
-        let p = scheduling::scheduler().running_task_ptr();
-
-        unsafe {
-            (*p).set_wakeup_pending(false);
-        }
+        let p = super::current_task();
+        p.set_wakeup_pending(false);
 
         match future.poll(&mut context) {
             Poll::Ready(retval) => return retval,
             Poll::Pending => {
-                unsafe {
-                    (*p).set_status(TaskStatus::Sleeping);
-                }
-                scheduling::yield_cpu()
+                p.set_status(TaskStatus::Sleeping);
+                scheduling::yield_cpu();
             }
         };
     }
@@ -78,7 +73,7 @@ pub fn spawn_async<T: Future<Output = u64> + Send + 'static>(
 ) -> Result<TaskHandle, TaskSpawnError> {
     let address_space: Arc<NoIRQSpinlock<AddressSpace>>;
     if shared_address_space {
-        address_space = scheduling::cur_address_space_handle();
+        address_space = super::cur_address_space_handle();
     } else {
         let space = AddressSpace::new().map_err(TaskSpawnError::AllocationError)?;
         address_space = Arc::new(NoIRQSpinlock::new(space));

@@ -12,8 +12,9 @@ cc = "1.0"
 [dependencies]
 spin = "*"
 x86_64 = "*"
-cstr_core = "^0.1"
+cstr_core = {version = "^0.1", default-features = false}
+memchr = { version = "=2.1", default-features = false }
 
 [dependencies.lazy_static]
-version = "^1.0"
+version = "^1.4"
 features = ["spin_no_std"]

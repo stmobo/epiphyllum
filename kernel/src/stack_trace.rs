@@ -1,4 +1,5 @@
 use crate::paging;
+use crate::task::Task;
 
 #[derive(Debug, Copy, Clone)]
 pub struct StackFrame {
@@ -46,6 +47,12 @@ impl Iterator for StackFrameIterator {
 
             unsafe {
                 if paging::direct_get_mapping(frame_bp).is_some() {
+                    if let Some(cur_task) = Task::get_current_task() {
+                        if !cur_task.in_stack_bounds(frame_bp + 8) {
+                            return None;
+                        }
+                    }
+
                     let next_frame = frame_bp as *const usize;
                     let next_bp = *next_frame;
 

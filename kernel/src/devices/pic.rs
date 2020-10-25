@@ -619,7 +619,7 @@ pub mod io_apic {
 
     impl GSIEntry {
         fn get_io_apic(&self) -> Option<NoIRQSpinlockGuard<'static, IOAPIC>> {
-            for (id, lock) in IO_APICS.wait().unwrap() {
+            for (id, lock) in IO_APICS.wait() {
                 let apic = lock.lock();
                 if *id == self.io_apic_id {
                     return Some(apic);

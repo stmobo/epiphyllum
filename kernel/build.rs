@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/acpica/wrapper.h");
 
     println!("cargo:rerun-if-changed=src/asm/interrupt_entry.S");
+    println!("cargo:rerun-if-changed=src/asm/context_switch.S");
     println!("cargo:rerun-if-changed=src/asm/");
     println!("cargo:rerun-if-changed=acpica/");
     println!("cargo:rerun-if-changed=build.rs");
@@ -54,7 +55,10 @@ fn main() {
         .compile("acpica");
 
     cc::Build::new()
-        .files(vec!["src/asm/interrupt_entry.S"])
+        .files(vec![
+            "src/asm/interrupt_entry.S",
+            "src/asm/context_switch.S",
+        ])
         .pic(false)
         .debug(true)
         .flag("-g")

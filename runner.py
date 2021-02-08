@@ -4,11 +4,11 @@ import os
 from pathlib import Path
 import shutil
 import subprocess as sp
+from typing import Optional
 
 QEMU_EXPECTED_EXIT = 41
 QEMU_TIMEOUT = None
 
-ROOT = str(Path("../").resolve())
 QEMU_OPTS = [
     "-cdrom",
     "target/boot.iso",
@@ -40,15 +40,26 @@ QEMU_OPTS = [
     "cpu_reset",
 ]
 
+# find root:
+def get_root(cur: Optional[Path] = None) -> Path:
+    if cur is None:
+        cur = Path.cwd().resolve()
+
+    if cur.joinpath(".git").is_dir():
+        return cur
+    elif cur.parent != cur:
+        return get_root(cur.parent)
+
+
+ROOT = get_root()
+
 
 def make_boot_iso():
-    grub_cfg = Path("../grub.cfg").resolve()
-    bootloader = Path(
-        "../target/x86_64-bootloader/debug/epiphyllum-bootloader"
-    ).resolve()
+    grub_cfg = ROOT.joinpath("grub.cfg")
+    bootloader = ROOT.joinpath("target/x86_64-bootloader/debug/epiphyllum-bootloader")
     kernel = Path(sys.argv[1]).resolve()
 
-    target_dir = Path("../target/iso/boot").resolve()
+    target_dir = ROOT.joinpath("target/iso/boot")
     grub_dir = target_dir.joinpath("grub")
     grub_dir.mkdir(parents=True, exist_ok=True)
 

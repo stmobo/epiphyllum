@@ -120,12 +120,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "compiler_builtins"
-version = "0.1.36"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cd0782e0a7da7598164153173e5a5d4d9b1da094473c98dce0ff91406112369"
-
-[[package]]
 name = "const_fn"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -216,7 +210,6 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "cc",
- "compiler_builtins",
  "crossbeam",
  "cstr_core",
  "cty 0.2.1",

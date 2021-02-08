@@ -5,7 +5,7 @@ use core::mem;
 use core::ops::Deref;
 use core::ptr;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use core::task::Waker;
 
 use super::async_task;
@@ -26,7 +26,7 @@ const TASK_STACK_PAGES: usize = (1 << (TASK_STACK_ORDER as usize)) - 2;
 const TASK_STACK_SIZE: usize = TASK_STACK_PAGES * 0x1000;
 
 pub static TASKS: LockedGlobal<AVLTree<u64, TaskHandle>> = LockedGlobal::new();
-static CUR_PID: AtomicCell<u64> = AtomicCell::new(0);
+static CUR_PID: AtomicU64 = AtomicU64::new(0);
 static REAPER_CH: OnceCell<Sender<TaskHandle>> = OnceCell::new();
 
 extern "C" {
@@ -246,7 +246,7 @@ impl Task {
         let head_addr = kernel_stack_base - mem::size_of::<TaskSwitchFrame>();
         let task_ptr = stack_end as *mut Task;
         let kernel_stack_head = head_addr as *mut TaskSwitchFrame;
-        let id = CUR_PID.fetch_add(1);
+        let id = CUR_PID.fetch_add(1, Ordering::SeqCst);
         let start_addr = task_entry as usize;
 
         println!("task[{}], stack base = {:#018x}", id, kernel_stack_base);
@@ -389,6 +389,7 @@ impl Task {
     ///
     /// ## Safety
     /// This function must be called from the kernel stack associated with this Task.
+    /// Passing self == next will also result in UB.
     pub unsafe fn switch_context(&self, next: &Task) -> Option<TaskHandle> {
         unsafe {
             let prev_rsp = self.kernel_stack_head.get();

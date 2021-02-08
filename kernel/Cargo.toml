@@ -32,9 +32,6 @@ hashbrown = "0.9"
 cstr_core = "^0.1"
 memchr = { version = "=2.1", default-features = false }
 
-[target.x86_64-epiphyllum.dependencies]
-compiler_builtins = { version="*", features = ["mem"] }
-
 [dependencies.num_enum]
 version = "^0.5"
 default-features = false

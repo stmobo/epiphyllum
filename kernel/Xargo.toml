@@ -1,7 +1,0 @@
-[target.x86_64-epiphyllum.dependencies]
-
-[dependencies.core]
-stage = 0
-
-[dependencies.alloc]
-stage = 1

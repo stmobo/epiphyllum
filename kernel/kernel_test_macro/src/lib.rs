@@ -4,7 +4,6 @@ extern crate proc_macro2;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn;
 use syn::{parse_macro_input, Ident, ItemFn};
 
 fn impl_kernel_test(ast: &syn::ItemFn) -> TokenStream {

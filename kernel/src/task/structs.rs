@@ -11,13 +11,11 @@ use core::task::Waker;
 use super::async_task;
 use super::scheduling;
 use super::scheduling::SchedulerData;
-use crate::asm::interrupts;
-use crate::interrupts::InterruptFrame;
 use crate::lock::{LockedGlobal, NoIRQSpinlock, NoIRQSpinlockGuard, OnceCell};
 use crate::malloc::{virtual_mem, AllocationError, PhysicalMemory, VirtualMemory};
 use crate::paging;
 use crate::paging::AddressSpace;
-use crate::structures::{AVLTree, Channel, Queue, Receiver, Sender};
+use crate::structures::{AVLTree, Queue, Sender};
 
 use crossbeam::atomic::AtomicCell;
 
@@ -30,6 +28,7 @@ static CUR_PID: AtomicU64 = AtomicU64::new(0);
 static REAPER_CH: OnceCell<Sender<TaskHandle>> = OnceCell::new();
 
 extern "C" {
+    #[allow(improper_ctypes)]
     fn do_context_switch(
         prev_rsp: *mut *mut TaskSwitchFrame,
         next_rsp: *mut *mut TaskSwitchFrame,
@@ -92,16 +91,16 @@ pub struct TaskHandle {
 
 impl TaskHandle {
     pub unsafe fn from_ref(task: &Task) -> TaskHandle {
-        unsafe { task.inc_refcount() };
+        task.inc_refcount();
         TaskHandle { inner: task.into() }
     }
 
     pub unsafe fn from_raw(task: *const Task) -> Option<TaskHandle> {
-        unsafe { TaskHandle::from_mut(mem::transmute(task)) }
+        TaskHandle::from_mut(mem::transmute(task))
     }
 
     unsafe fn from_mut(task: *mut Task) -> Option<TaskHandle> {
-        unsafe { NonNull::new(task).map(|inner| TaskHandle { inner }) }
+        NonNull::new(task).map(|inner| TaskHandle { inner })
     }
 
     pub const fn as_raw(self) -> *const Task {
@@ -190,7 +189,7 @@ impl AtomicTaskHandle {
         mem::forget(handle);
 
         let old = self.inner.swap(new, Ordering::AcqRel);
-        unsafe { NonNull::new(old).map(|inner| TaskHandle { inner }).unwrap() }
+        NonNull::new(old).map(|inner| TaskHandle { inner }).unwrap()
     }
 
     pub fn store(&self, handle: TaskHandle) {
@@ -367,7 +366,7 @@ impl Task {
     }
 
     pub fn in_stack_bounds(&self, addr: usize) -> bool {
-        let base_addr = ((self as *const Task) as usize);
+        let base_addr = (self as *const Task) as usize;
         let stack_end = base_addr + mem::size_of::<Task>();
         let stack_start = base_addr + TASK_STACK_SIZE;
 
@@ -391,20 +390,18 @@ impl Task {
     /// This function must be called from the kernel stack associated with this Task.
     /// Passing self == next will also result in UB.
     pub unsafe fn switch_context(&self, next: &Task) -> Option<TaskHandle> {
-        unsafe {
-            let prev_rsp = self.kernel_stack_head.get();
-            let next_rsp = (*next).kernel_stack_head.get();
-            let handle = TaskHandle::from_raw(do_context_switch(
-                prev_rsp,
-                next_rsp,
-                self as *const Task,
-                next as *const Task,
-            ))
-            .expect("do_context_switch returned a null Task pointer?");
+        let prev_rsp = self.kernel_stack_head.get();
+        let next_rsp = (*next).kernel_stack_head.get();
+        let handle = TaskHandle::from_raw(do_context_switch(
+            prev_rsp,
+            next_rsp,
+            self as *const Task,
+            next as *const Task,
+        ))
+        .expect("do_context_switch returned a null Task pointer?");
 
-            handle.inc_refcount();
-            Some(handle)
-        }
+        handle.inc_refcount();
+        Some(handle)
     }
 
     pub fn new_handle(&self) -> TaskHandle {
@@ -569,17 +566,15 @@ fn boxed_func_task<T: FnOnce() -> u64 + Send + 'static>(ctx: *mut T) -> u64 {
 }
 
 pub unsafe fn start_initial_task(task: &Task) -> ! {
-    unsafe {
-        let mut prev_rsp: *mut TaskSwitchFrame = ptr::null_mut();
-        let next_rsp = (*task).kernel_stack_head.get();
-        do_context_switch(
-            &mut prev_rsp,
-            next_rsp,
-            ptr::null_mut(),
-            task as *const Task,
-        );
-        panic!("start_initial_task returned");
-    }
+    let mut prev_rsp: *mut TaskSwitchFrame = ptr::null_mut();
+    let next_rsp = (*task).kernel_stack_head.get();
+    do_context_switch(
+        &mut prev_rsp,
+        next_rsp,
+        ptr::null_mut(),
+        task as *const Task,
+    );
+    panic!("start_initial_task returned");
 }
 
 #[no_mangle]

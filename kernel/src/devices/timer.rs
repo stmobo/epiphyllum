@@ -11,7 +11,8 @@ use crate::task::scheduler;
 use crate::timer::{update_timers, TICKS_PER_SECOND};
 
 use alloc_crate::sync::Arc;
-use core::sync::atomic::{spin_loop_hint, AtomicBool, AtomicU64, Ordering};
+use core::hint::spin_loop;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const CH0_ADDR: u16 = 0x40;
 const COMMAND_ADDR: u16 = 0x43;
@@ -142,7 +143,7 @@ impl CalibratingTimer {
 
     fn wait(&self) {
         while !self.data.done.load(Ordering::SeqCst) {
-            spin_loop_hint();
+            spin_loop();
         }
     }
 

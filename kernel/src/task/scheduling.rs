@@ -1,12 +1,9 @@
 use alloc_crate::sync::Arc;
-use core::mem;
 use core::ops::Bound;
-use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::structs::{AtomicTaskHandle, Task, TaskHandle, TaskStatus, TaskSwitchFrame};
-use crate::asm::interrupts;
-use crate::interrupts::InterruptFrame;
-use crate::lock::{NoIRQSpinlock, NoIRQSpinlockGuard, OnceCell};
+use super::structs::{AtomicTaskHandle, Task, TaskHandle, TaskStatus};
+use crate::lock::{NoIRQSpinlock, OnceCell};
 use crate::paging::AddressSpace;
 use crate::structures::AVLTree;
 use crate::timer::{get_kernel_ticks, TICKS_PER_SECOND};
@@ -192,7 +189,7 @@ impl Scheduler {
 
         if cur_task.id() != self.default_task.id() {
             if let Some(old_key) = timeline_key_lock.take() {
-                let c = timeline
+                timeline
                     .tree
                     .remove(&old_key)
                     .expect("could not find old timeline key in tree");

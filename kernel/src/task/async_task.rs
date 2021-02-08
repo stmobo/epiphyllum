@@ -2,7 +2,6 @@
 use alloc_crate::boxed::Box;
 use alloc_crate::sync::Arc;
 use core::future::Future;
-use core::mem;
 use core::pin::Pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
@@ -21,9 +20,7 @@ unsafe fn wake_task(task: *const ()) {
 
 unsafe fn wake_task_ref(task: *const ()) {
     let p = task as *const Task;
-    unsafe {
-        (*p).schedule();
-    }
+    (*p).schedule();
 }
 
 unsafe fn drop_task(task: *const ()) {
@@ -32,11 +29,8 @@ unsafe fn drop_task(task: *const ()) {
 
 unsafe fn clone_task(task: *const ()) -> RawWaker {
     let p = task as *const Task;
-
-    unsafe {
-        (*p).inc_refcount();
-        RawWaker::new(task, &TASK_WAKER_VTABLE)
-    }
+    (*p).inc_refcount();
+    RawWaker::new(task, &TASK_WAKER_VTABLE)
 }
 
 pub fn make_task_waker(task: TaskHandle) -> Waker {

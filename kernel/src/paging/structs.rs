@@ -55,7 +55,10 @@ impl PageData {
             }
 
             let new = cur.saturating_sub(1);
-            if self.refcount.compare_and_swap(cur, new, Ordering::SeqCst) == cur {
+            if let Ok(_) =
+                self.refcount
+                    .compare_exchange(cur, new, Ordering::SeqCst, Ordering::SeqCst)
+            {
                 break new;
             }
         };

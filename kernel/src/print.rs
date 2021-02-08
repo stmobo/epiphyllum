@@ -9,7 +9,6 @@ use crate::interrupts;
 use crate::lock::OnceCell;
 use crate::stack_trace;
 use crate::structures::{Channel, Receiver, Sender};
-use crate::task;
 use crate::task::Task;
 
 #[cfg(not(test))]

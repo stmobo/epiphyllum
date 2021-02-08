@@ -16,9 +16,6 @@
 #![feature(new_uninit)]
 #![feature(maybe_uninit_extra)]
 #![feature(alloc_layout_extra)]
-#![feature(weak_into_raw)]
-#![feature(deque_make_contiguous)]
-#![feature(leading_trailing_ones)]
 #![test_runner(crate::test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![allow(dead_code)]
@@ -26,7 +23,6 @@
 #[macro_use]
 extern crate alloc as alloc_crate;
 
-extern crate compiler_builtins;
 extern crate crossbeam;
 
 #[macro_use]

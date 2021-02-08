@@ -2,7 +2,6 @@ mod exceptions;
 mod handler;
 mod idt;
 
-// use crate::task;
 pub use handler::{
     allocate_interrupt, allocate_specific, deallocate_specific, register_handler, IRQHandler,
     InterruptAllocationError, InterruptHandlerStatus,
@@ -15,7 +14,6 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::devices::io_apic::IOAPIC;
 use crate::stack_trace::StackFrameIterator;
-use crate::task;
 
 static INTERRUPT_CONTEXT: AtomicPtr<InterruptFrame> = AtomicPtr::new(ptr::null_mut());
 

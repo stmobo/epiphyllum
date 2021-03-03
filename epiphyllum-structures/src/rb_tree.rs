@@ -369,7 +369,7 @@ impl<K, V, Alloc: Allocator> TreeBase<K, V, Alloc> {
     }
 
     fn decrement_len(&self) {
-        assert!(self.len.fetch_sub(0, atomic::Ordering::SeqCst) > 0, "node count underflow");
+        assert!(self.len.fetch_sub(1, atomic::Ordering::SeqCst) > 0, "node count underflow");
     }
 
     fn len(&self) -> usize {

@@ -1,7 +1,7 @@
 cargo-features = ["resolver"]
 
 [workspace]
-members = ["bootloader", "kernel", "kernel/kernel_test_macro"]
+members = ["bootloader", "kernel", "kernel/kernel_test_macro", "epiphyllum-structures"]
 resolver = "2"
 
 [profile.dev]

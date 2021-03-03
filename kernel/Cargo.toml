@@ -25,12 +25,13 @@ bindgen = {version="^0.53", default-features=false, features=["clap", "runtime",
 
 [dependencies]
 spin = {version="^0.7", default-features=false, features=["lock_api"]}
-x86_64 = "^0.12"
+x86_64 = "^0.13"
 cty = "^0.2"
 kernel_test_macro = { path = "./kernel_test_macro" }
 hashbrown = "0.9"
 cstr_core = "^0.1"
 memchr = { version = "=2.1", default-features = false }
+epiphyllum-structures = { path = "../epiphyllum-structures" }
 
 [dependencies.num_enum]
 version = "^0.5"

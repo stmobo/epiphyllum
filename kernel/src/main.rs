@@ -1,12 +1,11 @@
 #![no_std]
 #![no_main]
+#![feature(allocator_api)]
 #![feature(custom_test_frameworks)]
 #![feature(panic_info_message)]
 #![feature(rustc_private)]
 #![feature(abi_x86_interrupt)]
-#![feature(maybe_uninit_ref)]
 #![feature(alloc_error_handler)]
-#![feature(const_in_array_repeat_expressions)]
 #![feature(asm)]
 #![feature(llvm_asm)]
 #![feature(try_trait)]
@@ -15,6 +14,8 @@
 #![feature(option_expect_none)]
 #![feature(new_uninit)]
 #![feature(maybe_uninit_extra)]
+#![feature(maybe_uninit_ref)]
+#![feature(maybe_uninit_uninit_array)]
 #![feature(alloc_layout_extra)]
 #![test_runner(crate::test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
@@ -100,7 +101,7 @@ pub fn kernel_main(boot_info: *const KernelLoaderInfo) -> ! {
 
     gdt::initialize_gdt();
     unsafe {
-        interrupts::initialize_idt(idt_phys);
+        interrupts::init(idt_phys);
     }
 
     unsafe {

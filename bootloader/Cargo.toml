@@ -11,7 +11,7 @@ cc = "1.0"
 
 [dependencies]
 spin = "*"
-x86_64 = "*"
+x86_64 = "^0.13"
 cstr_core = {version = "^0.1", default-features = false}
 memchr = { version = "=2.1", default-features = false }
 

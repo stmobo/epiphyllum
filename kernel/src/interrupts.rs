@@ -6,7 +6,7 @@ pub use handler::{
     allocate_interrupt, allocate_specific, deallocate_specific, register_handler, IRQHandler,
     InterruptAllocationError, InterruptHandlerStatus,
 };
-pub use idt::{claim_idt_page, initialize_idt};
+pub use idt::{claim_idt_page};
 
 use core::fmt;
 use core::ptr;
@@ -155,6 +155,11 @@ impl fmt::Display for InterruptFrame {
             self.interrupt_no, self.interrupt_no, self.error_code, self.error_code
         )
     }
+}
+
+pub unsafe fn init(idt_phys_addr: usize) {
+    handler::init();
+    idt::initialize_idt(idt_phys_addr);
 }
 
 pub fn in_interrupt_context() -> bool {

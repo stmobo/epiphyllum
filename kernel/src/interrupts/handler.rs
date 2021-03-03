@@ -1,3 +1,5 @@
+use core::mem::MaybeUninit;
+
 use alloc_crate::boxed::Box;
 
 use super::exceptions;
@@ -7,7 +9,7 @@ use crate::lock::NoIRQSpinlock;
 use crate::structures::handle_list::NodeHandle;
 use crate::structures::HandleList;
 
-static HANDLERS: [HandleList<BoxedInterruptHandler>; 255] = [HandleList::new(); 255];
+static mut HANDLERS: [MaybeUninit<HandleList<BoxedInterruptHandler>>; 255] = MaybeUninit::uninit_array();
 static HANDLER_STATUS: NoIRQSpinlock<[InterruptAllocation; 255]> =
     NoIRQSpinlock::new([InterruptAllocation::Unallocated; 255]);
 
@@ -47,6 +49,33 @@ impl Drop for IRQHandler {
 pub enum InterruptAllocationError {
     NoFreeInterrupts,
     AlreadyAllocated,
+}
+
+/// Initialize the interrupt handler list array.
+/// Strictly speaking, this shouldn't be necessary, but initializing large
+/// arrays of non-Copy types is very painful, and this is doubly-painful since
+/// the interrupt handler list array is static.
+///
+/// This function must only be called once.
+pub unsafe fn init() {
+    for i in 0..255usize {
+        HANDLERS[i].write(HandleList::<BoxedInterruptHandler>::new());
+    }
+}
+
+/// Get a reference to an interrupt handler list.
+fn get_handler_list(idx: usize) -> &'static HandleList<BoxedInterruptHandler> {
+    unsafe {
+        // SAFETY: This function will never be called prior to init(),
+        // since that function is called prior to IDT installation.
+        //
+        // Therefore, we don't have to worry about the possibility of
+        // concurrent mutable access to HANDLERS.
+        //
+        // Additionally, we never have to worry about HANDLERS[idx] being
+        // uninitialized, for the same reason.
+        HANDLERS[idx].assume_init_ref()
+    }
 }
 
 /// Increments the number of allocations for the given interrupt by one.
@@ -177,7 +206,7 @@ where
     let idx = allocated as usize;
     Ok(IRQHandler(
         allocated,
-        HANDLERS[idx].push_back(Box::new(handler)),
+        get_handler_list(idx).push_back(Box::new(handler)),
     ))
 }
 
@@ -188,9 +217,8 @@ pub fn handle_interrupt(frame: &mut InterruptFrame) {
     }
 
     let idx = frame.interrupt_no as usize;
-
     let mut found_handler = false;
-    let mut lock = HANDLERS[idx].lock();
+    let mut lock = get_handler_list(idx).lock();
 
     for handler in lock.iter_mut() {
         if (**handler)() == InterruptHandlerStatus::Handled {

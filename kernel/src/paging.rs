@@ -119,8 +119,9 @@ pub unsafe fn initialize_direct_physical_mappings() {
 
 pub fn get_page_mapping(vaddr: usize) -> Option<(PageLevel, PageTableEntry)> {
     if task::scheduler_initialized() {
-        let space = task::current_address_space();
-        space.get_mapping(vaddr)
+        let cur_task = task::current_task();
+        let ret = cur_task.address_space().get_mapping(vaddr);
+        ret
     } else {
         let space = unsafe { AddressSpace::current() };
         space.get_mapping(vaddr)
@@ -129,8 +130,9 @@ pub fn get_page_mapping(vaddr: usize) -> Option<(PageLevel, PageTableEntry)> {
 
 pub fn map_pages(vaddr: usize, paddr: usize, n_pages: usize) {
     if task::scheduler_initialized() {
-        let mut space = task::current_address_space();
-        space.map_page_range(vaddr, paddr, n_pages)
+        let cur_task = task::current_task();
+        let ret = cur_task.address_space().map_page_range(vaddr, paddr, n_pages);
+        ret
     } else {
         let mut space = unsafe { AddressSpace::current() };
         space.map_page_range(vaddr, paddr, n_pages)
@@ -139,8 +141,8 @@ pub fn map_pages(vaddr: usize, paddr: usize, n_pages: usize) {
 
 pub fn unmap_pages(vaddr: usize, n_pages: usize) {
     if task::scheduler_initialized() {
-        let mut space = task::current_address_space();
-        space.unmap_page_range(vaddr, n_pages);
+        let cur_task = task::current_task();
+        cur_task.address_space().unmap_page_range(vaddr, n_pages);
     } else {
         let mut space = unsafe { AddressSpace::current() };
         space.unmap_page_range(vaddr, n_pages);
@@ -149,8 +151,8 @@ pub fn unmap_pages(vaddr: usize, n_pages: usize) {
 
 pub fn set_page_caching(vaddr: usize, n_pages: usize, caching: CacheType) {
     if task::scheduler_initialized() {
-        let mut space = task::current_address_space();
-        space.set_caching(vaddr, n_pages, caching);
+        let cur_task = task::current_task();
+        cur_task.address_space().set_caching(vaddr, n_pages, caching);
     } else {
         let mut space = unsafe { AddressSpace::current() };
         space.set_caching(vaddr, n_pages, caching);

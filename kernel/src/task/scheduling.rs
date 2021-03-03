@@ -11,6 +11,7 @@ static SCHEDULER: OnceCell<Scheduler> = OnceCell::new();
 const NS_PER_TICK: u64 = 1_000_000_000 / TICKS_PER_SECOND;
 const GRANULARITY: u64 = 7; // in ms
 
+/// Tracks per-Task data needed by the scheduler.
 #[derive(Debug)]
 pub struct SchedulerData {
     /// The absolute time at which this process last executed.
@@ -31,10 +32,12 @@ impl SchedulerData {
         }
     }
 
+    /// Store the current timestamp as the "last executed" timestamp.
     pub fn start_running(&self) {
         self.exec_start.store(get_kernel_ticks(), Ordering::SeqCst);
     }
 
+    /// Update the _virtual_ runtime of this task.
     pub fn update_runtime(&self, n_tasks: u64) {
         let start_time = self.exec_start.load(Ordering::SeqCst);
         let abs_ns = (get_kernel_ticks() - start_time) * NS_PER_TICK;
@@ -47,11 +50,13 @@ impl SchedulerData {
         self.virtual_runtime.store(time, Ordering::SeqCst);
     }
 
+    /// Get the virtual runtime for this task.
     pub fn virtual_runtime(&self) -> u64 {
         self.virtual_runtime.load(Ordering::SeqCst)
     }
 }
 
+/// The key type used for the scheduler red-black tree.
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Clone)]
 pub struct TimelineKey {
     virtual_runtime: u64,
@@ -81,6 +86,10 @@ impl SchedulerTimeline {
     }
 }
 
+/// A Task scheduler for a single CPU.
+///
+/// This pretty much just implements (a naive version of) the Completely Fair
+/// Scheduler algorithm from the Linux kernel.
 pub struct Scheduler {
     timeline: NoIRQSpinlock<SchedulerTimeline>,
     default_task: TaskHandle,
@@ -88,6 +97,8 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
+    /// Initialize a new scheduler, using the given address_space for its
+    /// associated default Task.
     fn new(address_space: Arc<NoIRQSpinlock<AddressSpace>>) -> Scheduler {
         let default_task = unsafe {
             Task::new_raw(idle_task as usize, 0, address_space).expect("could not create idle task")
@@ -105,16 +116,7 @@ impl Scheduler {
     pub fn running_task_handle(&self) -> TaskHandle {
         self.running_task.load()
     }
-
-    fn running_task_ref(&self) -> &Task {
-        self.running_task.load_ref()
-    }
-
-    fn run_task(&self, next_task: TaskHandle) -> Option<TaskHandle> {
-        let cur_task = self.running_task_handle();
-        unsafe { cur_task.switch_context(&next_task) }
-    }
-
+    
     /// Wake up a Task, and schedule it for execution.
     /// Can be called from both regular and IRQ contexts.
     ///
@@ -163,6 +165,7 @@ impl Scheduler {
         }
     }
 
+    /// Swap out the currently-running Task, and context-switch to it.
     fn swap_task(&self, new_task: &Task) {
         let prev_task = self.running_task.swap(new_task.new_handle());
 
@@ -249,14 +252,17 @@ pub fn initialize(address_space: Arc<NoIRQSpinlock<AddressSpace>>) {
     }
 }
 
+/// Get whether the scheduler has been initialized yet.
 pub fn scheduler_initialized() -> bool {
     SCHEDULER.get().is_some()
 }
 
+/// Get a reference to the global Scheduler instance.
 pub fn scheduler() -> &'static Scheduler {
     SCHEDULER.get().expect("Scheduler not initialized")
 }
 
+/// Yield the CPU, swapping out the current Task for other runnable Tasks.
 pub fn yield_cpu() {
     scheduler().update();
 }

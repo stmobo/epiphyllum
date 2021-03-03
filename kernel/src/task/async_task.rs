@@ -33,6 +33,7 @@ unsafe fn clone_task(task: *const ()) -> RawWaker {
     RawWaker::new(task, &TASK_WAKER_VTABLE)
 }
 
+/// Make a Waker from a TaskHandle.
 pub fn make_task_waker(task: TaskHandle) -> Waker {
     let handle = task.as_raw() as *const ();
     let raw = RawWaker::new(handle, &TASK_WAKER_VTABLE);
@@ -40,6 +41,8 @@ pub fn make_task_waker(task: TaskHandle) -> Waker {
     unsafe { Waker::from_raw(raw) }
 }
 
+/// Execute a Future, putting the Task to sleep whenever it would block
+/// (_i.e._ whenever the future's poll method returns Pending).
 pub fn run_future<T>(mut future: impl Future<Output = T>) -> T {
     let waker = super::current_task().waker();
     let mut context = Context::from_waker(&waker);
@@ -61,17 +64,23 @@ pub fn run_future<T>(mut future: impl Future<Output = T>) -> T {
     }
 }
 
+/// Spawn a new Task that runs a Future with run_future().
+///
+/// Like Task::from_closure, the Future must be both Send and 'static so that
+/// it can be safely sent to the created Task.
+///
+/// shared_address_space means the same thing as it does in Task::new.
 pub fn spawn_async<T: Future<Output = u64> + Send + 'static>(
     shared_address_space: bool,
     future: T,
 ) -> Result<TaskHandle, TaskSpawnError> {
-    let address_space: Arc<NoIRQSpinlock<AddressSpace>>;
-    if shared_address_space {
-        address_space = super::cur_address_space_handle();
+    let address_space = if shared_address_space {
+        super::current_task().clone_address_space()
     } else {
-        let space = AddressSpace::new().map_err(TaskSpawnError::AllocationError)?;
-        address_space = Arc::new(NoIRQSpinlock::new(space));
-    }
+        Arc::new(NoIRQSpinlock::new(
+            AddressSpace::new().map_err(TaskSpawnError::AllocationError)?
+        ))
+    };
 
     let data = Box::into_raw(Box::new(future)) as usize;
     let res = unsafe { Task::new_raw(async_task_runner::<T> as usize, data as u64, address_space) };
@@ -91,14 +100,21 @@ fn async_task_runner<T: Future<Output = u64> + Send + 'static>(ctx: *mut T) -> u
     run_future(pinned)
 }
 
+/// The shared state underlying a TaskExitFuture.
+///
+/// Each instance of TaskExitFuture is associated with an instance of this
+/// struct. References to it are held by the TaskExitFuture itself and by
+/// the exit callback registered on the Task we're interested in.
 pub struct TaskExitState {
     task: TaskHandle,
     waker: Option<Waker>,
 }
 
+/// A Future that waits for a Task to exit, then returns its exit status.
 pub struct TaskExitFuture(Arc<NoIRQSpinlock<TaskExitState>>);
 
 impl TaskExitFuture {
+    /// Create a new TaskExitFuture that waits for the given Task.
     pub fn new(task: TaskHandle) -> TaskExitFuture {
         let state = Arc::new(NoIRQSpinlock::new(TaskExitState { task, waker: None }));
         let cb_state = state.clone();
@@ -116,8 +132,14 @@ impl TaskExitFuture {
     }
 }
 
-// TODO: impl Drop for TaskExitFuture?
-// (unregister callback somehow?)
+impl Drop for TaskExitFuture {
+    fn drop(&mut self) {
+        // Make sure no wakeups are delivered after this Future is dropped.
+        // This turns the exit callback into a no-op (except for locking and
+        // unlocking the underlying shared state).
+        self.0.lock().waker.take();
+    }
+}
 
 impl Future for TaskExitFuture {
     type Output = ExitStatus;

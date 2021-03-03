@@ -6,6 +6,7 @@ use super::structs::TaskStatus;
 use crate::structures::handle_list::NodeHandle;
 use crate::structures::HandleList;
 
+/// Possible modes for waiting on a WaitQueue.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum WaitMode {
     Default,
@@ -20,6 +21,7 @@ pub struct WaitData {
 
 pub struct WaitHandle<'a>(NodeHandle<'a, WaitData>);
 
+/// A queue that can be used to sleep while waiting on a condition.
 #[repr(transparent)]
 pub struct WaitQueue {
     tasks: HandleList<WaitData>,
@@ -83,7 +85,7 @@ impl WaitQueue {
 
             p.set_status(TaskStatus::Sleeping);
             //direct_println!("task {} sleeping", p.id());
-            super::scheduler().update();
+            super::yield_cpu();
         }
 
         p.set_wakeup_pending(false);

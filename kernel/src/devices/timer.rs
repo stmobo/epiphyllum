@@ -7,7 +7,7 @@ use crate::asm::ports;
 use crate::interrupts;
 use crate::interrupts::{IRQHandler, InterruptHandlerStatus};
 use crate::lock::OnceCell;
-use crate::task::scheduler;
+use crate::task;
 use crate::timer::{update_timers, TICKS_PER_SECOND};
 
 use alloc_crate::sync::Arc;
@@ -191,7 +191,7 @@ impl LAPICTimer {
 
 fn timer_interrupt() -> InterruptHandlerStatus {
     update_timers(1);
-    scheduler().update();
+    task::yield_cpu();
 
     InterruptHandlerStatus::Handled
 }

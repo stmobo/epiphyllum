@@ -33,8 +33,9 @@ mod sleep_funcs {
     use crate::task;
     use crate::task::TaskStatus;
 
-    use super::wheel::{TimerData, TimerDeadline};
+    use super::wheel::{TimerData, TimerDeadline, TimerHandle};
 
+    /// Sleep (synchronously) until the given TimerDeadline.
     pub fn sleep(deadline: TimerDeadline) -> Result<(), u64> {
         let cur_task = task::current_task_handle();
         let flag = Arc::new(AtomicBool::new(false));
@@ -67,18 +68,24 @@ mod sleep_funcs {
         Ok(())
     }
 
+    /// The shared state underlying an AsyncSleep.
+    ///
+    /// Each instance of AsyncSleep is associated with an instance of this
+    /// struct. References to it are held by the AsyncSleep itself and by
+    /// its associated timer callback.
     pub struct AsyncSleepState {
         ready: bool,
         waker: Option<Waker>,
     }
 
-    pub struct AsyncSleep(Arc<NoIRQSpinlock<AsyncSleepState>>);
+    /// A Future that waits for a timer to fire.
+    pub struct AsyncSleep(TimerHandle, Arc<NoIRQSpinlock<AsyncSleepState>>);
 
     impl Future for AsyncSleep {
         type Output = ();
 
         fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<()> {
-            let mut state = self.0.lock();
+            let mut state = self.1.lock();
             if state.ready {
                 Poll::Ready(())
             } else {
@@ -96,7 +103,7 @@ mod sleep_funcs {
             }));
 
             let cb_state = state.clone();
-            TimerData::new(
+            let handle = TimerData::new(
                 move || {
                     let mut state = cb_state.lock();
                     state.ready = true;
@@ -108,12 +115,24 @@ mod sleep_funcs {
             )
             .start()?;
 
-            Ok(AsyncSleep(state))
+            Ok(AsyncSleep(handle, state))
         }
     }
 
-    // TODO: cancel timer on Drop?
+    impl Drop for AsyncSleep {
+        fn drop(&mut self) {
+            // Prevent wakeups from a dropped Future.
+            self.1.lock().waker.take();
 
+            // Try to cancel the associated timer.
+            // It's okay if this fails for whatever reason; since we cleared
+            // the AsyncSleepState's waker, if the timer callback gets fired
+            // it'll be a no-op.
+            self.0.stop();
+        }
+    }
+
+    /// Return a Future that sleeps until the given TimerDeadline.
     pub fn sleep_async(deadline: TimerDeadline) -> Result<AsyncSleep, u64> {
         AsyncSleep::new(deadline)
     }

@@ -11,6 +11,7 @@ pub enum TimerDeadline {
 }
 
 impl TimerDeadline {
+    /// Get the absolute time associated with this deadline.
     pub fn absolute(self) -> u64 {
         match self {
             TimerDeadline::Absolute(t) => t,
@@ -18,6 +19,10 @@ impl TimerDeadline {
         }
     }
 
+    /// Get the relative time associated with this deadline, if this deadline
+    /// refers to a time in the future.
+    ///
+    /// Otherwise, returns None.
     pub fn relative(self) -> Option<u64> {
         match self {
             TimerDeadline::Relative(t) => Some(t),
@@ -33,6 +38,12 @@ impl TimerDeadline {
     }
 }
 
+/// A timer primitive.
+///
+/// Internally, this is nothing more than a boxed callback closure and an
+/// associated deadline.
+///
+/// Note that the callback is called in the context of the timer IRQ.
 pub struct TimerData {
     pub callback: Box<dyn FnOnce() + Sync + Send + 'static>,
     deadline: u64,
@@ -65,20 +76,24 @@ impl Iterator for NodeIterator {
     }
 }
 
+/// A handle to a started timer.
 pub struct TimerHandle {
     id: u64,
     deadline: u64,
 }
 
 impl TimerHandle {
+    /// Stop the associated timer.
     pub fn stop(&self) -> Result<TimerData, ()> {
         TIMER_WHEEL.lock().remove(self)
     }
 
+    /// Get the absolute deadline associated with this timer.
     pub fn deadline(&self) -> TimerDeadline {
         TimerDeadline::Absolute(self.deadline)
     }
 
+    /// Get the associated timer's ID.
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -221,8 +236,11 @@ pub fn init_timer_wheel() {
     TIMER_WHEEL.init(TimerWheel::new);
 }
 
+/// Update all registered timers, running their callbacks as necessary.
 pub fn update_timers(n_ticks: u64) -> u64 {
     for _ in 0..n_ticks {
+        // NOTE: unlock wheel ASAP so that we don't deadlock, if timer callbacks
+        // try to start new timers of their own.
         let nodes = TIMER_WHEEL.lock().update();
         for node in nodes {
             let node = *node;
@@ -234,6 +252,12 @@ pub fn update_timers(n_ticks: u64) -> u64 {
 }
 
 impl TimerData {
+    /// Create a new timer.
+    /// 
+    /// The timer will not be started until its start method is called.
+    ///
+    /// Note that the timer callback will be called in the context of the
+    /// timer IRQ.
     pub fn new<F>(callback: F, deadline: TimerDeadline) -> TimerData
     where
         F: FnOnce() + Sync + Send + 'static,
@@ -244,14 +268,21 @@ impl TimerData {
         }
     }
 
+    /// Set the deadline for this timer.
     pub fn set_deadline(&mut self, deadline: TimerDeadline) {
         self.deadline = deadline.absolute();
     }
 
+    /// Get the (absolute) deadline associated with this timer.
     pub fn deadline(&self) -> TimerDeadline {
         TimerDeadline::Absolute(self.deadline)
     }
 
+    /// Start this timer.
+    /// 
+    /// Returns a handle to the started timer, if successful.
+    /// Returns the current kernel time if the timer could not be started
+    /// (because its deadline has already passed).
     pub fn start(self) -> Result<TimerHandle, u64> {
         TIMER_WHEEL.lock().insert(self)
     }

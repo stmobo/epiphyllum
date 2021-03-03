@@ -28,9 +28,13 @@ pub enum InterruptHandlerStatus {
     NotHandled,
 }
 
+/// Represents an allocated IRQ handler.
+///
+/// The associated IRQ vector allocation will be freed on drop.
 pub struct IRQHandler(u8, NodeHandle<'static, BoxedInterruptHandler>);
 
 impl IRQHandler {
+    /// Get the interrupt vector associated with this handler.
     pub fn interrupt_vector(&self) -> u8 {
         self.0
     }
@@ -136,23 +140,41 @@ unsafe fn remove_interrupt_allocation(allocs: &mut [InterruptAllocation], interr
     };
 }
 
+/// Allocate a specific interrupt number.
+///
+/// If `exclusive` is true, then the given interrupt will be allocated exclusively.
+///
+/// On error, returns the current (unchanged) allocation state for the
+/// interrupt.
 pub fn allocate_specific(interrupt: u8, exclusive: bool) -> Result<(), InterruptAllocation> {
     let mut lock = HANDLER_STATUS.lock();
     add_interrupt_allocation(&mut *lock, interrupt, exclusive)?;
     Ok(())
 }
 
+/// Free a specific interrupt number for other use.
 pub unsafe fn deallocate_specific(interrupt: u8) {
     let mut lock = HANDLER_STATUS.lock();
     remove_interrupt_allocation(&mut *lock, interrupt);
 }
 
+/// Get the current allocation status for an interrupt number.
 pub fn get_interrupt_allocation(interrupt: u8) -> InterruptAllocation {
     let lock = HANDLER_STATUS.lock();
     let idx = interrupt as usize;
     (*lock)[idx]
 }
 
+/// Attempt to find and allocate an interrupt number.
+///
+/// This method will find the lowest unallocated interrupt number and allocate
+/// that.
+///
+/// If (somehow) all interrupt numbers are allocated and `exclusive` is false,
+/// then the interrupt with the least number of current allocations will be
+/// used instead.
+///
+/// `exclusive` otherwise behaves the same as for `allocate_specific`.
 pub fn allocate_interrupt(exclusive: bool) -> Result<u8, ()> {
     let mut lock = HANDLER_STATUS.lock();
 
@@ -184,6 +206,15 @@ pub fn allocate_interrupt(exclusive: bool) -> Result<u8, ()> {
     }
 }
 
+/// Register an interrupt handler.
+///
+/// `interrupt_no` can either be a specific interrupt vector to allocate, or
+/// `None` to automatically find a free vector if possible.
+///
+/// `exclusive` can be set to true to ensure that no other handlers will be
+/// registered for the allocated vector (if any).
+///
+/// On success, returns an IRQHandler object.
 pub fn register_handler<T>(
     interrupt_no: Option<u8>,
     exclusive: bool,
@@ -210,6 +241,7 @@ where
     ))
 }
 
+/// Dispatch an interrupt.
 pub fn handle_interrupt(frame: &mut InterruptFrame) {
     if frame.interrupt_no == 0xFF {
         println!("Received spurious interrupt 0xFF");

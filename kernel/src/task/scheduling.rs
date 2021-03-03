@@ -1,11 +1,10 @@
 use alloc_crate::sync::Arc;
-use core::ops::Bound;
 use core::sync::atomic::{AtomicU64, Ordering};
+use epiphyllum_structures::RBTree;
 
 use super::structs::{AtomicTaskHandle, Task, TaskHandle, TaskStatus};
 use crate::lock::{NoIRQSpinlock, OnceCell};
 use crate::paging::AddressSpace;
-use crate::structures::AVLTree;
 use crate::timer::{get_kernel_ticks, TICKS_PER_SECOND};
 
 static SCHEDULER: OnceCell<Scheduler> = OnceCell::new();
@@ -69,14 +68,14 @@ impl TimelineKey {
 }
 
 pub struct SchedulerTimeline {
-    tree: AVLTree<TimelineKey, TaskHandle>,
+    tree: RBTree<TimelineKey, TaskHandle>,
     min_virt_runtime: u64,
 }
 
 impl SchedulerTimeline {
     fn new() -> SchedulerTimeline {
         SchedulerTimeline {
-            tree: AVLTree::new(),
+            tree: RBTree::new(),
             min_virt_runtime: 0,
         }
     }
@@ -135,7 +134,7 @@ impl Scheduler {
         let mut prev_key = scheduler_data.scheduler_key.lock();
         if prev_key.is_none() {
             let key = TimelineKey::new(task);
-            if timeline.tree.insert(key.clone(), task.new_handle()).is_ok() {
+            if timeline.tree.insert(key.clone(), task.new_handle()).is_none() {
                 *prev_key = Some(key);
                 //direct_println!("scheduled task {}", task.id());
                 return true;
@@ -200,22 +199,14 @@ impl Scheduler {
         let new_key = TimelineKey::new(&cur_task);
 
         if cur_task.should_run() && cur_task.id() != self.default_task.id() {
-            if timeline
+            timeline
                 .tree
-                .insert(new_key.clone(), cur_task.clone())
-                .is_err()
-            {
-                panic!(
-                    "could not re-insert task {} into timeline tree",
-                    cur_task.id()
-                );
-            }
-
+                .insert(new_key.clone(), cur_task.clone());
             *timeline_key_lock = Some(new_key.clone());
         }
 
         let mut new_task = None;
-        if let Some((key, task)) = timeline.tree.lower_bound(Bound::Unbounded) {
+        if let Some((key, task)) = timeline.tree.get_first() {
             let should_swap =
                 (cur_task.id() == self.default_task.id()) || !cur_task.should_run() || {
                     let threshold = (GRANULARITY * 1_000_000) / n_tasks;

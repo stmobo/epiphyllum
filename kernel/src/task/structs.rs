@@ -15,15 +15,16 @@ use crate::lock::{LockedGlobal, NoIRQSpinlock, NoIRQSpinlockGuard, OnceCell};
 use crate::malloc::{virtual_mem, AllocationError, PhysicalMemory, VirtualMemory};
 use crate::paging;
 use crate::paging::AddressSpace;
-use crate::structures::{AVLTree, Queue, Sender};
+use crate::structures::{Queue, Sender};
 
+use epiphyllum_structures::RBTree;
 use crossbeam::atomic::AtomicCell;
 
 const TASK_STACK_ORDER: u64 = 5;
 const TASK_STACK_PAGES: usize = (1 << (TASK_STACK_ORDER as usize)) - 2;
 const TASK_STACK_SIZE: usize = TASK_STACK_PAGES * 0x1000;
 
-pub static TASKS: LockedGlobal<AVLTree<u64, TaskHandle>> = LockedGlobal::new();
+pub static TASKS: LockedGlobal<RBTree<u64, TaskHandle>> = LockedGlobal::new();
 static CUR_PID: AtomicU64 = AtomicU64::new(0);
 static REAPER_CH: OnceCell<Sender<TaskHandle>> = OnceCell::new();
 
@@ -283,11 +284,11 @@ impl Task {
             TaskHandle::from_ref(&*task_ptr)
         };
 
-        TASKS
-            .lock()
-            .insert(id, task.clone())
-            .map_err(|_| TaskSpawnError::StructureError)?;
-        Ok(task)
+        if TASKS.lock().insert(id, task.clone()).is_none() {
+            Ok(task)
+        } else {
+            Err(TaskSpawnError::StructureError)
+        }
     }
 
     pub fn new(
@@ -543,7 +544,7 @@ impl PartialEq for Task {
 impl Eq for Task {}
 
 pub fn initialize() {
-    TASKS.init(AVLTree::new);
+    TASKS.init(RBTree::new);
 }
 
 #[allow(unused_must_use)]

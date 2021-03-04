@@ -10,7 +10,7 @@ pub use wait_queue::{WaitMode, WaitQueue, WaitQueueFuture};
 
 use alloc_crate::sync::Arc;
 
-use crate::lock::{NoIRQSpinlock, NoIRQSpinlockGuard};
+use crate::lock::NoIRQSpinlock;
 use crate::paging::AddressSpace;
 
 pub fn initialize(address_space: Arc<NoIRQSpinlock<AddressSpace>>) {

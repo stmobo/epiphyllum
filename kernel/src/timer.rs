@@ -128,7 +128,7 @@ mod sleep_funcs {
             // It's okay if this fails for whatever reason; since we cleared
             // the AsyncSleepState's waker, if the timer callback gets fired
             // it'll be a no-op.
-            self.0.stop();
+            drop(self.0.stop());
         }
     }
 

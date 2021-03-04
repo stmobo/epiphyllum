@@ -6,14 +6,14 @@
 //! This is also a nearly identical reimplementation of the same queue type as:
 //! https://github.com/rust-lang/rust/blob/master/src/libstd/sync/mpsc/mpsc_queue.rs
 
-use alloc_crate::alloc::{Allocator, Global};
-use alloc_crate::boxed::Box;
+use alloc_crate::alloc::{Allocator, Global, Layout, handle_alloc_error};
 use alloc_crate::sync::Arc;
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 use core::future::Future;
+use core::ptr::NonNull;
 
 use crate::task::{WaitMode, WaitQueue};
 
@@ -42,15 +42,26 @@ pub struct QueueNode<T, A: Allocator> {
 }
 
 impl<T, A: Allocator> QueueNode<T, A> {
-    unsafe fn new(v: Option<T>, alloc: A) -> *mut QueueNode<T, A> {
-        Box::into_raw(Box::new_in(QueueNode {
-            data: v,
-            next: AtomicPtr::new(ptr::null_mut()),
-        }, alloc))
+    unsafe fn new(v: Option<T>, alloc: &A) -> *mut QueueNode<T, A> {
+        let layout = Layout::new::<QueueNode<T, A>>();
+        if let Ok(p) = alloc.allocate(layout) {
+            let p: *mut QueueNode<T, A> = p.cast().as_ptr();
+            
+            p.write(QueueNode {
+                data: v,
+                next: AtomicPtr::new(ptr::null_mut()),
+            });
+            
+            p
+        } else {
+            handle_alloc_error(layout)
+        }
     }
 
-    unsafe fn free(ptr: *mut QueueNode<T, A>, alloc: A) {
-        Box::from_raw_in(ptr, alloc);
+    unsafe fn free(ptr: *mut QueueNode<T, A>, alloc: &A) {
+        let layout = Layout::new::<QueueNode<T, A>>();
+        ptr.drop_in_place();
+        alloc.deallocate(NonNull::new_unchecked(ptr.cast()), layout);
     }
 }
 
@@ -70,16 +81,16 @@ impl<T, A: Allocator> QueueNode<T, A> {
 /// cost of making pop operations unsafe: it is up to the programmer to ensure
 /// that only a single task calls pop() at a time.
 #[derive(Debug)]
-pub struct Queue<T, A: Allocator + Clone = Global> {
+pub struct Queue<T, A: Allocator = Global> {
     head: AtomicPtr<QueueNode<T, A>>,
     tail: UnsafeCell<*mut QueueNode<T, A>>,
     allocator: A
 }
 
-impl<T, A: Allocator + Clone> Queue<T, A> {
+impl<T, A: Allocator> Queue<T, A> {
     /// Directly create a new Queue with the given memory allocator.
     pub fn new_direct_in(alloc: A) -> Queue<T, A> {
-        let stub = unsafe { QueueNode::new(None, alloc.clone()) };
+        let stub = unsafe { QueueNode::new(None, &alloc) };
         Queue {
             head: AtomicPtr::new(stub),
             tail: UnsafeCell::new(stub),
@@ -90,7 +101,7 @@ impl<T, A: Allocator + Clone> Queue<T, A> {
     /// Push a value onto this queue.
     pub fn push(&self, data: T) {
         unsafe {
-            let node = QueueNode::new(Some(data), self.allocator.clone());
+            let node = QueueNode::new(Some(data), &self.allocator);
             let prev = self.head.swap(node, Ordering::AcqRel);
 
             (*prev).next.store(node, Ordering::Release);
@@ -119,7 +130,7 @@ impl<T, A: Allocator + Clone> Queue<T, A> {
         if !next.is_null() {
             *self.tail.get() = next;
             let val = (*next).data.take().unwrap();
-            QueueNode::free(tail, self.allocator.clone());
+            QueueNode::free(tail, &self.allocator);
 
             return PopResult::Success(val);
         }
@@ -156,8 +167,8 @@ impl<T> Queue<T, Global> {
     }
 }
 
-unsafe impl<T: Send, A: Allocator + Clone + Send> Send for Queue<T, A> {}
-unsafe impl<T: Send, A: Allocator + Clone + Sync> Sync for Queue<T, A> {}
+unsafe impl<T: Send, A: Allocator + Send> Send for Queue<T, A> {}
+unsafe impl<T: Send, A: Allocator + Sync> Sync for Queue<T, A> {}
 
 /// The writer / sender end of a linked queue pair.
 ///
@@ -215,9 +226,9 @@ impl<T> QueueReader<T> {
 
 unsafe impl<T: Send> Send for QueueReader<T> {}
 
-pub struct TryIter<'a, T, A: Allocator + Clone>(&'a Queue<T, A>);
+pub struct TryIter<'a, T, A: Allocator>(&'a Queue<T, A>);
 
-impl<'a, T, A: Allocator + Clone> Iterator for TryIter<'a, T, A> {
+impl<'a, T, A: Allocator> Iterator for TryIter<'a, T, A> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {

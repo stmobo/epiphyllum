@@ -12,7 +12,7 @@ pub use bip_buffer::{BipBuffer, BipReader, BipWriter};
 pub use bitmask::Bitmask64;
 pub use handle_list::HandleList;
 pub use hashbrown::{HashMap, HashSet};
-pub use vyukov_queue::{Channel, Queue, QueueReader, QueueWriter, Receiver, Sender};
+pub use vyukov_queue::{Queue, QueueReader, QueueWriter, Channel, Receiver, Sender, channel, queue};
 
 #[cfg(test)]
 mod tests {

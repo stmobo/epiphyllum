@@ -225,12 +225,32 @@ fn kernel_stage2_main(arg: u64) -> u64 {
     h.schedule();
 
     let foo = 25;
-    task::Task::from_closure(true, move || {
-        println!("hello from closure task, foo = {}", foo);
+    let (sender, receiver) = structures::channel();
+
+    let handle = task::spawn_async(true, move || async_test_task(receiver)).expect("could not spawn async closure task");
+    handle.register_exit_callback(|| {
+        println!("closure task exited");
+    });
+
+    let handle2 = task::Task::from_closure(true, move || {
+        println!("closure-task: hello from closure task, foo = {}", foo);
+        sender.send(500);
         0
     })
-    .expect("could not spawn closure task")
-    .schedule();
+    .expect("could not spawn sync closure task");
+
+    handle.schedule();
+    handle2.schedule();
+
+    0
+}
+
+async fn async_test_task(receiver: structures::Receiver<i32>) -> u64 {
+    println!("async-task: running async task");
+    
+    let data = receiver.async_recv().await;
+
+    println!("async-task: received data over channel: {}", data);
 
     0
 }

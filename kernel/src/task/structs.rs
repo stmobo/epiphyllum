@@ -15,7 +15,7 @@ use crate::lock::{LockedGlobal, NoIRQSpinlock, NoIRQSpinlockGuard, OnceCell};
 use crate::malloc::{virtual_mem, AllocationError, PhysicalMemory, VirtualMemory};
 use crate::paging;
 use crate::paging::AddressSpace;
-use crate::structures::{Queue, Sender};
+use crate::structures::Queue;
 
 use epiphyllum_structures::RBTree;
 use crossbeam::atomic::AtomicCell;
@@ -26,7 +26,6 @@ const TASK_STACK_SIZE: usize = TASK_STACK_PAGES * 0x1000;
 
 pub static TASKS: LockedGlobal<RBTree<u64, TaskHandle>> = LockedGlobal::new();
 static CUR_PID: AtomicU64 = AtomicU64::new(0);
-static REAPER_CH: OnceCell<Sender<TaskHandle>> = OnceCell::new();
 
 extern "C" {
     #[allow(improper_ctypes)]

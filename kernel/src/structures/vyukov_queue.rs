@@ -11,10 +11,30 @@ use alloc_crate::sync::Arc;
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, Ordering};
+use core::future::Future;
 
 use crate::task::{WaitMode, WaitQueue};
 
+/// Possible results of a pop() operation on a Queue.
+pub enum PopResult<T> {
+    Success(T),
+    Empty,
+    Inconsistent
+}
+
+impl<T> From<PopResult<T>> for Option<T> {
+    fn from(val: PopResult<T>) -> Self {
+        if let PopResult::Success(data) = val {
+            Some(data)
+        } else {
+            None
+        }
+    }
+}
+
+
+/// A node within a (Vyukov) Queue.
 pub struct QueueNode<T> {
     data: Option<T>,
     next: AtomicPtr<QueueNode<T>>,
@@ -29,45 +49,74 @@ impl<T> QueueNode<T> {
     }
 }
 
+/// A multi-producer, single-consumer queue.
+///
+/// This type implements a basic Vyukov queue, allowing multiple tasks to
+/// concurrently enqueue data, while a single task dequeues data.
+///
+/// These queues can be used in two ways:
+/// - Directly, with push() and pop() methods called on the Queue itself, or
+/// - via linked _writer_ and _reader_ objects.
+///
+/// Linked writers and readers offer a safer interface, at the cost of some
+/// overhead; internally, they rely on sharing a Queue object via an Arc.
+///
+/// Queue objects can also be used directly to remove this overhead, at the
+/// cost of making pop operations unsafe: it is up to the programmer to ensure
+/// that only a single task calls pop() at a time.
 #[derive(Debug)]
 pub struct Queue<T> {
     head: AtomicPtr<QueueNode<T>>,
-    tail: UnsafeCell<*mut QueueNode<T>>,
-    len: AtomicUsize,
+    tail: UnsafeCell<*mut QueueNode<T>>
 }
 
 impl<T> Queue<T> {
-    pub fn new() -> (QueueReader<T>, QueueWriter<T>) {
+    /// Create a linked pair of `QueueWriter` and `QueueReader` objects.
+    pub fn new() -> (QueueWriter<T>, QueueReader<T>) {
         let stub = unsafe { QueueNode::new(None) };
         let queue = Arc::new(Queue {
             head: AtomicPtr::new(stub),
-            tail: UnsafeCell::new(stub),
-            len: AtomicUsize::new(0),
+            tail: UnsafeCell::new(stub)
         });
 
-        (QueueReader::new(queue.clone()), QueueWriter::new(queue))
+        (QueueWriter::new(queue.clone()), QueueReader::new(queue))
     }
 
+    /// Directly create a new Queue.
     pub fn new_direct() -> Queue<T> {
         let stub = unsafe { QueueNode::new(None) };
         Queue {
             head: AtomicPtr::new(stub),
-            tail: UnsafeCell::new(stub),
-            len: AtomicUsize::new(0),
+            tail: UnsafeCell::new(stub)
         }
     }
 
+    /// Push a value onto this queue.
     pub fn push(&self, data: T) {
         unsafe {
             let node = QueueNode::new(Some(data));
             let prev = self.head.swap(node, Ordering::AcqRel);
 
             (*prev).next.store(node, Ordering::Release);
-            self.len.fetch_add(1, Ordering::SeqCst);
         }
     }
 
-    pub unsafe fn pop(&self) -> Option<T> {
+    /// Pop a value from this queue.
+    ///
+    /// A `Success` result indicates that an element was successfully popped
+    /// off the queue.
+    /// 
+    /// An `Empty` result indicates that there were no elements to pop off the
+    /// queue to begin with.
+    ///
+    /// An `Inconsistent` result indicates that, while there is data in the
+    /// queue, some writers are in the middle of pushing, and so no data can
+    /// be read for the moment. (In this case, the caller should retry the
+    /// pop in the near future, after allowing some time for writers to progress.)
+    ///
+    /// ## Safety
+    /// The caller must ensure that `pop` is only called by one task at a time.
+    pub unsafe fn pop(&self) -> PopResult<T> {
         let tail = *self.tail.get();
         let next = (*tail).next.load(Ordering::Acquire);
 
@@ -75,26 +124,35 @@ impl<T> Queue<T> {
             *self.tail.get() = next;
             let val = (*next).data.take().unwrap();
             drop(Box::from_raw(tail));
-            self.len.fetch_sub(1, Ordering::SeqCst);
 
-            return Some(val);
+            return PopResult::Success(val);
         }
 
-        None
+        if self.head.load(Ordering::Acquire) == tail {
+            PopResult::Empty
+        } else {
+            PopResult::Inconsistent
+        }
     }
 
+    /// Get an iterator that sequentially reads values from this queue.
+    ///
+    /// ## Safety
+    /// Iterating over the object returned from this method is equivalent to
+    /// calling `pop` in a loop, and the same safety requirements apply: no
+    /// two tasks may pop from the same queue concurrently.
     pub unsafe fn try_iter(&self) -> TryIter<'_, T> {
         TryIter(self)
     }
-
-    pub fn len(&self) -> usize {
-        self.len.load(Ordering::SeqCst)
-    }
 }
 
-unsafe impl<T> Send for Queue<T> {}
-unsafe impl<T> Sync for Queue<T> {}
+unsafe impl<T: Send> Send for Queue<T> {}
+unsafe impl<T: Send> Sync for Queue<T> {}
 
+/// The writer / sender end of a linked queue pair.
+///
+/// Writers can be freely cloned or shared between threads, provided that the
+/// data within the queue itself is `Send`.
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct QueueWriter<T> {
@@ -106,18 +164,15 @@ impl<T> QueueWriter<T> {
         QueueWriter { queue }
     }
 
+    /// Push a value onto the queue associated with this writer.
     pub fn push(&self, data: T) {
         self.queue.push(data)
     }
-
-    pub fn len(&self) -> usize {
-        self.queue.len()
-    }
 }
 
-unsafe impl<T> Send for QueueWriter<T> {}
-unsafe impl<T> Sync for QueueWriter<T> {}
-
+/// The reader / receiver end of a linked queue pair.
+///
+/// Unlike writers, readers can only be passed between threads, not shared.
 #[repr(transparent)]
 pub struct QueueReader<T> {
     queue: Arc<Queue<T>>,
@@ -132,20 +187,23 @@ impl<T> QueueReader<T> {
         }
     }
 
-    pub fn pop(&self) -> Option<T> {
+    /// Pop a value off this queue.
+    ///
+    /// See `Queue::pop` for descriptions of possible results from this method.
+    pub fn pop(&self) -> PopResult<T> {
         unsafe { self.queue.pop() }
     }
 
+    /// Iteratively pop values off this queue, until either the queue is empty
+    /// or an `Inconsistent` pop result is returned.
+    ///
+    /// This is a convenience method for calling `pop` in loops.
     pub fn try_iter(&self) -> TryIter<'_, T> {
         TryIter(self.queue.as_ref())
     }
-
-    pub fn len(&self) -> usize {
-        self.queue.len()
-    }
 }
 
-unsafe impl<T> Send for QueueReader<T> {}
+unsafe impl<T: Send> Send for QueueReader<T> {}
 
 pub struct TryIter<'a, T>(&'a Queue<T>);
 
@@ -153,113 +211,182 @@ impl<'a, T> Iterator for TryIter<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        unsafe { self.0.pop() }
+        unsafe {
+            self.0.pop().into()
+        }
     }
 }
 
+/// An MPSC queue with integrated sleep / wakeup capability.
+///
+/// Channels provide an extremely similar interface to regular Queues, however
+/// they also allow consumers to sleep while waiting for data to be enqueued.
+///
+/// As with regular Queues, sending on a Channel is safe, while directly 
+/// receiving from a Channel (in any way) is unsafe: the programmer must ensure
+/// that only a single task receives from a Channel at a time.
+///
+/// Linked pairs of Senders and Receivers can be used to provide a safe interface
+/// for Channels, at the cost of some overhead.
 pub struct Channel<T> {
     data_queue: Queue<T>,
     wait_queue: WaitQueue,
 }
 
 impl<T> Channel<T> {
-    pub fn new() -> (Receiver<T>, Sender<T>) {
-        let ch = Arc::new(Channel {
+    /// Directly create a new Channel.
+    pub fn new_direct() -> Channel<T> {
+        Channel {
             data_queue: Queue::new_direct(),
             wait_queue: WaitQueue::new(),
-        });
-
-        (
-            Receiver {
-                channel: ch.clone(),
-                _marker: PhantomData,
-            },
-            Sender(ch),
-        )
+        }
     }
-}
 
-#[derive(Clone)]
-#[repr(transparent)]
-pub struct Sender<T>(Arc<Channel<T>>);
+    /// Create a linked pair of `Sender` and `Receiver` objects.
+    pub fn new() -> (Sender<T>, Receiver<T>) {
+        let ch = Arc::new(Channel::new_direct());
+        (Sender(ch.clone()), Receiver(ch, PhantomData))
+    }
 
-impl<T> Sender<T> {
+    /// Push a value onto the queue, and wake up any waiting task.
     pub fn send(&self, data: T) {
-        self.0.data_queue.push(data);
-        self.0.wait_queue.wake();
+        self.data_queue.push(data);
+        self.wait_queue.wake();
     }
 
-    pub fn len(&self) -> usize {
-        self.0.data_queue.len()
-    }
-}
-
-unsafe impl<T> Send for Sender<T> {}
-unsafe impl<T> Sync for Sender<T> {}
-
-#[repr(transparent)]
-pub struct Receiver<T> {
-    channel: Arc<Channel<T>>,
-    _marker: PhantomData<*mut ()>,
-}
-
-impl<T> Receiver<T> {
-    pub fn try_recv(&self) -> Option<T> {
-        unsafe { self.channel.data_queue.pop() }
+    /// Directly attempt to pop data off the queue, returning immediately if
+    /// the queue is empty or if an inconsistent queue state is encountered.
+    pub unsafe fn try_recv(&self) -> PopResult<T> {
+        self.data_queue.pop()
     }
 
-    pub fn recv(&self) -> T {
-        loop {
-            self.channel
-                .wait_queue
-                .wait(|| self.channel.data_queue.len() > 0, WaitMode::Default);
+    /// Pop data off the queue, waiting until the first successful pop operation.
+    pub unsafe fn recv(&self) -> T {
+        let mut ret: Option<T> = None;
 
-            unsafe {
-                if let Some(data) = self.channel.data_queue.pop() {
-                    return data;
-                }
-            }
-        }
+        // note: if an inconsistent queue state is encountered, then it is safe
+        // to go to sleep, since there must be a pushing task (which will
+        // eventually wake us up once it progresses).
+        self.wait_queue.wait(|| {
+            ret = self.data_queue.pop().into();
+            ret.is_some()
+        }, WaitMode::Default);
+
+        ret.expect("wait returned without any data")
     }
 
-    pub async fn async_recv(&self) -> T {
-        loop {
-            self.channel
-                .wait_queue
-                .wait_async(|| self.channel.data_queue.len() > 0, WaitMode::Default)
-                .await;
+    /// Returns a future that, when `await`ed, pops data off the queue, waiting
+    /// asynchronously until the first successful pop operation.
+    pub async unsafe fn async_recv(&self) -> T {
+        let mut ret: Option<T> = None;
 
-            unsafe {
-                if let Some(data) = self.channel.data_queue.pop() {
-                    return data;
-                }
-            }
-        }
+        self.wait_queue
+            .wait_async(|| {
+                ret = self.data_queue.pop().into();
+                ret.is_some()
+            }, WaitMode::Default)
+            .await;
+
+        ret.expect("wait returned without any data")
     }
 
-    pub fn try_iter(&self) -> TryIter<'_, T> {
-        unsafe { self.channel.data_queue.try_iter() }
+    /// Iteratively pop values off the queue until either it is empty or an
+    /// `Inconsistent` result is returned.
+    ///
+    /// This is the same as `Queue::try_iter`.
+    pub unsafe fn try_iter(&self) -> TryIter<'_, T> {
+        self.data_queue.try_iter()
     }
 
-    pub fn wait_iter(&self) -> WaitIter<'_, T> {
+    /// Continuously pop values off the queue forever, blocking when no data
+    /// is available.
+    pub unsafe fn wait_iter(&self) -> WaitIter<'_, T> {
         WaitIter(self)
     }
-
-    pub fn len(&self) -> usize {
-        self.channel.data_queue.len()
-    }
 }
 
-unsafe impl<T> Send for Receiver<T> {}
+unsafe impl<T: Send> Send for Channel<T> {}
+unsafe impl<T: Send> Sync for Channel<T> {}
 
-pub struct WaitIter<'a, T>(&'a Receiver<T>);
+pub struct WaitIter<'a, T>(&'a Channel<T>);
 
 impl<'a, T> Iterator for WaitIter<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(self.0.recv())
+        unsafe { Some(self.0.recv()) }
     }
+}
+
+/// The sender half of a linked channel pair.
+///
+/// Like `QueueWriter`s, `Sender`s are both `Send` and `Sync` for `T: Send`.
+#[derive(Clone)]
+#[repr(transparent)]
+pub struct Sender<T>(Arc<Channel<T>>);
+
+impl<T> Sender<T> {
+    /// Send a value to this sender's linked Receiver, and wake up any task
+    /// waiting on it.
+    pub fn send(&self, data: T) {
+        self.0.send(data)
+    }
+}
+
+/// The receiver half of a linked channel pair.
+///
+/// Like `QueueReader`s, `Receiver`s are only `Send` for `T: Send`, and are
+/// never `Sync`.
+#[repr(transparent)]
+pub struct Receiver<T>(Arc<Channel<T>>, PhantomData<*mut ()>);
+
+impl<T> Receiver<T> {
+    /// Directly attempt to pop data off the queue, returning immediately if
+    /// the queue is empty or if an inconsistent queue state is encountered.
+    pub fn try_recv(&self) -> PopResult<T> {
+        unsafe { self.0.try_recv() }
+    }
+
+    /// Pop data off the queue, waiting until the first successful pop operation.
+    pub fn recv(&self) -> T {
+        unsafe { self.0.recv() }
+    }
+
+    /// Returns a future that, when `await`ed, pops data off the queue, waiting
+    /// asynchronously until the first successful pop operation.
+    pub fn async_recv(&self) -> impl Future<Output = T> + '_ {
+        unsafe { self.0.async_recv() }
+    }
+
+    /// Iteratively pop values off the queue until either it is empty or an
+    /// `Inconsistent` result is returned.
+    ///
+    /// This is the same as `Queue::try_iter` and `Channel::try_iter`.
+    pub fn try_iter(&self) -> TryIter<'_, T> {
+        unsafe { self.0.data_queue.try_iter() }
+    }
+
+    /// Continuously pop values off the queue forever, blocking when no data
+    /// is available.
+    pub fn wait_iter(&self) -> WaitIter<'_, T> {
+        unsafe { self.0.wait_iter() }
+    }
+}
+
+unsafe impl<T: Send> Send for Receiver<T> {}
+
+/// Create a multi-producer, single-consumer (MPSC) channel.
+///
+/// This is the same as `Channel::<T>::new()`.
+pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+    Channel::new()
+}
+
+/// Create a multi-producer, single-consumer (MPSC) queue.
+///
+/// This is the same as `Queue::<T>::new()`.
+pub fn queue<T>() -> (QueueWriter<T>, QueueReader<T>) {
+    Queue::new()
 }
 
 #[cfg(test)]
@@ -271,8 +398,8 @@ mod tests {
     use kernel_test_macro::kernel_test;
 
     async fn channel_tester() {
-        let (r1, s1) = Channel::<u64>::new();
-        let (r2, s2) = Channel::<u64>::new();
+        let (s1, r1) = channel();
+        let (s2, r2) = channel();
 
         let task_1 = Task::from_closure(false, move || {
             let mut rng = MersenneTwister64::new(TEST_SEED);

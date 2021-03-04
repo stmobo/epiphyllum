@@ -8,7 +8,7 @@ use crate::devices::serial;
 use crate::interrupts;
 use crate::lock::OnceCell;
 use crate::stack_trace;
-use crate::structures::{Channel, Receiver, Sender};
+use crate::structures::{channel, Receiver, Sender};
 use crate::task::Task;
 
 #[cfg(not(test))]
@@ -71,7 +71,7 @@ pub unsafe fn set_logging_task_mode(enabled: bool) {
 }
 
 pub fn initialize() {
-    let (receiver, sender) = Channel::new();
+    let (sender, receiver) = channel();
     if LOGGING_CHANNEL.set(sender).is_err() {
         panic!("logging already initialized");
     }

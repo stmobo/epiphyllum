@@ -1,3 +1,4 @@
+use alloc_crate::alloc::{Allocator, Global};
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
@@ -19,19 +20,19 @@ pub struct WaitData {
     mode: WaitMode,
 }
 
-pub struct WaitHandle<'a>(NodeHandle<'a, WaitData>);
+pub struct WaitHandle<'a, A: Allocator = Global>(NodeHandle<'a, WaitData, A>);
 
 /// A queue that can be used to sleep while waiting on a condition.
 #[repr(transparent)]
-pub struct WaitQueue {
-    tasks: HandleList<WaitData>,
+pub struct WaitQueue<A: Allocator = Global> {
+    tasks: HandleList<WaitData, A>,
 }
 
-impl WaitQueue {
-    /// Create a new WaitQueue.
-    pub const fn new() -> WaitQueue {
+impl<A: Allocator> WaitQueue<A> {
+    /// Create a new WaitQueue with the specified memory allocator.
+    pub fn new_in(alloc: A) -> WaitQueue<A> {
         WaitQueue {
-            tasks: HandleList::new(),
+            tasks: HandleList::new_in(alloc),
         }
     }
 
@@ -43,7 +44,7 @@ impl WaitQueue {
     ///
     /// Either way, the storage for the node will only be deallocated once the
     /// returned WaitHandle is dropped.
-    pub fn add_waiter(&self, waker: Option<Waker>, mode: WaitMode) -> WaitHandle<'_> {
+    pub fn add_waiter(&self, waker: Option<Waker>, mode: WaitMode) -> WaitHandle<'_, A> {
         let data = WaitData { waker, mode };
         let handle = match mode {
             WaitMode::Default => self.tasks.push_front(data),
@@ -98,7 +99,7 @@ impl WaitQueue {
         &self,
         condition: F,
         mode: WaitMode,
-    ) -> WaitQueueFuture<'_, F> {
+    ) -> WaitQueueFuture<'_, F, A> {
         WaitQueueFuture {
             handle: None,
             queue: self,
@@ -108,14 +109,21 @@ impl WaitQueue {
     }
 }
 
-pub struct WaitQueueFuture<'a, F: FnMut() -> bool + Unpin> {
-    handle: Option<WaitHandle<'a>>,
-    queue: &'a WaitQueue,
+impl WaitQueue<Global> {
+    /// Create a new WaitQueue with the global memory allocator.
+    pub const fn new() -> WaitQueue {
+        WaitQueue { tasks: HandleList::new() }
+    }
+}
+
+pub struct WaitQueueFuture<'a, F: FnMut() -> bool + Unpin, A: Allocator = Global> {
+    handle: Option<WaitHandle<'a, A>>,
+    queue: &'a WaitQueue<A>,
     condition: F,
     mode: WaitMode,
 }
 
-impl<'a, F: FnMut() -> bool + Unpin> Future for WaitQueueFuture<'a, F> {
+impl<'a, F: FnMut() -> bool + Unpin, A: Allocator> Future for WaitQueueFuture<'a, F, A> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

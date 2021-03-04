@@ -249,27 +249,24 @@ impl<'a, T, A: Allocator> Iterator for TryIter<'a, T, A> {
 ///
 /// Linked pairs of Senders and Receivers can be used to provide a safe interface
 /// for Channels, at the cost of some overhead.
-pub struct Channel<T> {
-    data_queue: Queue<T>,
-    wait_queue: WaitQueue,
+pub struct Channel<T, A: Allocator = Global> {
+    data_queue: Queue<T, A>,
+    wait_queue: WaitQueue<A>,
 }
 
 // TODO: make Channel accept an Allocator type parameter
 // (requires WaitQueue to also accept an allocator parameter)
 
-impl<T> Channel<T> {
-    /// Directly create a new Channel.
-    pub fn new_direct() -> Channel<T> {
+impl<T, A: Allocator> Channel<T, A> {
+    /// Directly create a new Channel with the specified memory allocator.
+    pub fn new_direct_in(alloc: A) -> Channel<T, A>
+    where
+        A: Clone
+    {
         Channel {
-            data_queue: Queue::new_direct(),
-            wait_queue: WaitQueue::new(),
+            data_queue: Queue::new_direct_in(alloc.clone()),
+            wait_queue: WaitQueue::new_in(alloc),
         }
-    }
-
-    /// Create a linked pair of `Sender` and `Receiver` objects.
-    pub fn new() -> (Sender<T>, Receiver<T>) {
-        let ch = Arc::new(Channel::new_direct());
-        (Sender(ch.clone()), Receiver(ch, PhantomData))
     }
 
     /// Push a value onto the queue, and wake up any waiting task.
@@ -318,23 +315,39 @@ impl<T> Channel<T> {
     /// `Inconsistent` result is returned.
     ///
     /// This is the same as `Queue::try_iter`.
-    pub unsafe fn try_iter(&self) -> TryIter<'_, T, Global> {
+    pub unsafe fn try_iter(&self) -> TryIter<'_, T, A> {
         self.data_queue.try_iter()
     }
 
     /// Continuously pop values off the queue forever, blocking when no data
     /// is available.
-    pub unsafe fn wait_iter(&self) -> WaitIter<'_, T> {
+    pub unsafe fn wait_iter(&self) -> WaitIter<'_, T, A> {
         WaitIter(self)
     }
 }
 
-unsafe impl<T: Send> Send for Channel<T> {}
-unsafe impl<T: Send> Sync for Channel<T> {}
+impl<T> Channel<T, Global> {
+    /// Directly create a new Channel with the global memory allocator.
+    pub fn new_direct() -> Channel<T, Global> {
+        Channel {
+            data_queue: Queue::new_direct_in(Global),
+            wait_queue: WaitQueue::new_in(Global),
+        }
+    }
 
-pub struct WaitIter<'a, T>(&'a Channel<T>);
+    /// Create a linked pair of `Sender` and `Receiver` objects.
+    pub fn new() -> (Sender<T>, Receiver<T>) {
+        let ch = Arc::new(Channel::new_direct_in(Global));
+        (Sender(ch.clone()), Receiver(ch, PhantomData))
+    }
+}
 
-impl<'a, T> Iterator for WaitIter<'a, T> {
+unsafe impl<T: Send, A: Allocator + Send> Send for Channel<T, A> {}
+unsafe impl<T: Send, A: Allocator + Sync> Sync for Channel<T, A> {}
+
+pub struct WaitIter<'a, T, A: Allocator>(&'a Channel<T, A>);
+
+impl<'a, T, A: Allocator> Iterator for WaitIter<'a, T, A> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -347,7 +360,7 @@ impl<'a, T> Iterator for WaitIter<'a, T> {
 /// Like `QueueWriter`s, `Sender`s are both `Send` and `Sync` for `T: Send`.
 #[derive(Clone)]
 #[repr(transparent)]
-pub struct Sender<T>(Arc<Channel<T>>);
+pub struct Sender<T>(Arc<Channel<T, Global>>);
 
 impl<T> Sender<T> {
     /// Send a value to this sender's linked Receiver, and wake up any task
@@ -362,7 +375,7 @@ impl<T> Sender<T> {
 /// Like `QueueReader`s, `Receiver`s are only `Send` for `T: Send`, and are
 /// never `Sync`.
 #[repr(transparent)]
-pub struct Receiver<T>(Arc<Channel<T>>, PhantomData<*mut ()>);
+pub struct Receiver<T>(Arc<Channel<T, Global>>, PhantomData<*mut ()>);
 
 impl<T> Receiver<T> {
     /// Directly attempt to pop data off the queue, returning immediately if
@@ -392,7 +405,7 @@ impl<T> Receiver<T> {
 
     /// Continuously pop values off the queue forever, blocking when no data
     /// is available.
-    pub fn wait_iter(&self) -> WaitIter<'_, T> {
+    pub fn wait_iter(&self) -> WaitIter<'_, T, Global> {
         unsafe { self.0.wait_iter() }
     }
 }

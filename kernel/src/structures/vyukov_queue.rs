@@ -6,6 +6,7 @@
 //! This is also a nearly identical reimplementation of the same queue type as:
 //! https://github.com/rust-lang/rust/blob/master/src/libstd/sync/mpsc/mpsc_queue.rs
 
+use alloc_crate::alloc::{Allocator, Global};
 use alloc_crate::boxed::Box;
 use alloc_crate::sync::Arc;
 use core::cell::UnsafeCell;
@@ -35,17 +36,21 @@ impl<T> From<PopResult<T>> for Option<T> {
 
 
 /// A node within a (Vyukov) Queue.
-pub struct QueueNode<T> {
+pub struct QueueNode<T, A: Allocator> {
     data: Option<T>,
-    next: AtomicPtr<QueueNode<T>>,
+    next: AtomicPtr<QueueNode<T, A>>,
 }
 
-impl<T> QueueNode<T> {
-    unsafe fn new(v: Option<T>) -> *mut QueueNode<T> {
-        Box::into_raw(Box::new(QueueNode {
+impl<T, A: Allocator> QueueNode<T, A> {
+    unsafe fn new(v: Option<T>, alloc: A) -> *mut QueueNode<T, A> {
+        Box::into_raw(Box::new_in(QueueNode {
             data: v,
             next: AtomicPtr::new(ptr::null_mut()),
-        }))
+        }, alloc))
+    }
+
+    unsafe fn free(ptr: *mut QueueNode<T, A>, alloc: A) {
+        Box::from_raw_in(ptr, alloc);
     }
 }
 
@@ -65,36 +70,27 @@ impl<T> QueueNode<T> {
 /// cost of making pop operations unsafe: it is up to the programmer to ensure
 /// that only a single task calls pop() at a time.
 #[derive(Debug)]
-pub struct Queue<T> {
-    head: AtomicPtr<QueueNode<T>>,
-    tail: UnsafeCell<*mut QueueNode<T>>
+pub struct Queue<T, A: Allocator + Clone = Global> {
+    head: AtomicPtr<QueueNode<T, A>>,
+    tail: UnsafeCell<*mut QueueNode<T, A>>,
+    allocator: A
 }
 
-impl<T> Queue<T> {
-    /// Create a linked pair of `QueueWriter` and `QueueReader` objects.
-    pub fn new() -> (QueueWriter<T>, QueueReader<T>) {
-        let stub = unsafe { QueueNode::new(None) };
-        let queue = Arc::new(Queue {
-            head: AtomicPtr::new(stub),
-            tail: UnsafeCell::new(stub)
-        });
-
-        (QueueWriter::new(queue.clone()), QueueReader::new(queue))
-    }
-
-    /// Directly create a new Queue.
-    pub fn new_direct() -> Queue<T> {
-        let stub = unsafe { QueueNode::new(None) };
+impl<T, A: Allocator + Clone> Queue<T, A> {
+    /// Directly create a new Queue with the given memory allocator.
+    pub fn new_direct_in(alloc: A) -> Queue<T, A> {
+        let stub = unsafe { QueueNode::new(None, alloc.clone()) };
         Queue {
             head: AtomicPtr::new(stub),
-            tail: UnsafeCell::new(stub)
+            tail: UnsafeCell::new(stub),
+            allocator: alloc
         }
     }
 
     /// Push a value onto this queue.
     pub fn push(&self, data: T) {
         unsafe {
-            let node = QueueNode::new(Some(data));
+            let node = QueueNode::new(Some(data), self.allocator.clone());
             let prev = self.head.swap(node, Ordering::AcqRel);
 
             (*prev).next.store(node, Ordering::Release);
@@ -123,7 +119,7 @@ impl<T> Queue<T> {
         if !next.is_null() {
             *self.tail.get() = next;
             let val = (*next).data.take().unwrap();
-            drop(Box::from_raw(tail));
+            QueueNode::free(tail, self.allocator.clone());
 
             return PopResult::Success(val);
         }
@@ -141,13 +137,27 @@ impl<T> Queue<T> {
     /// Iterating over the object returned from this method is equivalent to
     /// calling `pop` in a loop, and the same safety requirements apply: no
     /// two tasks may pop from the same queue concurrently.
-    pub unsafe fn try_iter(&self) -> TryIter<'_, T> {
+    pub unsafe fn try_iter(&self) -> TryIter<'_, T, A> {
         TryIter(self)
     }
 }
 
-unsafe impl<T: Send> Send for Queue<T> {}
-unsafe impl<T: Send> Sync for Queue<T> {}
+impl<T> Queue<T, Global> {
+    /// Directly create a new Queue with the global memory allocator.
+    pub fn new_direct() -> Queue<T, Global> {
+        Queue::new_direct_in(Global)
+    }
+
+    /// Create a linked pair of `QueueWriter` and `QueueReader` objects, using
+    /// the global memory allocator.
+    pub fn new() -> (QueueWriter<T>, QueueReader<T>) {
+        let queue = Arc::new(Queue::new_direct());
+        (QueueWriter::new(queue.clone()), QueueReader::new(queue))
+    }
+}
+
+unsafe impl<T: Send, A: Allocator + Clone + Send> Send for Queue<T, A> {}
+unsafe impl<T: Send, A: Allocator + Clone + Sync> Sync for Queue<T, A> {}
 
 /// The writer / sender end of a linked queue pair.
 ///
@@ -156,11 +166,11 @@ unsafe impl<T: Send> Sync for Queue<T> {}
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct QueueWriter<T> {
-    queue: Arc<Queue<T>>,
+    queue: Arc<Queue<T, Global>>,
 }
 
 impl<T> QueueWriter<T> {
-    fn new(queue: Arc<Queue<T>>) -> QueueWriter<T> {
+    fn new(queue: Arc<Queue<T, Global>>) -> QueueWriter<T> {
         QueueWriter { queue }
     }
 
@@ -175,12 +185,12 @@ impl<T> QueueWriter<T> {
 /// Unlike writers, readers can only be passed between threads, not shared.
 #[repr(transparent)]
 pub struct QueueReader<T> {
-    queue: Arc<Queue<T>>,
+    queue: Arc<Queue<T, Global>>,
     _marker: PhantomData<*mut ()>, // for !Sync
 }
 
 impl<T> QueueReader<T> {
-    fn new(queue: Arc<Queue<T>>) -> QueueReader<T> {
+    fn new(queue: Arc<Queue<T, Global>>) -> QueueReader<T> {
         QueueReader {
             queue,
             _marker: PhantomData,
@@ -198,16 +208,16 @@ impl<T> QueueReader<T> {
     /// or an `Inconsistent` pop result is returned.
     ///
     /// This is a convenience method for calling `pop` in loops.
-    pub fn try_iter(&self) -> TryIter<'_, T> {
+    pub fn try_iter(&self) -> TryIter<'_, T, Global> {
         TryIter(self.queue.as_ref())
     }
 }
 
 unsafe impl<T: Send> Send for QueueReader<T> {}
 
-pub struct TryIter<'a, T>(&'a Queue<T>);
+pub struct TryIter<'a, T, A: Allocator + Clone>(&'a Queue<T, A>);
 
-impl<'a, T> Iterator for TryIter<'a, T> {
+impl<'a, T, A: Allocator + Clone> Iterator for TryIter<'a, T, A> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -232,6 +242,9 @@ pub struct Channel<T> {
     data_queue: Queue<T>,
     wait_queue: WaitQueue,
 }
+
+// TODO: make Channel accept an Allocator type parameter
+// (requires WaitQueue to also accept an allocator parameter)
 
 impl<T> Channel<T> {
     /// Directly create a new Channel.
@@ -294,7 +307,7 @@ impl<T> Channel<T> {
     /// `Inconsistent` result is returned.
     ///
     /// This is the same as `Queue::try_iter`.
-    pub unsafe fn try_iter(&self) -> TryIter<'_, T> {
+    pub unsafe fn try_iter(&self) -> TryIter<'_, T, Global> {
         self.data_queue.try_iter()
     }
 
@@ -362,7 +375,7 @@ impl<T> Receiver<T> {
     /// `Inconsistent` result is returned.
     ///
     /// This is the same as `Queue::try_iter` and `Channel::try_iter`.
-    pub fn try_iter(&self) -> TryIter<'_, T> {
+    pub fn try_iter(&self) -> TryIter<'_, T, Global> {
         unsafe { self.0.data_queue.try_iter() }
     }
 

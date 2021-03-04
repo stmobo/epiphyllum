@@ -1,5 +1,4 @@
 //! Async task infrastructure.
-use alloc_crate::boxed::Box;
 use alloc_crate::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
@@ -8,7 +7,6 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use super::scheduling;
 use super::{ExitStatus, Task, TaskHandle, TaskSpawnError, TaskStatus};
 use crate::lock::NoIRQSpinlock;
-use crate::paging::AddressSpace;
 
 const TASK_WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(clone_task, wake_task, wake_task_ref, drop_task);
@@ -66,38 +64,24 @@ pub fn run_future<T>(mut future: impl Future<Output = T>) -> T {
 
 /// Spawn a new Task that runs a Future with run_future().
 ///
-/// Like Task::from_closure, the Future must be both Send and 'static so that
-/// it can be safely sent to the created Task.
+/// Note that the future to run is not passed directly to this function.
+/// Rather, you need to pass a _closure_ that (synchronously) returns the
+/// future to run.
+/// 
+/// This is to allow non-Send futures to be safely used with this function:
+/// the creating closure must be Send (since it is being passed to the new
+/// Task); the future itself, however, remains strictly within the spawned
+/// Task for its entire lifetime, and so is free to be non-Send.
 ///
 /// shared_address_space means the same thing as it does in Task::new.
-pub fn spawn_async<T: Future<Output = u64> + Send + 'static>(
+pub fn spawn_async<F: Future<Output = u64>, C: FnOnce() -> F + Send + 'static>(
     shared_address_space: bool,
-    future: T,
-) -> Result<TaskHandle, TaskSpawnError> {
-    let address_space = if shared_address_space {
-        super::current_task().clone_address_space()
-    } else {
-        Arc::new(NoIRQSpinlock::new(
-            AddressSpace::new().map_err(TaskSpawnError::AllocationError)?
-        ))
-    };
-
-    let data = Box::into_raw(Box::new(future)) as usize;
-    let res = unsafe { Task::new_raw(async_task_runner::<T> as usize, data as u64, address_space) };
-
-    match res {
-        Ok(h) => Ok(h),
-        Err(v) => {
-            drop(unsafe { Box::from_raw(data as *mut T) });
-            Err(v)
-        }
-    }
-}
-
-fn async_task_runner<T: Future<Output = u64> + Send + 'static>(ctx: *mut T) -> u64 {
-    let boxed = unsafe { Box::from_raw(ctx) };
-    let pinned: Pin<Box<T>> = boxed.into();
-    run_future(pinned)
+    closure: C,
+) -> Result<TaskHandle, TaskSpawnError>
+{
+    Task::from_closure(shared_address_space, move || {
+        run_future(closure())
+    })
 }
 
 /// The shared state underlying a TaskExitFuture.

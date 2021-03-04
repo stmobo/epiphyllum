@@ -1,4 +1,4 @@
-use alloc_crate::boxed::Box;
+use alloc_crate::alloc::{Allocator, Global, Layout, handle_alloc_error};
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
@@ -48,18 +48,41 @@ pub struct ListNode<T> {
 }
 
 impl<T> ListNode<T> {
-    fn new(data: T) -> Pin<LinkWrapper<T>> {
-        let boxed = Box::new(ListNode {
-            data,
-            prev: None,
-            next: None,
-        });
+    fn new_in<A: Allocator>(data: T, alloc: &A) -> Pin<LinkWrapper<T>> {
+        let layout = Layout::new::<ListNode<T>>();
+        if let Ok(p) = alloc.allocate(layout) {
+            unsafe {
+                let mut p: NonNull<ListNode<T>> = p.cast();
 
-        // Safety:
-        // - LinkWrapper's Deref implementation does not move out of `self`.
-        // - There's no way for code to get a &mut ListNode (or a *mut ListNode)
-        //   without reaching into the (private) internals of the LinkWrapper.
-        unsafe { Pin::new_unchecked(Box::leak(boxed).into()) }
+                // Safety: this should be a valid pointer, since we just
+                // allocated it with the correct Layout.
+                p.as_ptr().write(ListNode {
+                    data,
+                    prev: None,
+                    next: None,
+                });
+
+                // Safety:
+                // - We just initialized `p`.
+                // - LinkWrapper's Deref implementation does not move out of `self`.
+                // - There's no way for code to get a &mut ListNode (or a *mut ListNode)
+                //   without reaching into the (private) internals of the LinkWrapper.
+                Pin::new_unchecked(p.as_mut().into())
+            }
+        } else {
+            handle_alloc_error(layout);
+        }
+    }
+
+    unsafe fn cleanup<A: Allocator>(ptr: NonNull<ListNode<T>>, alloc: &A) {
+        let layout = Layout::new::<ListNode<T>>();
+
+        // Safety: assuming that `ptr` and `alloc` match a previous call to
+        // new_in, `ptr` should point to a valid ListNode (so drop_in_place is
+        // sound), and the allocator and layout should both match as well
+        // (so deallocate is sound).
+        ptr.as_ptr().drop_in_place();
+        alloc.deallocate(ptr.cast(), layout);
     }
 
     unsafe fn data_mut<'a>(self: Pin<LinkWrapper<T>>) -> &'a mut T {
@@ -98,23 +121,25 @@ impl<T> ListNode<T> {
     }
 }
 
-pub struct ListInternals<T> {
+pub struct ListInternals<T, A: Allocator> {
     head: Option<Pin<LinkWrapper<T>>>,
     tail: Option<Pin<LinkWrapper<T>>>,
     len: usize,
+    alloc: A,
 }
 
-impl<T> ListInternals<T> {
-    const fn new() -> ListInternals<T> {
+impl<T, A: Allocator> ListInternals<T, A> {
+    fn new_in(alloc: A) -> ListInternals<T, A> {
         ListInternals {
             head: None,
             tail: None,
             len: 0,
+            alloc
         }
     }
 
     fn push_front(&mut self, data: T) -> Pin<LinkWrapper<T>> {
-        let node = ListNode::new(data);
+        let node = ListNode::new_in(data, &self.alloc);
 
         if let Some(head) = self.head.take() {
             // Safety: we should be the only thread accessing this list, since
@@ -133,7 +158,7 @@ impl<T> ListInternals<T> {
     }
 
     fn push_back(&mut self, data: T) -> Pin<LinkWrapper<T>> {
-        let node = ListNode::new(data);
+        let node = ListNode::new_in(data, &self.alloc);
 
         if let Some(tail) = self.tail {
             // Safety: same as push_front.
@@ -257,13 +282,24 @@ impl<T> ListInternals<T> {
     ///
     /// If the iterator is only partially consumed, any unconsumed elements
     /// will remain linked into the list.
-    pub fn drain(&mut self) -> Drain<'_, T> {
+    pub fn drain(&mut self) -> Drain<'_, T, A> {
         Drain(self)
     }
 
     /// Gets the length of this list.
     pub fn len(&self) -> usize {
         self.len
+    }
+}
+
+impl<T> ListInternals<T, Global> {
+    const fn new() -> ListInternals<T, Global> {
+        ListInternals {
+            head: None,
+            tail: None,
+            len: 0,
+            alloc: Global
+        }
     }
 }
 
@@ -280,22 +316,22 @@ impl<T> ListInternals<T> {
 ///
 /// This type of list is mostly useful for event queues and such.
 /// (for example: `WaitQueue`.)
-pub struct HandleList<T> {
-    internals: NoIRQSpinlock<ListInternals<T>>,
+pub struct HandleList<T, A: Allocator = Global> {
+    internals: NoIRQSpinlock<ListInternals<T, A>>,
 }
 
-impl<T> HandleList<T> {
+impl<T, A: Allocator> HandleList<T, A> {
     /// Creates a new HandleList.
-    pub const fn new() -> HandleList<T> {
+    pub fn new_in(alloc: A) -> HandleList<T, A> {
         HandleList {
-            internals: NoIRQSpinlock::new(ListInternals::new()),
+            internals: NoIRQSpinlock::new(ListInternals::new_in(alloc)),
         }
     }
 
     /// Pushes an element onto the front of this list.
     ///
     /// Returns a handle to the pushed node.
-    pub fn push_front(&self, data: T) -> NodeHandle<'_, T> {
+    pub fn push_front(&self, data: T) -> NodeHandle<'_, T, A> {
         let mut lock = self.internals.lock();
         let node = lock.push_front(data);
         drop(lock);
@@ -310,7 +346,7 @@ impl<T> HandleList<T> {
     /// Pushes an element onto the back of this list.
     ///
     /// Returns a handle to the pushed node.
-    pub fn push_back(&self, data: T) -> NodeHandle<'_, T> {
+    pub fn push_back(&self, data: T) -> NodeHandle<'_, T, A> {
         let mut lock = self.internals.lock();
         let node = lock.push_back(data);
         drop(lock);
@@ -325,7 +361,7 @@ impl<T> HandleList<T> {
     /// Pops an element from the front of this list.
     ///
     /// Returns a locked access guard to the popped element, if any.
-    pub fn pop_front(&self) -> Option<AccessGuard<'_, T>> {
+    pub fn pop_front(&self) -> Option<AccessGuard<'_, T, A>> {
         let mut lock = self.internals.lock();
         lock._pop_ptr_front().map(move |node| AccessGuard {
             lock,
@@ -337,7 +373,7 @@ impl<T> HandleList<T> {
     /// Pops an element from the back of this list.
     ///
     /// Returns a locked access guard to the popped element, if any.
-    pub fn pop_back(&self) -> Option<AccessGuard<'_, T>> {
+    pub fn pop_back(&self) -> Option<AccessGuard<'_, T, A>> {
         let mut lock = self.internals.lock();
         lock._pop_ptr_back().map(move |node| AccessGuard {
             lock,
@@ -351,7 +387,7 @@ impl<T> HandleList<T> {
     /// Locking a list is required in order to iterate over it, and also allows
     /// for more efficient popping (without the overhead of repeatedly locking
     /// and unlocking the same spinlock).
-    pub fn lock(&self) -> NoIRQSpinlockGuard<'_, ListInternals<T>> {
+    pub fn lock(&self) -> NoIRQSpinlockGuard<'_, ListInternals<T, A>> {
         self.internals.lock()
     }
 
@@ -361,8 +397,17 @@ impl<T> HandleList<T> {
     }
 }
 
-unsafe impl<T: Send> Send for HandleList<T> {}
-unsafe impl<T: Send> Sync for HandleList<T> {}
+impl<T> HandleList<T, Global> {
+    pub const fn new() -> HandleList<T, Global> {
+        HandleList {
+            internals: NoIRQSpinlock::new(ListInternals::new()),
+        }
+    }
+}
+
+// NOTE: implementing Sync for T: Send should be sound due to the internal locks.
+unsafe impl<T: Send, A: Allocator + Send> Send for HandleList<T, A> {}
+unsafe impl<T: Send, A: Allocator + Sync> Sync for HandleList<T, A> {}
 
 // Note: We don't need to implement Drop, since an HandleList cannot be
 // dropped until all NodeHandles pointing into the list are themselves dropped
@@ -373,19 +418,19 @@ unsafe impl<T: Send> Sync for HandleList<T> {}
 /// This handle can be used to quickly access the pushed element again.
 /// Dropping this handle will automatically unlink the node if it hasn't been
 /// popped, then deallocate the node's storage.
-pub struct NodeHandle<'a, T> {
-    list: &'a HandleList<T>,
+pub struct NodeHandle<'a, T, A: Allocator = Global> {
+    list: &'a HandleList<T, A>,
     node: Pin<LinkWrapper<T>>,
     _marker: PhantomData<T>,
 }
 
-impl<'a, T> NodeHandle<'a, T> {
+impl<'a, T, A: Allocator> NodeHandle<'a, T, A> {
     /// Gets access to the data in this node by locking its corresponding list.
     ///
     /// This returns an 'access guard' to the node referenced by this handle,
     /// which can be used as a reference to the node's data (via `Deref` and
     /// `DerefMut`.)
-    pub fn lock(&self) -> AccessGuard<'_, T> {
+    pub fn lock(&self) -> AccessGuard<'_, T, A> {
         AccessGuard {
             lock: self.list.internals.lock(),
             node: self.node,
@@ -394,7 +439,9 @@ impl<'a, T> NodeHandle<'a, T> {
     }
 }
 
-impl<'a, T> Drop for NodeHandle<'a, T> {
+// Safety note: We don't access the actual value contained within the node
+// during drop, so we can apply #[may_dangle] to T.
+unsafe impl<'a, #[may_dangle] T, A: Allocator> Drop for NodeHandle<'a, T, A> {
     fn drop(&mut self) {
         let mut lock = self.list.internals.lock();
         unsafe {
@@ -434,21 +481,23 @@ impl<'a, T> Drop for NodeHandle<'a, T> {
             // Now deallocate the node storage.
             // At this point, we don't care whether or not the node is pinned,
             // because no one should point to it anymore.
-            drop(Box::from_raw(node_ptr.0.as_ptr()));
+            ListNode::cleanup(node_ptr.0, &lock.alloc);
         }
     }
 }
 
-unsafe impl<'a, T: Send> Send for NodeHandle<'a, T> {}
-unsafe impl<'a, T: Send> Sync for NodeHandle<'a, T> {}
+// Implementing Sync for T: Send is sound because dereferencing through the
+// handle requires locking the list.
+unsafe impl<'a, T: Send, A: Allocator + Send> Send for NodeHandle<'a, T, A> {}
+unsafe impl<'a, T: Send, A: Allocator + Sync> Sync for NodeHandle<'a, T, A> {}
 
-pub struct AccessGuard<'a, T> {
-    lock: NoIRQSpinlockGuard<'a, ListInternals<T>>,
+pub struct AccessGuard<'a, T, A: Allocator = Global> {
+    lock: NoIRQSpinlockGuard<'a, ListInternals<T, A>>,
     node: Pin<LinkWrapper<T>>,
     _marker: PhantomData<&'a mut T>,
 }
 
-impl<'a, T> Deref for AccessGuard<'a, T> {
+impl<'a, T, A: Allocator> Deref for AccessGuard<'a, T, A> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -459,15 +508,17 @@ impl<'a, T> Deref for AccessGuard<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for AccessGuard<'a, T> {
+impl<'a, T, A: Allocator> DerefMut for AccessGuard<'a, T, A> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // Safety: see Deref.
         unsafe { self.node.data_mut() }
     }
 }
 
-unsafe impl<'a, T: Send> Send for AccessGuard<'a, T> {}
-unsafe impl<'a, T: Sync> Sync for AccessGuard<'a, T> {}
+// AccessGuard is effectively a smart-reference type, so implement Send/Sync
+// only for T: Send + Sync to match &T.
+unsafe impl<'a, T: Send + Sync, A: Allocator + Send> Send for AccessGuard<'a, T, A> {}
+unsafe impl<'a, T: Send + Sync, A: Allocator + Sync> Sync for AccessGuard<'a, T, A> {}
 
 pub struct Iter<'a, T> {
     head: Option<Pin<LinkWrapper<T>>>,
@@ -511,9 +562,9 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     }
 }
 
-pub struct Drain<'a, T>(&'a mut ListInternals<T>);
+pub struct Drain<'a, T, A: Allocator = Global>(&'a mut ListInternals<T, A>);
 
-impl<'a, T> Iterator for Drain<'a, T> {
+impl<'a, T, A: Allocator> Iterator for Drain<'a, T, A> {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -526,7 +577,7 @@ impl<'a, T> Iterator for Drain<'a, T> {
     }
 }
 
-impl<'a, T> DoubleEndedIterator for Drain<'a, T> {
+impl<'a, T, A: Allocator> DoubleEndedIterator for Drain<'a, T, A> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if let Some(p) = self.0._pop_ptr_back() {
             // Safety: see ListInternals::pop_back.

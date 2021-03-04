@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(allocator_api)]
+#![feature(dropck_eyepatch)]
 #![feature(custom_test_frameworks)]
 #![feature(panic_info_message)]
 #![feature(rustc_private)]

@@ -7,6 +7,7 @@ use core::ptr::NonNull;
 use crate::lock::{NoIRQSpinlock, NoIRQSpinlockGuard};
 
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct LinkWrapper<T>(NonNull<ListNode<T>>);
 
 impl<T> Clone for LinkWrapper<T> {

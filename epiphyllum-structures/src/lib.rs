@@ -15,6 +15,8 @@ extern crate quickcheck;
 #[macro_use(quickcheck)]
 extern crate quickcheck_macros;
 
-mod rb_tree;
+pub mod rb_tree;
+pub mod vyukov_queue;
 
 pub use rb_tree::RBTree;
+pub use vyukov_queue::{Queue, QueueReader, QueueWriter, queue};

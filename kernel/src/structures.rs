@@ -5,14 +5,16 @@ pub mod bip_buffer;
 pub mod bitmask;
 pub mod handle_list;
 pub mod node_arena;
-pub mod vyukov_queue;
+pub mod mpsc_channel;
 
 pub use avl_tree::AVLTree;
+pub use epiphyllum_structures::RBTree;
 pub use bip_buffer::{BipBuffer, BipReader, BipWriter};
 pub use bitmask::Bitmask64;
 pub use handle_list::HandleList;
 pub use hashbrown::{HashMap, HashSet};
-pub use vyukov_queue::{Queue, QueueReader, QueueWriter, Channel, Receiver, Sender, channel, queue};
+pub use epiphyllum_structures::{Queue, QueueReader, QueueWriter, queue};
+pub use mpsc_channel::{Channel, Receiver, Sender, channel};
 
 #[cfg(test)]
 mod tests {

@@ -8,9 +8,7 @@ const DEFAULT_LCR_SETTINGS: u8 = 0x03; // 8N1
 static DEFAULT_SERIAL: LockedGlobal<SerialPort> = LockedGlobal::new();
 
 pub unsafe fn force_unlock() {
-    DEFAULT_SERIAL
-        .init(|| SerialPort::new(0x3F8))
-        .force_unlock();
+    DEFAULT_SERIAL.force_unlock();
 }
 
 pub fn get_default_serial() -> NoIRQSpinlockGuard<'static, SerialPort> {
@@ -27,20 +25,23 @@ pub struct SerialPort {
 
 impl SerialPort {
     pub fn new(io_base: u16) -> SerialPort {
-        let mut ser = SerialPort {
-            off0: Port::new(io_base),
-            off1: Port::new(io_base + 1),
-            // interrupt_id: Port::new(io_base + 2),
-            line_control: Port::new(io_base + 3),
-            // line_status: Port::new(io_base + 5)
-        };
-
+        let mut ser = SerialPort::new_uninit(io_base);
         unsafe {
             ser.configure_interrupts(false, false);
             ser.set_divisor(3); // 38400 baud
         }
 
         ser
+    }
+
+    const fn new_uninit(io_base: u16) -> SerialPort {
+        SerialPort {
+            off0: Port::new(io_base),
+            off1: Port::new(io_base + 1),
+            // interrupt_id: Port::new(io_base + 2),
+            line_control: Port::new(io_base + 3),
+            // line_status: Port::new(io_base + 5)
+        }
     }
 
     /// Configure the Line Control Register.
@@ -97,4 +98,8 @@ impl fmt::Write for SerialPort {
         SerialPort::write_str(self, s);
         Ok(())
     }
+}
+
+pub const unsafe fn get_panic_serial() -> SerialPort {
+    SerialPort::new_uninit(0x3F8)
 }

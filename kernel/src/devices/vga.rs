@@ -56,12 +56,12 @@ pub struct VGATextMode {
 }
 
 impl VGATextMode {
-    fn new(base_addr: usize) -> VGATextMode {
+    pub unsafe fn new(base_addr: usize) -> VGATextMode {
         let sz: usize = (SCREEN_WIDTH * SCREEN_HEIGHT) as usize;
         let base: *mut VGACharacter = paging::offset_direct_map(base_addr) as *mut VGACharacter;
 
         VGATextMode {
-            buf: unsafe { &mut *ptr::slice_from_raw_parts_mut(base, sz) },
+            buf: &mut *ptr::slice_from_raw_parts_mut(base, sz),
             cur_x: 0,
             cur_y: 0,
         }
@@ -187,16 +187,18 @@ impl fmt::Write for VGATextMode {
 }
 
 pub fn get_default_vga() -> NoIRQSpinlockGuard<'static, VGATextMode> {
-    DEFAULT_VGA.init(|| VGATextMode::new(0xB8000)).lock()
+    DEFAULT_VGA.init(|| unsafe { VGATextMode::new(0xB8000) }).lock()
 }
 
 /// Forcibly take the lock for the default VGA display.
 ///
 /// Note that this is horrifically unsafe.
 pub unsafe fn force_unlock() {
-    DEFAULT_VGA
-        .init(|| VGATextMode::new(0xB8000))
-        .force_unlock();
+    DEFAULT_VGA.force_unlock();
+}
+
+pub unsafe fn get_panic_vga() -> VGATextMode {
+    VGATextMode::new(0xB8000)
 }
 
 /*

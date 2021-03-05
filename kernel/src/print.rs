@@ -2,6 +2,8 @@ use alloc_crate::string::String;
 use core::fmt;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::cell::UnsafeCell;
+use spin::Once;
 
 use crate::asm;
 use crate::devices::serial;
@@ -10,8 +12,6 @@ use crate::lock::OnceCell;
 use crate::stack_trace;
 use crate::structures::{channel, Receiver, Sender};
 use crate::task::Task;
-
-#[cfg(not(test))]
 use crate::devices::vga;
 
 #[cfg(test)]
@@ -20,6 +20,7 @@ use crate::test;
 static LOGGING_TASK_ENABLED: AtomicBool = AtomicBool::new(false);
 static LOGGING_TASK: OnceCell<Task> = OnceCell::new();
 static LOGGING_CHANNEL: OnceCell<Sender<String>> = OnceCell::new();
+static PANIC_SINKS: Once<PanicOutputSinks> = Once::new();
 
 #[macro_export]
 macro_rules! print {
@@ -34,7 +35,7 @@ macro_rules! println {
 
 #[macro_export]
 macro_rules! direct_print {
-    ($($arg:tt)*) => ($crate::print::_do_direct_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::print::_do_direct_print(false, format_args!($($arg)*)));
 }
 
 #[macro_export]
@@ -43,23 +44,75 @@ macro_rules! direct_println {
     ($($arg:tt)*) => ($crate::direct_print!("{}\n", format_args!($($arg)*)));
 }
 
+#[macro_export]
+macro_rules! panic_print {
+    ($($arg:tt)*) => ($crate::print::_do_direct_print(true, format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! panic_println {
+    () => ($crate::panic_print!("\n"));
+    ($($arg:tt)*) => ($crate::panic_print!("{}\n", format_args!($($arg)*)));
+}
+
+struct PanicOutputSinks {
+    serial: UnsafeCell<serial::SerialPort>,
+    vga: UnsafeCell<vga::VGATextMode>
+}
+
+impl PanicOutputSinks {
+    fn get() -> &'static PanicOutputSinks {
+        PANIC_SINKS.call_once(|| {
+            unsafe {
+                let r = PanicOutputSinks {
+                    serial: UnsafeCell::new(serial::get_panic_serial()),
+                    vga: UnsafeCell::new(vga::get_panic_vga()),
+                };
+
+                #[cfg(not(test))]
+                (*r.vga.get()).clear();
+
+                r
+            }
+        })
+    }
+
+    unsafe fn write_fmt(&self, args: fmt::Arguments) -> fmt::Result {
+        use fmt::Write;
+
+        (*self.serial.get()).write_fmt(args)?;
+
+        #[cfg(not(test))]
+        (*self.vga.get()).write_fmt(args)
+    }
+}
+
+unsafe impl Send for PanicOutputSinks {}
+unsafe impl Sync for PanicOutputSinks {}
+
 #[doc(hidden)]
 pub fn _do_blocking_print(args: fmt::Arguments) {
     if LOGGING_TASK_ENABLED.load(Ordering::SeqCst) {
         LOGGING_CHANNEL.get().unwrap().send(format!("{}", args));
     } else {
-        _do_direct_print(args);
+        _do_direct_print(false, args);
     }
 }
 
 #[doc(hidden)]
-pub fn _do_direct_print(args: fmt::Arguments) {
+pub fn _do_direct_print(in_panic: bool, args: fmt::Arguments) {
     use fmt::Write;
 
-    serial::get_default_serial().write_fmt(args).unwrap();
+    if in_panic {
+        unsafe {
+            PanicOutputSinks::get().write_fmt(args).unwrap();
+        }
+    } else {
+        serial::get_default_serial().write_fmt(args).unwrap();
 
-    #[cfg(not(test))]
-    vga::get_default_vga().write_fmt(args).unwrap();
+        #[cfg(not(test))]
+        vga::get_default_vga().write_fmt(args).unwrap();
+    }
 }
 
 pub fn logging_task_enabled() -> bool {
@@ -96,68 +149,55 @@ fn logging_task(log_recv: Receiver<String>) {
     }
 }
 
-pub unsafe fn break_print_locks() {
-    set_logging_task_mode(false);
+pub fn do_panic(info: &PanicInfo) -> ! {
+    unsafe {
+        asm::interrupts::set_if(false);
+        set_logging_task_mode(false);
+    };
+    
+    panic_print!("\nkernel panic: ");
 
-    serial::force_unlock();
+    if let Some(msg) = info.message() {
+        panic_print!("{}", msg);
+    } else if let Some(msg) = info.payload().downcast_ref::<&'static str>() {
+        panic_print!("{}", msg);
+    } else {
+        panic_print!("(no message provided)");
+    }
 
-    #[cfg(not(test))]
-    vga::force_unlock();
-}
+    if let Some(loc) = info.location() {
+        panic_print!(" at {}\n", loc);
+    } else {
+        panic_print!(" - no location information available\n");
+    }
 
-fn print_control_regs() {
-    println!(
+    panic_println!("\n== [Current Stack Trace] ==");
+    for frame in stack_trace::trace_stack() {
+        panic_println!("    {:#018x}", frame.frame_ip);
+    }
+
+    let int_ctx = interrupts::get_interrupt_context();
+    if !int_ctx.is_null() {
+        panic_println!("\n== [Interrupt Context] ==\n{}", unsafe { &*int_ctx });
+
+        panic_println!("\n== [Interrupt Stack Trace] ==");
+        for frame in unsafe { (*int_ctx).trace_stack() } {
+            panic_println!("    {:#018x}", frame.frame_ip);
+        }
+    }
+
+    panic_println!("\n== [Control Registers] ==");
+    panic_println!(
         "CR0: {:#018x}    CR2: {:#018x}",
         u64::from(asm::get_cr0()),
         asm::get_cr2()
     );
 
-    println!(
+    panic_println!(
         "CR4: {:#018x}    CR3: {:#018x}",
         u64::from(asm::get_cr4()),
         asm::get_cr3()
     );
-}
-
-pub fn do_panic(info: &PanicInfo) -> ! {
-    unsafe {
-        asm::interrupts::set_if(false);
-        break_print_locks();
-    };
-
-    print!("\nkernel panic: ");
-
-    if let Some(msg) = info.message() {
-        print!("{}", msg);
-    } else if let Some(msg) = info.payload().downcast_ref::<&'static str>() {
-        print!("{}", msg);
-    } else {
-        print!("(no message provided)");
-    }
-
-    if let Some(loc) = info.location() {
-        print!(" at {}\n", loc);
-    } else {
-        print!(" - no location information available\n");
-    }
-
-    println!("\n== [Current Stack Trace] ==");
-    for frame in stack_trace::trace_stack() {
-        println!("    {:#018x}", frame.frame_ip);
-    }
-
-    let int_ctx = interrupts::get_interrupt_context();
-    if !int_ctx.is_null() {
-        println!("\n== [Interrupt Context] ==\n{}", unsafe { &*int_ctx });
-
-        println!("\n== [Interrupt Stack Trace] ==");
-        for frame in unsafe { (*int_ctx).trace_stack() } {
-            println!("    {:#018x}", frame.frame_ip);
-        }
-    }
-
-    println!("\n== [Control Registers] ==");
-    print_control_regs();
 
     #[cfg(test)]
     test::test_panic();

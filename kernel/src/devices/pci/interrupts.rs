@@ -13,10 +13,10 @@ use crate::interrupts;
 use crate::lock::OnceCell;
 use crate::structures::HashMap;
 
-static INT_LINKS: OnceCell<Vec<InterruptLinkDevice>> = OnceCell::new();
-static INT_ASSIGNMENTS: OnceCell<HashMap<PCIAddress, Vec<InterruptAssignment>>> = OnceCell::new();
+static INT_ASSIGNMENTS: OnceCell<HashMap<PCIAddress, [InterruptAssignment; 4]>> = OnceCell::new();
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+/// Enumeration for the four PCI interrupt pins.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u8)]
 pub enum PCIInterruptPin {
     LNKA = 0x00,
@@ -75,7 +75,8 @@ impl PCIInterruptPin {
         }
     }
 
-    fn next_pin(self) -> PCIInterruptPin {
+    /// Get the next pin over (A -> B -> C -> D -> A)
+    const fn next_pin(self) -> PCIInterruptPin {
         match self {
             PCIInterruptPin::LNKA => PCIInterruptPin::LNKB,
             PCIInterruptPin::LNKB => PCIInterruptPin::LNKC,
@@ -84,7 +85,8 @@ impl PCIInterruptPin {
         }
     }
 
-    fn prev_pin(self) -> PCIInterruptPin {
+    /// Get the previous pin (D -> C -> B -> A -> D)
+    const fn prev_pin(self) -> PCIInterruptPin {
         match self {
             PCIInterruptPin::LNKA => PCIInterruptPin::LNKD,
             PCIInterruptPin::LNKB => PCIInterruptPin::LNKA,
@@ -93,12 +95,24 @@ impl PCIInterruptPin {
         }
     }
 
-    fn extend(self) -> [PCIInterruptPin; 4] {
+    /// Get a list of PCI interrupt pins, starting from this pin and continuing
+    /// to the next four pins in sequence.
+    const fn extend(self) -> [PCIInterruptPin; 4] {
         [
             self,
             self.next_pin(),
             self.next_pin().next_pin(),
             self.prev_pin(),
+        ]
+    }
+
+    /// Get an array of all four pins, in sequence.
+    const fn pin_array() -> [PCIInterruptPin; 4] {
+        [
+            PCIInterruptPin::LNKA,
+            PCIInterruptPin::LNKB,
+            PCIInterruptPin::LNKC,
+            PCIInterruptPin::LNKD,
         ]
     }
 }
@@ -132,6 +146,8 @@ fn get_root_pin_map(device: Arc<PCIDevice>) -> (PCIInterruptPin, PCIAddress) {
     (cur_pin, cur_device.address())
 }
 
+/// A (virtual) device that links a PCI interrupt pin on a root bus to an
+/// actual system GSI and IRQ vector.
 pub struct InterruptLinkDevice {
     segment_id: u16,
     bus_id: u8,
@@ -139,8 +155,7 @@ pub struct InterruptLinkDevice {
     current_irq: AtomicU32,
     possible_irqs: ExtendedIrq,
     interrupt_vector: AtomicU8,
-    weight: u64,
-    link_device_number: usize,
+    weight: AtomicU32,
 }
 
 impl InterruptLinkDevice {
@@ -195,8 +210,8 @@ impl InterruptLinkDevice {
             .store(get_gsi_vector(gsi as u8), Ordering::SeqCst);
 
         println!(
-            "pci: {} => IRQ {} (weight {})",
-            self.acpi_device, irq_no, self.weight
+            "pci: {} [{:04x}:{:02x}] => IRQ {} (weight {})",
+            self.acpi_device, self.segment_id, self.bus_id, irq_no, self.weight()
         );
 
         print!("pci:     ");
@@ -237,6 +252,10 @@ impl InterruptLinkDevice {
     pub fn possible_irqs(&self) -> ExtendedIrq {
         self.possible_irqs.clone()
     }
+
+    pub fn weight(&self) -> u32 {
+        self.weight.load(Ordering::SeqCst)
+    }
 }
 
 fn get_gsi_vector(gsi: u8) -> u8 {
@@ -253,49 +272,56 @@ fn get_gsi_vector(gsi: u8) -> u8 {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+/// Enumerates possible system interrupt assignments for a given PCI device
+/// interrupt pin.
+#[derive(Clone)]
 pub enum InterruptAssignment {
-    Device(usize),
+    Device(Arc<InterruptLinkDevice>),
     Hardwired(u8),
 }
 
 impl InterruptAssignment {
+    /// Get the interrupt assignment for the given device / pin pair.
     pub fn get(address: PCIAddress, pin: PCIInterruptPin) -> Option<InterruptAssignment> {
         let map = INT_ASSIGNMENTS.get().expect("not initialized");
         let assignments = map.get(&address)?;
 
         Some(match pin {
-            PCIInterruptPin::LNKA => assignments[0],
-            PCIInterruptPin::LNKB => assignments[1],
-            PCIInterruptPin::LNKC => assignments[2],
-            PCIInterruptPin::LNKD => assignments[3],
+            PCIInterruptPin::LNKA => assignments[0].clone(),
+            PCIInterruptPin::LNKB => assignments[1].clone(),
+            PCIInterruptPin::LNKC => assignments[2].clone(),
+            PCIInterruptPin::LNKD => assignments[3].clone(),
         })
     }
 
+    /// Get this interrupt's assigned global system interrupt number.
     pub fn gsi(self) -> u32 {
         match self {
             InterruptAssignment::Hardwired(gsi) => gsi as u32,
-            InterruptAssignment::Device(device_no) => {
-                let link_devices = INT_LINKS.get().expect("not initialized");
-                link_devices[device_no].irq_number()
-            }
+            InterruptAssignment::Device(device) => device.irq_number()
         }
     }
 
+    /// Get the assigned IRQ vector for this interrupt.
     pub fn interrupt_vector(self) -> u8 {
         match self {
             InterruptAssignment::Hardwired(gsi) => get_gsi_vector(gsi as u8),
-            InterruptAssignment::Device(device_no) => {
-                let link_devices = INT_LINKS.get().expect("not initialized");
-                link_devices[device_no].interrupt_vector()
-            }
+            InterruptAssignment::Device(device) => device.interrupt_vector()
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MergedRoutingTableKey {
+    bridge_segment: u16,
+    bridge_bus: u8,
+    bridge_device: u8,
+    pin: PCIInterruptPin
+}
+
 pub fn enumerate_device_interrupts() {
-    let mut link_devices: Vec<InterruptLinkDevice> = Vec::new();
-    let mut prts = Vec::new();
+    let mut routing_entries = HashMap::new();
+    let mut link_devices: HashMap<(u16, u8, &'_ str), Arc<InterruptLinkDevice>> = HashMap::new();
 
     // Get interrupt routing tables for all root busses
     for bus in device::get_root_busses().iter() {
@@ -310,173 +336,135 @@ pub fn enumerate_device_interrupts() {
             ),
         };
 
-        // Build a list of all interrupt link devices
-        for entry in prt.iter() {
-            if let PCIInterruptSource::Device(link_device) = entry.interrupt_source() {
-                if link_devices
-                    .iter()
-                    .find(|link| {
-                        (link.segment_id == bus.segment_id())
-                            && (link.bus_id == bus.bus_id())
-                            && (link.acpi_device == link_device)
-                    })
-                    .is_none()
-                {
-                    let prs = match link_device.all_possible_resources() {
-                        Ok(r) => r,
-                        Err(e) => panic!(
-                            "could not get possible resource settings for device {}: {:?}",
-                            link_device, e
-                        ),
-                    };
+        // Enumerate all interrupt link devices for this root bus:
+        for entry in prt {
+            let key = MergedRoutingTableKey {
+                bridge_segment: bus.segment_id(),
+                bridge_bus: bus.bus_id(),
+                bridge_device: entry.device_id(),
+                pin: entry.pin()
+            };
 
-                    let crs = match link_device.all_current_resources() {
-                        Ok(r) => r,
-                        Err(e) => panic!(
-                            "could not get current resource settings for device {}: {:?}",
-                            link_device, e
-                        ),
-                    };
+            match entry.interrupt_source() {
+                PCIInterruptSource::Hardwired(gsi) => {
+                    // Configure GSI as level-triggered, active low as per
+                    // PCI spec by default
+                    if let Err(_) = IOAPIC::configure_gsi(gsi, true, true, false) {
+                        panic!("could not configure hardwired GSI {}", gsi);
+                    }
 
-                    assert_eq!(
-                        prs.len(),
-                        1,
-                        "invalid number of possible resources for device {}",
-                        link_device
-                    );
+                    routing_entries.insert(key, (entry, None));
+                }
+                PCIInterruptSource::Device(link_device) => {
+                    let link_dev_key = (bus.segment_id(), bus.bus_id(), link_device.full_name());
 
-                    assert_eq!(
-                        crs.len(),
-                        1,
-                        "invalid number of current resources for device {}",
-                        link_device
-                    );
+                    if let Some(link_dev) = link_devices.get(&link_dev_key) {
+                        routing_entries.insert(key, (entry, Some(link_dev.clone())));
+                    } else {
+                        let prs = match link_device.all_possible_resources() {
+                            Ok(r) => r,
+                            Err(e) => panic!(
+                                "could not get possible resource settings for device {}: {:?}",
+                                link_device, e
+                            ),
+                        };
+    
+                        let crs = match link_device.all_current_resources() {
+                            Ok(r) => r,
+                            Err(e) => panic!(
+                                "could not get current resource settings for device {}: {:?}",
+                                link_device, e
+                            ),
+                        };
+    
+                        assert_eq!(
+                            prs.len(),
+                            1,
+                            "invalid number of possible resources for device {}",
+                            link_device
+                        );
+    
+                        assert_eq!(
+                            crs.len(),
+                            1,
+                            "invalid number of current resources for device {}",
+                            link_device
+                        );
+    
+                        let current_irq: ExtendedIrq = crs[0].parse::<ExtendedIrq>().unwrap();
+                        let possible_irqs: ExtendedIrq = prs[0].parse::<ExtendedIrq>().unwrap();
+    
+                        assert_eq!(
+                            current_irq.interrupts.len(),
+                            1,
+                            "invalid number of current IRQs for device {}",
+                            link_device
+                        );
+                    
+                        let link_dev = Arc::new(InterruptLinkDevice {
+                            segment_id: bus.segment_id(),
+                            bus_id: bus.bus_id(),
+                            acpi_device: link_device,
+                            current_irq: AtomicU32::new(current_irq.interrupts[0]),
+                            possible_irqs,
+                            weight: AtomicU32::new(0),
+                            interrupt_vector: AtomicU8::new(0),
+                        });
 
-                    let current_irq: ExtendedIrq = crs[0].parse::<ExtendedIrq>().unwrap();
-                    let possible_irqs: ExtendedIrq = prs[0].parse::<ExtendedIrq>().unwrap();
-
-                    assert_eq!(
-                        current_irq.interrupts.len(),
-                        1,
-                        "invalid number of current IRQs for device {}",
-                        link_device
-                    );
-
-                    let link_dev = InterruptLinkDevice {
-                        segment_id: bus.segment_id(),
-                        bus_id: bus.bus_id(),
-                        acpi_device: link_device,
-                        current_irq: AtomicU32::new(current_irq.interrupts[0]),
-                        possible_irqs,
-                        weight: 0,
-                        link_device_number: link_devices.len(),
-                        interrupt_vector: AtomicU8::new(0),
-                    };
-
-                    link_devices.push(link_dev);
+                        link_devices.insert(link_dev_key, link_dev.clone());
+                        routing_entries.insert(key, (entry, Some(link_dev)));
+                    }
                 }
             }
         }
-
-        prts.push((bus.segment_id(), bus.bus_id(), prt));
     }
 
-    let mut int_map: HashMap<PCIAddress, Vec<InterruptAssignment>> = HashMap::new();
+    let mut int_map: HashMap<PCIAddress, [InterruptAssignment; 4]> = HashMap::new();
 
     // Now go through all devices and map interrupt numbers:
     for (address, device) in device::get_device_map().iter() {
         let address = *address;
         let (root_pin, bridge_address) = get_root_pin_map(device.clone());
 
-        // Find the PRT for this device:
-        let prt = prts
-            .iter()
-            .find(|t| (t.0 == bridge_address.segment()) && (t.1 == bridge_address.bus()));
-
-        assert!(
-            prt.is_some(),
-            "could not find PRT for PCI device {} (bridge address {})",
-            address,
-            bridge_address
-        );
-        let prt = prt.unwrap();
-
-        // Get the PRT entries for each of the four interrupt pins...
-        let pins = root_pin.extend();
-        let routing_entries = pins.iter().map(|pin| {
-            let bridge_pin = *pin;
-            let entry = prt
-                .2
-                .iter()
-                .find(|e| (e.pin() == bridge_pin) && (e.device_id() == bridge_address.device()));
-
-            assert!(
-                entry.is_some(),
-                "could not find PRT entry for PCI device {}, pin {}",
-                bridge_address,
-                bridge_pin
-            );
-
-            entry.unwrap().clone()
-        });
-
-        //println!("pci:     device {}:", address);
-
-        // Convert those PRT entries into InterruptAssignments...
-        let assignments: Vec<InterruptAssignment> = routing_entries
-            .enumerate()
-            .map(|(i, entry)| {
-                let device_pin = match i {
-                    0 => PCIInterruptPin::LNKA,
-                    1 => PCIInterruptPin::LNKB,
-                    2 => PCIInterruptPin::LNKC,
-                    3 => PCIInterruptPin::LNKD,
-                    _ => unreachable!(),
+        let assignments = root_pin
+            .extend()
+            .map(|bridge_pin| {
+                let key = MergedRoutingTableKey {
+                    bridge_segment: bridge_address.segment(),
+                    bridge_bus: bridge_address.bus(),
+                    bridge_device: bridge_address.device(),
+                    pin: bridge_pin
                 };
 
+                let (entry, link_device) = routing_entries.get(&key).expect("could not find routing table entry");
+
                 match entry.interrupt_source() {
-                    PCIInterruptSource::Hardwired(gsi) => {
-                        // Configure GSI as level-triggered, active low as per
-                        // PCI spec by default
-                        if let Err(_) = IOAPIC::configure_gsi(gsi, true, true, false) {
-                            panic!("could not configure hardwired GSI {}", gsi);
-                        }
-
-                        InterruptAssignment::Hardwired(gsi)
-                    }
-                    PCIInterruptSource::Device(d) => {
-                        // Find the given interrupt link device
-                        let linked = link_devices.iter_mut().find(|l| {
-                            l.acpi_device == d
-                        });
-                        assert!(
-                            linked.is_some(),
-                            "could not find interrupt link device for PCI device {} (bridge address {}), device pin {}",
-                            address,
-                            bridge_address,
-                            device_pin
-                        );
-
-                        let linked = linked.unwrap();
-
+                    PCIInterruptSource::Hardwired(gsi) => InterruptAssignment::Hardwired(gsi),
+                    PCIInterruptSource::Device(_) => {
+                        let link_device = link_device.as_ref().expect("no linked interrupt device for interrupt source");
+                        
                         // increase the weight (# of linked interrupts) for this
                         // interrupt device
-                        linked.weight += 1;
+                        link_device.weight.fetch_add(1, Ordering::SeqCst);
 
-                        // Get its number, and use that for the interrupt asssignment
-                        InterruptAssignment::Device(linked.link_device_number)
+                        InterruptAssignment::Device(link_device.clone())
                     }
                 }
-            })
-            .collect();
+            });
 
         int_map.insert(address, assignments);
     }
 
+    // Get a list of all link devices:
+    let mut link_devices: Vec<Arc<InterruptLinkDevice>> = link_devices
+        .into_iter()
+        .map(|(_, v)| v)
+        .collect();
+
     // Now reassign interrupts based on each link device's weight.
 
     // Initialize a map from IRQ numbers to linked interrupt counts:
-    let mut int_counts: HashMap<u32, u64> = HashMap::new();
+    let mut int_counts: HashMap<u32, u32> = HashMap::new();
     for device in link_devices.iter() {
         for irq in device.possible_irqs.interrupts.iter() {
             int_counts.insert(*irq, 0);
@@ -485,7 +473,7 @@ pub fn enumerate_device_interrupts() {
 
     // Give interrupt devices with more linked interrupts first pick for IRQ
     // numbers.
-    link_devices.sort_unstable_by(|a, b| a.weight.cmp(&b.weight).reverse());
+    link_devices.sort_unstable_by(|a, b| a.weight().cmp(&b.weight()).reverse());
 
     println!(
         "pci: enumerated {} interrupt link devices",
@@ -511,11 +499,7 @@ pub fn enumerate_device_interrupts() {
         }
 
         // Update the new count of linked interrupts for this IRQ number
-        int_counts.insert(min_irq, count + device.weight);
-    }
-
-    if INT_LINKS.set(link_devices).is_err() {
-        panic!("already initialized");
+        int_counts.insert(min_irq, count + device.weight());
     }
 
     if INT_ASSIGNMENTS.set(int_map).is_err() {

@@ -18,6 +18,7 @@
 #![feature(maybe_uninit_ref)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(alloc_layout_extra)]
+#![feature(array_map)]
 #![test_runner(crate::test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![allow(dead_code)]

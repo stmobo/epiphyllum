@@ -128,6 +128,17 @@ impl Display for PCIInterruptPin {
     }
 }
 
+/// Determine the mapping between this device's PCI interrupt pins and the pins
+/// that will actually be asserted at the root bridge.
+/// 
+/// There are two components to this:
+/// - Finding the address/slot number of this device's interrupts, as seen from
+///   the root
+///   - If this device is directly attached to the root bus, this is just the
+///     address/slot number of the device.
+///   - If this device is attached to a PCI-PCI bus, then this is the address/slot
+///     number of the PCI-PCI bus immediately prior to the root. 
+/// - Computing the pin swizzling for devices connected through a PCI-PCI bus.
 fn get_root_pin_map(device: Arc<PCIDevice>) -> (PCIInterruptPin, PCIAddress) {
     let mut cur_pin = PCIInterruptPin::LNKA;
     let mut cur_device = device;

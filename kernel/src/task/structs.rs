@@ -15,9 +15,8 @@ use crate::lock::{LockedGlobal, NoIRQSpinlock, NoIRQSpinlockGuard, OnceCell};
 use crate::malloc::{virtual_mem, AllocationError, PhysicalMemory, VirtualMemory};
 use crate::paging;
 use crate::paging::AddressSpace;
-use crate::structures::Queue;
+use crate::structures::{Queue, RBTree};
 
-use epiphyllum_structures::RBTree;
 use crossbeam::atomic::AtomicCell;
 
 const TASK_STACK_ORDER: u64 = 5;

@@ -1,11 +1,12 @@
 use alloc_crate::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
-use epiphyllum_structures::RBTree;
 
-use super::structs::{AtomicTaskHandle, Task, TaskHandle, TaskStatus};
+use crate::structures::RBTree;
 use crate::lock::{NoIRQSpinlock, OnceCell};
 use crate::paging::AddressSpace;
 use crate::timer::{get_kernel_ticks, TICKS_PER_SECOND};
+
+use super::structs::{AtomicTaskHandle, Task, TaskHandle, TaskStatus};
 
 static SCHEDULER: OnceCell<Scheduler> = OnceCell::new();
 const NS_PER_TICK: u64 = 1_000_000_000 / TICKS_PER_SECOND;

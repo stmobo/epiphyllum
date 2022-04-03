@@ -1,4 +1,5 @@
 use spin::Once;
+use core::arch::asm;
 
 static CPUID_INFO: Once<CpuIdInfo> = Once::new();
 
@@ -11,8 +12,8 @@ pub struct CpuIdInfo {
 impl CpuIdInfo {
     pub fn get() -> &'static CpuIdInfo {
         CPUID_INFO.call_once(|| {
-            let (basic_eax, basic_ebx, basic_ecx, basic_edx) = cpuid(1);
-            let (_, _, extended_ecx, extended_edx) = cpuid(0x8000_0001);
+            let (basic_eax, basic_ebx, basic_ecx, basic_edx) = cpuid(1, 0);
+            let (_, _, extended_ecx, extended_edx) = cpuid(0x8000_0001, 0);
 
             CpuIdInfo {
                 basic_eax,
@@ -152,14 +153,25 @@ impl FeatureFlags {
     }
 }
 
-fn cpuid(in_eax: u32) -> (u32, u32, u32, u32) {
+fn cpuid(in_eax: u32, in_ecx: u32) -> (u32, u32, u32, u32) {
     let eax: u32;
     let ebx: u32;
     let ecx: u32;
     let edx: u32;
 
     unsafe {
-        llvm_asm!("cpuid" : "={eax}"(eax), "={ebx}"(ebx), "={ecx}"(ecx), "={edx}"(edx) : "0"(in_eax) :: "volatile");
+        /* RBX is reserved by LLVM, so move it to a temp register before CPUID */
+        asm!(
+            "xchg {tmp}, rbx",
+            "cpuid",
+            "mov {ebx_out:e}, ebx",
+            "xchg {tmp}, rbx",
+            ebx_out = out(reg) ebx,
+            tmp = out(reg) _,
+            inout("eax") in_eax => eax,
+            inout("ecx") in_ecx => ecx,
+            lateout("edx") edx,
+        );
     }
 
     (eax, ebx, ecx, edx)

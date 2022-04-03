@@ -1,5 +1,7 @@
 use crate::malloc;
 
+use core::arch::asm;
+
 #[repr(C)]
 struct IDTEntry {
     offset_1: u16,
@@ -54,7 +56,10 @@ fn load_idt(idt_addr: usize) {
             offset: idt_addr as u64,
         };
 
-        llvm_asm!("lidt [$0]" :: "r"(&descriptor) :: "volatile", "intel");
+        asm!(
+            "lidt [{0}]",
+            in(reg) &descriptor
+        );
     }
 }
 

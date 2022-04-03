@@ -1,5 +1,6 @@
 use alloc_crate::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::arch::asm;
 
 use crate::structures::RBTree;
 use crate::lock::{NoIRQSpinlock, OnceCell};
@@ -271,7 +272,7 @@ pub fn yield_cpu() {
 fn idle_task(_: u64) -> u64 {
     loop {
         unsafe {
-            llvm_asm!("hlt" :::: "volatile");
+            asm!("hlt");
         }
     }
 }

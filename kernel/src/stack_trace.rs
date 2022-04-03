@@ -1,6 +1,8 @@
 use crate::paging;
 use crate::task::Task;
 
+use core::arch::asm;
+
 #[derive(Debug, Copy, Clone)]
 pub struct StackFrame {
     pub frame_ip: usize,
@@ -19,8 +21,12 @@ impl StackFrameIterator {
             let mut frame_ip: usize;
             let mut frame_bp: usize;
 
-            llvm_asm!("mov $0, [rbp]" : "=r"(frame_bp) ::: "intel");
-            llvm_asm!("mov $0, [rbp+8]" : "=r"(frame_ip) ::: "intel");
+            asm!(
+                "mov {bp_out}, [rbp]",
+                "mov {ip_out}, [rbp+8]",
+                bp_out = out(reg) frame_bp,
+                ip_out = out(reg) frame_ip
+            );
 
             StackFrameIterator {
                 cur_frame: Some(StackFrame { frame_ip, frame_bp }),

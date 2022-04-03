@@ -7,6 +7,7 @@ use core::ptr;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use core::task::Waker;
+use core::arch::asm;
 
 use super::async_task;
 use super::scheduling;
@@ -218,7 +219,10 @@ impl CurrentTaskRef {
         let mut rsp: usize;
 
         unsafe {
-            llvm_asm!("mov %rsp, $0" : "=r"(rsp));
+            asm!(
+                "mov {0}, rsp",
+                out(reg) rsp
+            );
         }
 
         if rsp >= paging::KERNEL_HEAP_BASE && rsp <= paging::KERNEL_BASE {

@@ -1,4 +1,5 @@
 use core::mem;
+use core::arch::asm;
 
 static KERNEL_GDT: GDT = GDT::kernel_gdt();
 
@@ -80,6 +81,9 @@ pub fn initialize_gdt() {
             offset: gdt_addr as u64,
         };
 
-        llvm_asm!("lgdt [$0]" :: "r"(&descriptor) :: "volatile", "intel");
+        asm!(
+            "lgdt [{0}]",
+            in(reg) &descriptor
+        );
     }
 }

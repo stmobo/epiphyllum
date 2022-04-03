@@ -31,140 +31,140 @@ pub fn initialize_idt(idt: &mut InterruptDescriptorTable) {
     }
 }
 
-extern "x86-interrupt" fn divide_error(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn divide_error(isf: InterruptStackFrame) {
     panic!(
         "divide-by-zero (#DE) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn debug_exception(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn debug_exception(isf: InterruptStackFrame) {
     println!(
         "debug interrupt at {:#016x}?",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn nmi(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn nmi(isf: InterruptStackFrame) {
     panic!("NMI at {:#016x}", isf.instruction_pointer.as_u64());
 }
 
-extern "x86-interrupt" fn breakpoint(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn breakpoint(isf: InterruptStackFrame) {
     println!(
         "ignoring breakpoint at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn overflow_error(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn overflow_error(isf: InterruptStackFrame) {
     panic!(
         "overflow exception (#OF) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn bound_range_exceeded(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn bound_range_exceeded(isf: InterruptStackFrame) {
     panic!(
         "bound range exceeded (#BR) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn invalid_instruction_error(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn invalid_instruction_error(isf: InterruptStackFrame) {
     panic!(
         "invalid instruction (#UD) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn device_not_available_error(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn device_not_available_error(isf: InterruptStackFrame) {
     panic!(
         "device not available (#NM) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn double_fault_error(_isf: &mut InterruptStackFrame, _: u64) -> ! {
+extern "x86-interrupt" fn double_fault_error(_isf: InterruptStackFrame, _: u64) -> ! {
     panic!("double fault (#DF) error");
 }
 
-extern "x86-interrupt" fn invalid_tss_error(isf: &mut InterruptStackFrame, _code: u64) {
+extern "x86-interrupt" fn invalid_tss_error(isf: InterruptStackFrame, _code: u64) {
     panic!(
         "invalid TSS error (#TS) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn segment_not_present_error(isf: &mut InterruptStackFrame, _code: u64) {
+extern "x86-interrupt" fn segment_not_present_error(isf: InterruptStackFrame, _code: u64) {
     panic!(
         "segment not present error (#NP) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn stack_segment_fault(isf: &mut InterruptStackFrame, _code: u64) {
+extern "x86-interrupt" fn stack_segment_fault(isf: InterruptStackFrame, _code: u64) {
     panic!(
         "stack segment fault (#SS) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn protection_fault(isf: &mut InterruptStackFrame, _code: u64) {
+extern "x86-interrupt" fn protection_fault(isf: InterruptStackFrame, _code: u64) {
     panic!(
         "general protection fault (#GP) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn page_fault(isf: &mut InterruptStackFrame, _code: PageFaultErrorCode) {
+extern "x86-interrupt" fn page_fault(isf: InterruptStackFrame, _code: PageFaultErrorCode) {
     panic!(
         "unhandled page fault (#GP) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn fp_fault(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn fp_fault(isf: InterruptStackFrame) {
     panic!(
         "x87 floating point error (#MF) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn alignment_check(isf: &mut InterruptStackFrame, _code: u64) {
+extern "x86-interrupt" fn alignment_check(isf: InterruptStackFrame, _code: u64) {
     panic!(
         "alignment check error (#AC) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn machine_check(isf: &mut InterruptStackFrame) -> ! {
+extern "x86-interrupt" fn machine_check(isf: InterruptStackFrame) -> ! {
     panic!(
         "machine check error (#MC) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn simd_error(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn simd_error(isf: InterruptStackFrame) {
     panic!(
         "SIMD FP error (#XF) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn virtualization_error(isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn virtualization_error(isf: InterruptStackFrame) {
     panic!(
         "virtualization error (#VE) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn security_exception(isf: &mut InterruptStackFrame, _code: u64) {
+extern "x86-interrupt" fn security_exception(isf: InterruptStackFrame, _code: u64) {
     panic!(
         "security exception (#SX) at {:#016x}",
         isf.instruction_pointer.as_u64()
     );
 }
 
-extern "x86-interrupt" fn unhandled_interrupt(_isf: &mut InterruptStackFrame) {
+extern "x86-interrupt" fn unhandled_interrupt(_isf: InterruptStackFrame) {
     panic!("unhandled interrupt");
 }

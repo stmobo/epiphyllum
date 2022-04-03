@@ -9,8 +9,8 @@ pub mod bindings {
     #![allow(non_camel_case_types)]
     #![allow(non_snake_case)]
     #![allow(clippy::all)]
-    use core::convert::TryFrom;
-    use core::ops::{Deref, DerefMut, Try};
+    use core::convert::{TryFrom, Infallible};
+    use core::ops::{Deref, DerefMut, Try, ControlFlow, FromResidual};
     use num_enum::{IntoPrimitive, TryFromPrimitive};
 
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -183,20 +183,28 @@ pub mod bindings {
         }
     }
 
+    impl FromResidual<Result<Infallible, AcpiError>> for AcpiStatus {
+        fn from_residual(v: Result<Infallible, AcpiError>) -> AcpiStatus {
+            match v {
+                Ok(_) => AcpiStatus(Ok(())),
+                Err(e) => AcpiStatus(Err(e))
+            }
+        }
+    }
+
     impl Try for AcpiStatus {
-        type Ok = ();
-        type Error = AcpiError;
+        type Output = ();
+        type Residual = Result<Infallible, AcpiError>;
 
-        fn into_result(self) -> Result<(), AcpiError> {
-            self.0
+        fn branch(self) -> ControlFlow<Self::Residual, Self::Output> {
+            match self.0 {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(v) => ControlFlow::Break(Err(v))
+            }
         }
 
-        fn from_ok(_: ()) -> AcpiStatus {
+        fn from_output(_: ()) -> AcpiStatus {
             AcpiStatus(Ok(()))
-        }
-
-        fn from_error(v: AcpiError) -> AcpiStatus {
-            AcpiStatus(Err(v))
         }
     }
 }

@@ -610,25 +610,26 @@ pub extern "C" fn AcpiOsGetTimer() -> UINT64 {
 }
 
 pub struct ISRData {
-    context: ISRContext,
+    context: usize,
     isr: IRQHandler,
 }
 
 impl ISRData {
     fn new(
         handler: ACPI_OSD_HANDLER,
-        context: *mut cty::c_void,
+        ctx: *mut cty::c_void,
     ) -> Result<ISRData, interrupts::InterruptAllocationError> {
         // type is "unsafe extern "C" fn(Context: *mut cty::c_void) -> UINT32"
         let func = handler.unwrap();
-        let context = ISRContext(context);
+        let context: usize = unsafe { mem::transmute(ctx) };
 
         interrupts::register_handler(
             None,
             false,
             move || -> interrupts::InterruptHandlerStatus {
                 unsafe {
-                    if func(context.0) == ACPI_INTERRUPT_HANDLED {
+                    let ctx_ptr: *mut cty::c_void = mem::transmute(context);
+                    if func(ctx_ptr) == ACPI_INTERRUPT_HANDLED {
                         interrupts::InterruptHandlerStatus::Handled
                     } else {
                         interrupts::InterruptHandlerStatus::NotHandled
@@ -697,12 +698,6 @@ pub extern "C" fn AcpiOsRemoveInterruptHandler(
         AcpiError::AE_NOT_EXIST.into()
     }
 }
-
-#[derive(Copy, Clone)]
-#[repr(transparent)]
-struct ISRContext(*mut cty::c_void);
-unsafe impl Send for ISRContext {}
-unsafe impl Sync for ISRContext {}
 
 #[repr(C)]
 struct AcpiFatalInfo {

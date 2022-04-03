@@ -1,5 +1,18 @@
 [unstable]
-features=["itarget", "host_dep", "dev_dep"]
+build-std = ["core", "compiler_builtins", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
 
 [target.x86_64-epiphyllum]
+# rustflags = [
+#     "-C", "link-arg=-Tkernel/linker.ld",
+#     "-C", "link-arg=-nostdlib",
+#     "-C", "link-arg=--nmagic",
+#     "-C", "link-arg=-zmax-page-size=4096",
+#     "-C", "link-arg=--no-relax",
+#     "-C", "code-model=large",
+#     "-C", "link-arg=-static"
+# ]
 runner = "./runner.py"
+
+[target.x86_64-bootloader]
+# rustflags = ["-C", "link-arg=-Tbootloader/linker.ld"]

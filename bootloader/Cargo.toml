@@ -1,8 +1,11 @@
+cargo-features = ["per-package-target"]
+
 [package]
 name = "epiphyllum-bootloader"
 version = "0.1.0"
 authors = ["Sebastian Mobo <stmobo@gmail.com>"]
-edition = "2018"
+edition = "2021"
+forced-target = "./x86_64-bootloader.json"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,9 +14,9 @@ cc = "1.0"
 
 [dependencies]
 spin = "*"
-x86_64 = "^0.13"
+x86_64 = "^0.14"
 cstr_core = {version = "^0.1", default-features = false}
-memchr = { version = "=2.1", default-features = false }
+memchr = { version = "2.4.1", default-features = false }
 
 [dependencies.lazy_static]
 version = "^1.4"

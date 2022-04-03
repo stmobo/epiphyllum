@@ -1,8 +1,0 @@
-[build]
-target = "x86_64-epiphyllum.json"
-
-[target.x86_64-epiphyllum]
-
-[target.'cfg(target_os = "none")']
-runner = "../runner.py"
-

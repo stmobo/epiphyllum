@@ -1,8 +1,11 @@
+cargo-features = ["per-package-target"]
+
 [package]
 name = "epiphyllum"
 version = "0.1.0"
 authors = ["Sebastian Mobo <stmobo@gmail.com>"]
-edition = "2018"
+edition = "2021"
+forced-target = "./x86_64-epiphyllum.json"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -25,12 +28,12 @@ bindgen = {version="^0.53", default-features=false, features=["clap", "runtime",
 
 [dependencies]
 spin = {version="^0.7", default-features=false, features=["lock_api"]}
-x86_64 = "^0.13"
+x86_64 = "^0.14"
 cty = "^0.2"
 kernel_test_macro = { path = "./kernel_test_macro" }
 hashbrown = "0.9"
 cstr_core = "^0.1"
-memchr = { version = "=2.1", default-features = false }
+memchr = { version = "^2.4.1", default-features = false }
 epiphyllum-structures = { path = "../epiphyllum-structures" }
 
 [dependencies.num_enum]

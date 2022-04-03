@@ -210,7 +210,7 @@ mod tests {
         let child_queue = queue.clone();
         let child_shared = shared.clone();
 
-        let child = task::spawn_async(true, basic_async_test_child(child_queue, child_shared))
+        let child = task::spawn_async(true, || basic_async_test_child(child_queue, child_shared))
             .expect("could not spawn subtask");
         child.schedule();
 

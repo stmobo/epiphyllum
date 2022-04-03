@@ -77,13 +77,19 @@ impl PanicOutputSinks {
         })
     }
 
+    #[cfg(not(test))]
     unsafe fn write_fmt(&self, args: fmt::Arguments) -> fmt::Result {
         use fmt::Write;
 
         (*self.serial.get()).write_fmt(args)?;
-
-        #[cfg(not(test))]
         (*self.vga.get()).write_fmt(args)
+    }
+
+    #[cfg(test)]
+    unsafe fn write_fmt(&self, args: fmt::Arguments) -> fmt::Result {
+        use fmt::Write;
+
+        (*self.serial.get()).write_fmt(args)
     }
 }
 

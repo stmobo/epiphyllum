@@ -1,4 +1,3 @@
-pub mod ide;
 pub mod pci;
 pub mod pic;
 pub mod serial;

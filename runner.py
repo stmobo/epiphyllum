@@ -28,16 +28,17 @@ QEMU_OPTS = [
     "e1000,bus=bridge1,addr=0x5",
     "-device",
     "e1000,bus=bridge2,addr=0x1",
-    "-serial",
-    "stdio",
+    # "-serial",
+    # "stdio",
     "-cpu",
-    "host",
-    "-enable-kvm",
+    "qemu64",
+    # "-enable-kvm",
     "-s",
     "-no-reboot",
     "-no-shutdown",
     "-d",
     "cpu_reset",
+    "-nographic"
 ]
 
 # find root:
